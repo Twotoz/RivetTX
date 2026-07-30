@@ -715,8 +715,14 @@ bool CsvTelemetrySink::append(TimeUs time_us, uint16_t sensor_id,
 
 bool CsvTelemetrySink::flush()
 {
-  return file_ == nullptr ||
-         std::fflush(static_cast<FILE*>(file_)) == 0;
+  if (file_ == nullptr) {
+    return true;
+  }
+  FILE* stream = static_cast<FILE*>(file_);
+  const bool flushed = std::fflush(stream) == 0;
+  const bool closed = std::fclose(stream) == 0;
+  file_ = nullptr;
+  return flushed && closed;
 }
 
 WifiBackupPortal::WifiBackupPortal(TransactionalModelStore& models,

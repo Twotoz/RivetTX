@@ -140,6 +140,9 @@ bool TelemetryLogger::sample(const TelemetryRegistry& telemetry,
   for (const auto& entry : telemetry.entries()) {
     if (entry.discovered &&
         !sink_.append(now_us, entry.id, entry.value)) {
+      // Give platform sinks a deterministic opportunity to close/reset an
+      // errored stream before a later logging session is started.
+      (void)sink_.flush();
       failed_ = true;
       active_ = false;
       return false;

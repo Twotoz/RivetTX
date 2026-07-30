@@ -1274,6 +1274,7 @@ void test_services()
   CHECK(!logger.sample(telemetry, 200000));
   CHECK(logger.failed());
   CHECK(!logger.active());
+  CHECK(sink.flushes == 2);
   sink.fail_append = false;
   sink.fail_flush = true;
   logger.start();

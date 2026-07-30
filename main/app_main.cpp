@@ -1446,6 +1446,7 @@ void service_task(void*)
     }
     if (app.logging_active.load(std::memory_order_acquire) &&
         !app.telemetry_logger.sample(app.service_telemetry, current)) {
+      (void)app.telemetry_logger.stop();
       app.logging_active.store(false, std::memory_order_release);
       app.logging_failed.store(true, std::memory_order_release);
       if (logging_maintenance) {
