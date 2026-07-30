@@ -729,10 +729,10 @@ bool WifiBackupPortal::running() const
   return server_ != nullptr;
 }
 
-bool mount_model_filesystem()
+bool mount_model_filesystem(bool format_if_mount_failed)
 {
   esp_vfs_fat_mount_config_t config{};
-  config.format_if_mount_failed = false;
+  config.format_if_mount_failed = format_if_mount_failed;
   config.max_files = 8;
   config.allocation_unit_size = 4096;
   return esp_vfs_fat_spiflash_mount_rw_wl(

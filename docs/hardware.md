@@ -80,6 +80,9 @@ every assignment with `idf.py menuconfig`.
 - Configuration changes are saved after one second while locked and become
   active on the next boot.
 - Hold BACK during boot for the recovery Wi-Fi portal.
+- Hold UP + DOWN + BACK during boot to explicitly reformat model storage
+  after an unrecoverable mount failure. This erases stored models and
+  calibration; a normal mount failure never formats automatically.
 
 ## Required bring-up sequence
 

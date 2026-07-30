@@ -126,6 +126,7 @@ class CrsfParser {
   const CrsfParserStats& stats() const;
   TimeUs last_valid_frame_us() const;
   uint8_t last_frame_type() const;
+  void set_lua_frame_queue_enabled(bool enabled);
   bool pop_frame(crsf::Frame& frame);
   bool pop_management_frame(crsf::Frame& frame);
 
@@ -145,6 +146,7 @@ class CrsfParser {
   std::array<crsf::Frame, 8> received_frames_{};
   std::atomic<uint32_t> received_read_{0};
   std::atomic<uint32_t> received_write_{0};
+  std::atomic<bool> received_enabled_{false};
   std::array<crsf::Frame, 8> management_frames_{};
   std::atomic<uint32_t> management_read_{0};
   std::atomic<uint32_t> management_write_{0};

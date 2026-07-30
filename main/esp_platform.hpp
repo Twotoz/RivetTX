@@ -153,7 +153,7 @@ class WifiBackupPortal {
   httpd_handle_t server_ = nullptr;
 };
 
-bool mount_model_filesystem();
+bool mount_model_filesystem(bool format_if_mount_failed = false);
 bool validate_pin_configuration();
 TimeUs now_us();
 

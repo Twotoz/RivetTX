@@ -350,6 +350,16 @@ void MixerEngine::evaluate_logical_switches(
 void MixerEngine::update_timers(const Model& model,
                                 const ControlInputs& controls, TimeUs now_us)
 {
+  for (std::size_t i = 0; i < kMaxTimers; ++i) {
+    const auto& config = model.timers[i];
+    if (!timer_initialized_[i]) {
+      timer_start_ms_[i] =
+          static_cast<int64_t>(config.start_seconds) * 1000;
+      timer_states_[i].elapsed_ms = timer_start_ms_[i];
+      timer_initialized_[i] = true;
+    }
+    timer_persistent_[i] = config.persistent;
+  }
   if (previous_timer_us_ == 0) {
     previous_timer_us_ = now_us;
     return;
@@ -361,13 +371,6 @@ void MixerEngine::update_timers(const Model& model,
   for (std::size_t i = 0; i < kMaxTimers; ++i) {
     const auto& config = model.timers[i];
     auto& state = timer_states_[i];
-    if (!timer_initialized_[i]) {
-      timer_start_ms_[i] =
-          static_cast<int64_t>(config.start_seconds) * 1000;
-      state.elapsed_ms = timer_start_ms_[i];
-      timer_initialized_[i] = true;
-    }
-    timer_persistent_[i] = config.persistent;
     switch (config.mode) {
       case TimerMode::Off:
         state.running = false;

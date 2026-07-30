@@ -402,6 +402,19 @@ void test_crsf()
   crsf::Frame popped{};
   CHECK(!parser.pop_frame(popped));
 
+  parser.set_lua_frame_queue_enabled(true);
+  std::array<uint8_t, 4> device_info{
+      crsf::kAddressRadio, 2, crsf::kFrameDeviceInfo, 0};
+  device_info.back() =
+      crsf::crc8_dvb_s2(device_info.data() + 2,
+                        device_info.size() - 3);
+  for (const auto byte : device_info) {
+    (void)parser.feed(byte, 5500);
+  }
+  CHECK(parser.pop_frame(popped));
+  CHECK(popped.bytes[2] == crsf::kFrameDeviceInfo);
+  parser.set_lua_frame_queue_enabled(false);
+
   battery.back() ^= 1;
   for (const auto byte : battery) {
     (void)parser.feed(byte, 6000);

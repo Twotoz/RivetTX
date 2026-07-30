@@ -290,6 +290,7 @@ bool LuaVm::protected_call(int arguments, int results, std::string& error)
 
 bool LuaVm::load_file(const std::string& path, std::string& error)
 {
+  parser_.set_lua_frame_queue_enabled(false);
   if (!allowed_script_path(path)) {
     error = "script path is outside /models/scripts";
     return false;
@@ -384,6 +385,7 @@ ScriptSliceResult LuaVm::run_slice(uint32_t instruction_budget)
 
 void LuaVm::terminate()
 {
+  parser_.set_lua_frame_queue_enabled(false);
   if (state_ != nullptr) {
     lua_close(state_);
     state_ = nullptr;
@@ -538,6 +540,7 @@ int LuaVm::api_crossfire_push(lua_State* state)
 int LuaVm::api_crossfire_pop(lua_State* state)
 {
   LuaVm* runtime = self(state);
+  runtime->parser_.set_lua_frame_queue_enabled(true);
   crsf::Frame frame{};
   if (!runtime->parser_.pop_frame(frame) || frame.size < 4) {
     return 0;

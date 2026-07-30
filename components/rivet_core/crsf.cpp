@@ -294,7 +294,8 @@ bool CrsfParser::feed(uint8_t byte, TimeUs now_us)
       buffer_[2] != crsf::kFrameBattery &&
       buffer_[2] != crsf::kFrameLinkStatistics &&
       buffer_[2] != crsf::kFrameRcChannelsPacked;
-  if (lua_frame) {
+  if (lua_frame &&
+      received_enabled_.load(std::memory_order_acquire)) {
     const uint32_t write = received_write_.load(std::memory_order_relaxed);
     const uint32_t read = received_read_.load(std::memory_order_acquire);
     if (write - read < received_frames_.size()) {
@@ -421,6 +422,16 @@ TimeUs CrsfParser::last_valid_frame_us() const
 uint8_t CrsfParser::last_frame_type() const
 {
   return last_frame_type_;
+}
+
+void CrsfParser::set_lua_frame_queue_enabled(bool enabled)
+{
+  if (!enabled) {
+    const uint32_t write =
+        received_write_.load(std::memory_order_acquire);
+    received_read_.store(write, std::memory_order_release);
+  }
+  received_enabled_.store(enabled, std::memory_order_release);
 }
 
 bool CrsfParser::pop_frame(crsf::Frame& frame)

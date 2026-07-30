@@ -595,6 +595,7 @@ void ui_task(void*)
 
 void service_task(void*)
 {
+  PowerDecision previous_power_decision = PowerDecision::StayOn;
   while (true) {
     const TimeUs current = now_us();
     const int8_t logging =
@@ -656,9 +657,11 @@ void service_task(void*)
     app.audio.tick(current);
     const PowerDecision power_decision = app.power.evaluate(
         battery_state, safety_state == SafetyState::Enabled, current);
-    if (power_decision == PowerDecision::LockAndShutdown) {
+    if (power_decision == PowerDecision::LockAndShutdown &&
+        previous_power_decision != PowerDecision::LockAndShutdown) {
       app.safety.request_lock();
     }
+    previous_power_decision = power_decision;
     taskENTER_CRITICAL(&app.frame_lock);
     app.latest_finder = app.finder.status();
     taskEXIT_CRITICAL(&app.frame_lock);
@@ -666,9 +669,12 @@ void service_task(void*)
   }
 }
 
-bool initialize_storage()
+bool initialize_storage(bool explicit_format_requested)
 {
-  if (!mount_model_filesystem()) {
+  if (explicit_format_requested) {
+    ESP_LOGW(kTag, "explicit storage format chord accepted");
+  }
+  if (!mount_model_filesystem(explicit_format_requested)) {
     return false;
   }
   const auto loaded = app.model_store.load(app.model);
@@ -735,7 +741,6 @@ extern "C" void app_main()
   (void)app.boot_state.initialize();
   const uint32_t boot_attempt = app.boot_state.begin_attempt();
 
-  bool storage_ok = initialize_storage();
   const bool pins_ok = validate_pin_configuration();
   const bool inputs_ok = pins_ok && app.board.initialize();
   const RawInputs startup_inputs =
@@ -745,6 +750,11 @@ extern "C" void app_main()
   const bool recovery_requested =
       inputs_ok && app.boot.enter_recovery(
                        app.board.recovery_button_pressed(), boot_attempt);
+  const bool storage_format_requested =
+      inputs_ok && startup_inputs.valid &&
+      startup_inputs.switches[0] && startup_inputs.switches[1] &&
+      startup_inputs.switches[3];
+  bool storage_ok = initialize_storage(storage_format_requested);
   const bool display_ok = pins_ok && app.display.initialize();
   if (pins_ok) {
     (void)app.tones.initialize();
