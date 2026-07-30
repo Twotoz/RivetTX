@@ -1172,6 +1172,9 @@ void test_ui()
   const auto warnings = make_warnings_screen(home);
   CHECK(!warnings.fields.empty());
   CHECK(warnings.fields[0].value_text == "LOWER THROTTLE");
+  home.warnings[0] = UiWarningCode::SwitchPosition;
+  CHECK(make_warnings_screen(home).fields[0].value_text ==
+        "SET SWITCHES TO SAFE");
 
   home.warning_count = 0;
   ui.update_home(home);

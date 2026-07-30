@@ -102,6 +102,7 @@ enum class UiWarningCode : uint8_t {
   InputStale,
   ThrottleHigh,
   ArmSwitch,
+  SwitchPosition,
   MixerDeadline,
   WatchdogRecovery,
   BatteryCritical,

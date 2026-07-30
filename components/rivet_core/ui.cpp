@@ -95,6 +95,8 @@ const char* warning_text(UiWarningCode warning)
       return "THROTTLE HIGH";
     case UiWarningCode::ArmSwitch:
       return "ARM SWITCH HIGH";
+    case UiWarningCode::SwitchPosition:
+      return "SWITCH POSITION";
     case UiWarningCode::MixerDeadline:
       return "CONTROL DEADLINE";
     case UiWarningCode::WatchdogRecovery:
@@ -140,6 +142,8 @@ const char* warning_action(UiWarningCode warning)
       return "LOWER THROTTLE";
     case UiWarningCode::ArmSwitch:
       return "TURN ARM SWITCH OFF";
+    case UiWarningCode::SwitchPosition:
+      return "SET SWITCHES TO SAFE";
     case UiWarningCode::MixerDeadline:
       return "RESTART AND CHECK LOG";
     case UiWarningCode::WatchdogRecovery:
@@ -181,6 +185,7 @@ bool warning_blocks_startup(UiWarningCode warning)
     case UiWarningCode::InputStale:
     case UiWarningCode::ThrottleHigh:
     case UiWarningCode::ArmSwitch:
+    case UiWarningCode::SwitchPosition:
     case UiWarningCode::MixerDeadline:
     case UiWarningCode::WatchdogRecovery:
     case UiWarningCode::BatteryCritical:

@@ -553,7 +553,27 @@ UiHomeStatus current_home_status(
       add_warning(UiWarningCode::ThrottleHigh);
       break;
     case SafetyReason::SwitchMismatch:
-      add_warning(UiWarningCode::ArmSwitch);
+      {
+        bool mismatch_found = false;
+        for (std::size_t index = 0; index < 8; ++index) {
+          const uint8_t bit = static_cast<uint8_t>(1U << index);
+          if ((app.edit_model.required_switch_mask & bit) == 0) {
+            continue;
+          }
+          const bool expected =
+              (app.edit_model.required_switch_values & bit) != 0;
+          if (controls.switches[index] == expected) {
+            continue;
+          }
+          mismatch_found = true;
+          add_warning(index == kFirstAuxSwitch
+                          ? UiWarningCode::ArmSwitch
+                          : UiWarningCode::SwitchPosition);
+        }
+        if (!mismatch_found) {
+          add_warning(UiWarningCode::SwitchPosition);
+        }
+      }
       break;
     case SafetyReason::MixerDeadline:
       add_warning(UiWarningCode::MixerDeadline);

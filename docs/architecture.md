@@ -102,8 +102,9 @@ The home renderer consumes synchronized snapshots only. It draws two live
 gimbal plots (yaw/throttle and roll/pitch), battery/link/module/video status
 and the highest-priority warning. The warning page lists all current causes,
 including storage, calibration, invalid or stale input, high throttle, ARM
-switch, mixer deadline, watchdog recovery, battery sensor/level, module/link,
-logging, unsaved model, maintenance and video loss.
+switch, other required switch positions, mixer deadline, watchdog recovery,
+battery sensor/level, module/link, logging, unsaved model, maintenance and
+video loss.
 
 The VRX controller and 30×16 analog OSD compositor are platform-independent.
 They do not access SPI or video hardware themselves. The selected production
