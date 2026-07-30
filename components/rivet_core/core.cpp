@@ -197,6 +197,15 @@ void MixerEngine::reset()
   flight_mode_initialized_ = false;
 }
 
+void MixerEngine::reset_for_model_change()
+{
+  timer_states_ = {};
+  timer_initialized_ = {};
+  timer_persistent_ = {};
+  timer_start_ms_ = {};
+  reset();
+}
+
 int16_t MixerEngine::apply_expo(int16_t input, int8_t percent) const
 {
   const int32_t x = clamp<int32_t>(-kResolution, input, kResolution);

@@ -477,8 +477,20 @@ void test_mixer_features()
   (void)timer_mixer.evaluate(timer_model, inputs, telemetry, 1000000);
   (void)timer_mixer.evaluate(timer_model, inputs, telemetry, 2000000);
   CHECK(timer_mixer.timer_states()[0].elapsed_ms == 9000);
+  timer_model.timers[0].persistent = true;
+  (void)timer_mixer.evaluate(timer_model, inputs, telemetry, 2500000);
+  CHECK(timer_mixer.timer_states()[0].elapsed_ms == 8500);
+  timer_mixer.reset();
+  (void)timer_mixer.evaluate(timer_model, inputs, telemetry, 3000000);
+  CHECK(timer_mixer.timer_states()[0].elapsed_ms == 8500);
+  Model other_timer_model = timer_model;
+  other_timer_model.timers[0].start_seconds = 30;
+  timer_mixer.reset_for_model_change();
+  (void)timer_mixer.evaluate(
+      other_timer_model, inputs, telemetry, 4000000);
+  CHECK(timer_mixer.timer_states()[0].elapsed_ms == 30000);
   timer_mixer.reset_timer(0);
-  CHECK(timer_mixer.timer_states()[0].elapsed_ms == 10000);
+  CHECK(timer_mixer.timer_states()[0].elapsed_ms == 30000);
 
   Model logical_timer_model = make_default_model();
   logical_timer_model.logical_switch_count = 1;

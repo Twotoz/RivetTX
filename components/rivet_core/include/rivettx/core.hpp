@@ -78,6 +78,7 @@ class MixerEngine {
   uint8_t active_flight_mode() const;
   void reset_timer(std::size_t index);
   void reset();
+  void reset_for_model_change();
 
  private:
   struct MixRuntime {

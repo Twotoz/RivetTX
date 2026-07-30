@@ -304,16 +304,23 @@ void control_task(void*)
     }
     if (app.model_activation_state.load(std::memory_order_acquire) == 1) {
       Model candidate{};
+      bool model_changed = false;
       {
         const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
         candidate = app.pending_model_activation;
+        model_changed =
+            app.pending_model_slot != app.active_runtime_model_slot;
         app.active_runtime_model_slot = app.pending_model_slot;
         app.active_runtime_model_generation =
             app.pending_model_generation;
       }
       app.safety.request_lock();
       app.model = candidate;
-      app.mixer.reset();
+      if (model_changed) {
+        app.mixer.reset_for_model_change();
+      } else {
+        app.mixer.reset();
+      }
       app.trim_controls.reset();
       app.special_functions.reset();
       app.module.set_model_id(app.model.model_id, started);
