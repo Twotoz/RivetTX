@@ -540,6 +540,9 @@ UiHomeStatus current_home_status(
     case SafetyReason::StorageInvalid:
       add_warning(UiWarningCode::StorageInvalid);
       break;
+    case SafetyReason::CalibrationRequired:
+      add_warning(UiWarningCode::CalibrationRequired);
+      break;
     case SafetyReason::InputsInvalid:
       add_warning(UiWarningCode::InputInvalid);
       break;
@@ -1288,9 +1291,13 @@ void ui_task(void*)
       if (!maintenance_started) {
         dirty_since_us = now_us();
       } else if (app.model_library.save_active(
-                     app.edit_model, app.generation + 1, error) &&
-                 app.model_store.save(app.edit_model, app.generation + 1,
-                                      error)) {
+                     app.edit_model, app.generation + 1, error)) {
+        std::string mirror_error;
+        if (!app.model_store.save(app.edit_model, app.generation + 1,
+                                  mirror_error)) {
+          ESP_LOGW(kTag, "active model mirror failed: %s",
+                   mirror_error.c_str());
+        }
         ++app.generation;
         app.model_summaries = app.model_library.summaries();
         if (activation_needed) {
@@ -1500,9 +1507,8 @@ bool initialize_storage(bool explicit_format_requested)
   if (loaded.success) {
     app.generation = loaded.generation;
     if (!loaded.error.empty()) {
-      ESP_LOGE(kTag, "model recovery persistence failed: %s",
+      ESP_LOGW(kTag, "legacy model mirror recovery failed: %s",
                loaded.error.c_str());
-      return false;
     }
     if (loaded.recovered) {
       app.diagnostics.push(
@@ -1510,11 +1516,6 @@ bool initialize_storage(bool explicit_format_requested)
     }
   } else {
     app.model = make_default_model();
-    std::string error;
-    if (!app.model_store.save(app.model, 1, error)) {
-      ESP_LOGE(kTag, "cannot create model: %s", error.c_str());
-      return false;
-    }
     app.generation = 1;
   }
   std::string library_error;
@@ -1530,9 +1531,8 @@ bool initialize_storage(bool explicit_format_requested)
   if ((!app.model_store.export_active(active_mirror) ||
        active_mirror != expected_mirror) &&
       !app.model_store.save(app.model, app.generation, library_error)) {
-      ESP_LOGE(kTag, "cannot mirror active model: %s",
-               library_error.c_str());
-      return false;
+    ESP_LOGW(kTag, "cannot mirror active model: %s",
+             library_error.c_str());
   }
   app.model_summaries = app.model_library.summaries();
   app.edit_model = app.model;
@@ -1616,14 +1616,14 @@ extern "C" void app_main()
       ESP_LOGW(kTag, "stick calibration cancelled or failed");
     }
   }
-  storage_ok = storage_ok && app.calibration_valid;
   const bool crsf_ok = pins_ok && app.transport.initialize();
 
   const esp_reset_reason_t reset_reason = esp_reset_reason();
   const bool watchdog_recovery =
       reset_reason == ESP_RST_TASK_WDT || reset_reason == ESP_RST_WDT ||
       reset_reason == ESP_RST_INT_WDT;
-  app.safety.boot_complete(storage_ok, watchdog_recovery);
+  app.safety.boot_complete(storage_ok, watchdog_recovery,
+                           app.calibration_valid);
   if (recovery_requested) {
     app.safety.request_lock();
   }
@@ -1655,7 +1655,7 @@ extern "C" void app_main()
 
   SelfTestResult self_test{};
   self_test.storage = storage_ok;
-  self_test.inputs = inputs_ok;
+  self_test.inputs = inputs_ok && app.calibration_valid;
   self_test.display = display_ok;
   self_test.crsf_uart = crsf_ok;
   self_test.control_task = control_created == pdPASS &&

@@ -352,7 +352,9 @@ BatterySample EspBoard::sample_battery()
   sample.millivolts = static_cast<uint16_t>(std::min<uint32_t>(
       UINT16_MAX,
       pin_mv * CONFIG_RIVETTX_BATTERY_DIVIDER_MILLI / 1000U));
-  sample.valid = true;
+  // A configured divider can only produce zero when the supply collapsed or
+  // the sensing path failed. Both conditions must lock outputs.
+  sample.valid = sample.millivolts != 0;
   return sample;
 }
 
@@ -684,11 +686,12 @@ bool CsvTelemetrySink::append(TimeUs time_us, uint16_t sensor_id,
   const long position = std::ftell(stream);
   if (position >= 0 &&
       static_cast<std::size_t>(position) >= maximum_bytes_) {
-    if (std::fflush(stream) != 0 || std::fclose(stream) != 0) {
-      file_ = nullptr;
+    const bool flushed = std::fflush(stream) == 0;
+    const bool closed = std::fclose(stream) == 0;
+    file_ = nullptr;
+    if (!flushed || !closed) {
       return false;
     }
-    file_ = nullptr;
     const std::string rotated = path_ + ".1";
     if (std::remove(rotated.c_str()) != 0 && errno != ENOENT) {
       return false;
@@ -791,10 +794,14 @@ esp_err_t WifiBackupPortal::post_restore(httpd_req_t* request)
     received += static_cast<std::size_t>(result);
   }
   std::string error;
-  if (!portal->library_.import_active(data, error) ||
-      !portal->models_.import_candidate(data, error)) {
+  if (!portal->library_.import_active(data, error)) {
     httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, error.c_str());
     return ESP_FAIL;
+  }
+  std::string mirror_error;
+  if (!portal->models_.import_candidate(data, mirror_error)) {
+    ESP_LOGW(kTag, "restored model mirror failed: %s",
+             mirror_error.c_str());
   }
   return httpd_resp_sendstr(
       request, "model verified and restored; leave Wi-Fi mode to activate");

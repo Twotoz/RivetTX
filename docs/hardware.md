@@ -148,6 +148,10 @@ are used immediately and persisted through the normal model-save path. See the
 - ENTER on Home opens the main menu; BACK returns Detail → Menu → Home.
 - UP/DOWN select a field; ENTER enters or leaves edit mode.
 - In edit mode UP/DOWN changes the value.
+- `EDIT` is shown at the top-right for as long as a value is being changed.
+- A blocking startup warning replaces the gimbal view with the exact action
+  needed. It clears automatically as soon as the live safety condition is
+  valid again.
 - The rotary encoder can replace UP/DOWN and ENTER for those menu actions.
 - Trim buttons adjust the active flight mode live; press both directions to
   center the corresponding trim.

@@ -151,6 +151,7 @@ enum class SafetyReason : uint8_t {
   BatteryCritical,
   BatterySensor,
   StorageInvalid,
+  CalibrationRequired,
   WatchdogRecovery,
   ManualLock,
 };
@@ -175,7 +176,8 @@ class SafetyManager {
  public:
   explicit SafetyManager(SafetyConfig config = {});
 
-  void boot_complete(bool storage_valid, bool watchdog_recovery);
+  void boot_complete(bool storage_valid, bool watchdog_recovery,
+                     bool calibration_valid = true);
   void request_enable();
   void request_lock();
   void report_battery(uint16_t millivolts);
@@ -200,6 +202,7 @@ class SafetyManager {
   bool mixer_deadline_pending_ = false;
   bool enable_requested_ = false;
   bool storage_valid_ = false;
+  bool calibration_valid_ = false;
   bool maintenance_active_ = false;
   mutable std::mutex mutex_;
 };

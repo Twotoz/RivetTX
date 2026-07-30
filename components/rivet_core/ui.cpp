@@ -125,6 +125,82 @@ const char* warning_text(UiWarningCode warning)
   return "UNKNOWN";
 }
 
+const char* warning_action(UiWarningCode warning)
+{
+  switch (warning) {
+    case UiWarningCode::StorageInvalid:
+      return "OPEN RECOVERY";
+    case UiWarningCode::CalibrationRequired:
+      return "RUN STICK CALIBRATION";
+    case UiWarningCode::InputInvalid:
+      return "CHECK INPUT WIRING";
+    case UiWarningCode::InputStale:
+      return "CHECK GIMBALS";
+    case UiWarningCode::ThrottleHigh:
+      return "LOWER THROTTLE";
+    case UiWarningCode::ArmSwitch:
+      return "TURN ARM SWITCH OFF";
+    case UiWarningCode::MixerDeadline:
+      return "RESTART AND CHECK LOG";
+    case UiWarningCode::WatchdogRecovery:
+      return "CHECK SYSTEM LOG";
+    case UiWarningCode::BatteryCritical:
+      return "CHARGE OR REPLACE BAT";
+    case UiWarningCode::BatterySensor:
+      return "CHECK BATTERY SENSOR";
+    case UiWarningCode::BatteryLow:
+      return "CHARGE BATTERY";
+    case UiWarningCode::ModuleOffline:
+      return "CHECK ELRS POWER UART";
+    case UiWarningCode::LinkLost:
+      return "CHECK RX AND ANTENNA";
+    case UiWarningCode::LinkCritical:
+      return "MOVE CLOSER";
+    case UiWarningCode::LinkWeak:
+      return "CHECK ANTENNAS";
+    case UiWarningCode::LoggingFailed:
+      return "CHECK MODEL STORAGE";
+    case UiWarningCode::ModelUnsaved:
+      return "LOCK TO SAVE MODEL";
+    case UiWarningCode::Maintenance:
+      return "FINISH MAINTENANCE";
+    case UiWarningCode::VideoNoSignal:
+      return "CHECK VRX CHANNEL";
+    case UiWarningCode::None:
+      return "NO ACTION";
+  }
+  return "CHECK SYSTEM";
+}
+
+bool warning_blocks_startup(UiWarningCode warning)
+{
+  switch (warning) {
+    case UiWarningCode::StorageInvalid:
+    case UiWarningCode::CalibrationRequired:
+    case UiWarningCode::InputInvalid:
+    case UiWarningCode::InputStale:
+    case UiWarningCode::ThrottleHigh:
+    case UiWarningCode::ArmSwitch:
+    case UiWarningCode::MixerDeadline:
+    case UiWarningCode::WatchdogRecovery:
+    case UiWarningCode::BatteryCritical:
+    case UiWarningCode::BatterySensor:
+    case UiWarningCode::ModuleOffline:
+      return true;
+    case UiWarningCode::None:
+    case UiWarningCode::BatteryLow:
+    case UiWarningCode::LinkLost:
+    case UiWarningCode::LinkCritical:
+    case UiWarningCode::LinkWeak:
+    case UiWarningCode::LoggingFailed:
+    case UiWarningCode::ModelUnsaved:
+    case UiWarningCode::Maintenance:
+    case UiWarningCode::VideoNoSignal:
+      return false;
+  }
+  return false;
+}
+
 }  // namespace
 
 void Canvas::horizontal_line(int16_t x, int16_t y, int16_t length, bool on)
@@ -496,6 +572,14 @@ void UiController::draw_header(const LayoutMetrics& metrics)
       true, true);
   canvas_.text(metrics.margin, metrics.margin, screen_.title, true,
                metrics.font_scale);
+  if (editing_) {
+    constexpr char indicator[] = "EDIT";
+    const int16_t width =
+        canvas_.text_width(indicator, metrics.font_scale);
+    canvas_.text(
+        static_cast<int16_t>(canvas_.width() - width - metrics.margin),
+        metrics.margin, indicator, true, metrics.font_scale);
+  }
 }
 
 void UiController::draw_home(const LayoutMetrics& metrics)
@@ -516,6 +600,17 @@ void UiController::draw_home(const LayoutMetrics& metrics)
     const int16_t width = canvas_.text_width(count);
     canvas_.text(static_cast<int16_t>(canvas_.width() - width - 1),
                  static_cast<int16_t>(banner_y + 1), count, warning, 1);
+  }
+  if (warning && warning_blocks_startup(status.warnings[0])) {
+    canvas_.text(2, static_cast<int16_t>(banner_y + 14), "ACTION:");
+    canvas_.text(2, static_cast<int16_t>(banner_y + 24),
+                 warning_action(status.warnings[0]));
+    canvas_.text(2,
+                 static_cast<int16_t>(
+                     std::max<int16_t>(banner_y + 35,
+                                       canvas_.height() - 8)),
+                 "CLEARS WHEN SAFE");
+    return;
   }
 
   const int16_t box_size =
@@ -756,7 +851,7 @@ UiScreen make_warnings_screen(const UiHomeStatus& status)
   for (std::size_t index = 0; index < count; ++index) {
     screen.fields.push_back(
         {"warning." + std::to_string(index), warning_text(status.warnings[index]),
-         index == 0 ? "ACTIVE" : "", UiFieldKind::Label,
+         warning_action(status.warnings[index]), UiFieldKind::Label,
          0, 0, 0, false, true});
   }
   return screen;

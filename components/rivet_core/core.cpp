@@ -794,13 +794,18 @@ SafetyManager::SafetyManager(SafetyConfig config) : config_(config)
 {
 }
 
-void SafetyManager::boot_complete(bool storage_valid, bool watchdog_recovery)
+void SafetyManager::boot_complete(bool storage_valid, bool watchdog_recovery,
+                                  bool calibration_valid)
 {
   const std::lock_guard<std::mutex> lock(mutex_);
   storage_valid_ = storage_valid;
+  calibration_valid_ = calibration_valid;
   if (!storage_valid) {
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::StorageInvalid;
+  } else if (!calibration_valid) {
+    status_.state = SafetyState::Fault;
+    status_.reason = SafetyReason::CalibrationRequired;
   } else if (watchdog_recovery) {
     status_.state = SafetyState::Locked;
     status_.reason = SafetyReason::WatchdogRecovery;
@@ -902,6 +907,11 @@ ChannelFrame SafetyManager::gate(const Model& model,
   if (!storage_valid_) {
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::StorageInvalid;
+    return safe_frame(model, now_us, proposed.sequence);
+  }
+  if (!calibration_valid_) {
+    status_.state = SafetyState::Fault;
+    status_.reason = SafetyReason::CalibrationRequired;
     return safe_frame(model, now_us, proposed.sequence);
   }
   if (mixer_deadline_pending_) {

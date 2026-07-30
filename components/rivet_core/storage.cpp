@@ -205,7 +205,8 @@ bool model_shape_valid(const Model& model)
       model.curve_count > kMaxCurves ||
       model.special_function_count > kMaxSpecialFunctions ||
       model.throttle_axis >= kMaxAxes ||
-      model.throttle_channel >= kChannelCount) {
+      model.throttle_channel >= kChannelCount ||
+      model.vrx_band >= 6 || model.vrx_channel >= 8) {
     return false;
   }
   const auto switch_valid = [](const SwitchRef& reference) {
@@ -455,8 +456,7 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
       model.curve_count > kMaxCurves ||
       model.special_function_count > kMaxSpecialFunctions ||
       model.throttle_axis >= kMaxAxes ||
-      model.throttle_channel >= kChannelCount ||
-      model.vrx_band > 5 || model.vrx_channel > 7) {
+      model.throttle_channel >= kChannelCount) {
     return false;
   }
 
@@ -577,7 +577,8 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
   if (schema >= 6 &&
       (!reader.get(model.vrx_band) || !reader.get(model.vrx_channel) ||
        !reader.get_bool(model.video_overlay_enabled) ||
-       !reader.get_bool(model.simulator_rf_lock))) {
+       !reader.get_bool(model.simulator_rf_lock) ||
+       model.vrx_band >= 6 || model.vrx_channel >= 8)) {
     return false;
   }
   return reader.exhausted();

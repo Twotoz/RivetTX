@@ -584,6 +584,18 @@ void test_safety()
   safety.report_battery(3000);
   CHECK(safety.status().state == SafetyState::Fault);
   CHECK(watchdog.count == 13);
+
+  SafetyManager uncalibrated;
+  uncalibrated.boot_complete(true, false, false);
+  ControlInputs calibrated_controls{};
+  calibrated_controls.valid = true;
+  calibrated_controls.sampled_at_us = 1000;
+  ChannelFrame proposed{};
+  const auto calibration_locked =
+      uncalibrated.gate(model, calibrated_controls, proposed, 1000);
+  CHECK(calibration_locked.safe);
+  CHECK(uncalibrated.status().reason ==
+        SafetyReason::CalibrationRequired);
 }
 
 void test_crsf()
@@ -1042,6 +1054,9 @@ void test_storage()
   error.clear();
   CHECK(!store.save(invalid, 9, error));
   CHECK(error == "invalid model shape");
+  invalid = model;
+  invalid.vrx_band = 6;
+  CHECK(ModelCodec::encode(invalid, 9).empty());
 
   Model product_model = make_default_model();
   product_model.vrx_band = 3;
@@ -1154,8 +1169,29 @@ void test_ui()
   ui.set_screen(make_openpocket_home_screen(model, home));
   CHECK(ui.render());
   CHECK(canvas.pixel_at(0, 9));
+  const auto warnings = make_warnings_screen(home);
+  CHECK(!warnings.fields.empty());
+  CHECK(warnings.fields[0].value_text == "LOWER THROTTLE");
+
+  home.warning_count = 0;
+  ui.update_home(home);
+  CHECK(ui.render());
   CHECK(canvas.pixel_at(2, 20));
-  CHECK(!make_warnings_screen(home).fields.empty());
+
+  ui.set_screen(make_inputs_screen(model));
+  CHECK(ui.handle({UiEventType::Enter, 0, 0, 0}));
+  CHECK(ui.editing());
+  CHECK(ui.render());
+  const int16_t edit_x =
+      static_cast<int16_t>(canvas.width() - canvas.text_width("EDIT") - 1);
+  bool edit_indicator_visible = false;
+  for (int16_t x = edit_x; x < static_cast<int16_t>(canvas.width()); ++x) {
+    for (int16_t y = 0; y < 7; ++y) {
+      edit_indicator_visible =
+          edit_indicator_visible || !canvas.pixel_at(x, y);
+    }
+  }
+  CHECK(edit_indicator_visible);
 
   const OutputLimit unchanged = model.outputs[0];
   CHECK(!ModelEditor::apply(
