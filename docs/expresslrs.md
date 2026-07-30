@@ -1,8 +1,10 @@
 # ExpressLRS control, Finder, and updates
 
-RivetTX talks to an ExpressLRS **TX module** over its full-duplex CRSF UART.
-The receiver stays in the aircraft and talks directly to the flight
-controller. The two links have different responsibilities:
+RivetTX talks to ExpressLRS firmware in **TX mode** over its full-duplex CRSF
+UART. This may be a regular TX module or a supported ESP8285/ESP32 receiver
+flashed with RX-as-TX firmware. A second receiver stays in the aircraft and
+talks directly to the flight controller. The two links have different
+responsibilities:
 
 ```text
 RivetTX -- CRSF --> ELRS TX module )) RF (( ELRS receiver -- CRSF --> flight controller
@@ -28,6 +30,14 @@ Field IDs and power lists are deliberately not hard-coded. Available powers
 depend on the module hardware, regulatory domain, firmware, and any unlock
 state. A selected value is written as the module's option index and then read
 back through a fresh discovery pass.
+
+This also applies to RX-as-TX hardware. For example, a converted receiver with
+a correctly configured 100 mW PA can advertise `100mW`, which RivetTX displays
+and selects like the same option on a conventional module. RivetTX does not
+assume that every converted receiver supports 100 mW.
+
+See the [hardware guide](hardware.md#expresslrs-receiver-flashed-as-transmitter)
+for conversion, wiring, power-supply, and `hardware.json` requirements.
 
 Keep the module at the lowest useful power during bench work. Never select a
 power that is illegal in your location, exceeds the module's cooling limits,

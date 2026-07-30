@@ -2,12 +2,15 @@
 
 ## Minimum transmitter
 
-An ExpressLRS **receiver is not sufficient**. RivetTX generates channel data
-and sends it over CRSF to an ExpressLRS **transmitter module**. The minimum
-useful radio therefore contains:
+RivetTX generates channel data and sends it over CRSF to ExpressLRS firmware
+running in **transmitter mode**. That firmware may run on a regular TX module
+or on a supported ESP8285/ESP32 receiver that has deliberately been flashed
+as a transmitter. A receiver running normal RX firmware is not sufficient.
+The minimum useful radio therefore contains:
 
 - ESP32-C3 or ESP32-S3 with at least 4 MiB flash
-- ExpressLRS TX module with a full-duplex 3.3 V CRSF UART
+- ExpressLRS TX module, or supported RX flashed as TX, with a full-duplex
+  non-inverted 3.3 V CRSF UART
 - two two-axis gimbals or four other analog controls
 - one dedicated two-position ARM switch and up to three two- or three-position
   maintained AUX switches
@@ -25,6 +28,39 @@ later but are not required by the first profile.
 
 Never power a high-power external module from a development board's 3.3 V pin.
 Use the module manufacturer's voltage and current limits.
+
+### ExpressLRS receiver flashed as transmitter
+
+An RX-as-TX board is a transmitter after flashing and still needs a separate
+ExpressLRS receiver in the aircraft. ESP8285 boards connect naturally to
+RivetTX because RivetTX exposes separate, non-inverted CRSF TX and RX signals:
+
+```text
+RivetTX CRSF TX  -> converted module RX
+RivetTX CRSF RX  <- converted module TX
+RivetTX GND      --- converted module GND
+regulated supply -> converted module VCC
+```
+
+Use the current ExpressLRS Configurator RX-as-TX option or the official web
+flasher target appropriate for the exact radio chip and MCU. Before conversion:
+
+1. Confirm the board works with its original receiver firmware.
+2. Back up its original `hardware.json` from the ExpressLRS Web UI.
+3. Flash the matching full-duplex RX-as-TX target without UART inversion.
+4. Restore that same board's `hardware.json`; never use a file from a different
+   receiver revision.
+5. Power-cycle the module and connect it to RivetTX at 400 kbaud.
+6. Start at the lowest RF power, verify telemetry, and confirm that the power
+   choices advertised in RivetTX match the physical board.
+
+Some receivers contain only the radio IC's low-power output; others include a
+power amplifier and can advertise 50 mW, 100 mW, or more. Restoring the exact
+hardware file is what supplies the firmware with the correct PA control pins
+and power table. A label or seller claim alone is not enough to prove that
+100 mW is safe. Size the regulator for peak current, add local bulk
+capacitance, provide airflow where required, and verify RF output into an
+antenna or suitable RF load.
 
 ## Target choice
 
