@@ -679,6 +679,42 @@ bool ModelCodec::migrate(uint16_t source_schema, Model& model,
       model.outputs[4].failsafe = -kResolution;
     }
   }
+  if (source_schema < 5 &&
+      std::strcmp(model.name.data(), "Default") == 0 &&
+      model.input_count == 4 && model.mix_count == 8) {
+    bool legacy_default = true;
+    for (uint8_t axis = 0; axis < 4; ++axis) {
+      const auto& input = model.inputs[axis];
+      const auto& mix = model.mixes[axis];
+      legacy_default =
+          legacy_default && input.enabled && input.source_axis == axis &&
+          input.destination == axis && mix.enabled &&
+          mix.destination == axis && mix.source.kind == SourceKind::Input &&
+          mix.source.index == axis;
+    }
+    for (uint8_t aux = 0; aux < kAuxSwitchCount; ++aux) {
+      const auto& mix = model.mixes[4 + aux];
+      legacy_default =
+          legacy_default && mix.enabled && mix.destination == 4 + aux &&
+          mix.source.kind == SourceKind::Switch &&
+          mix.source.index == kFirstAuxSwitch + aux;
+    }
+    if (legacy_default) {
+      model.input_count = 8;
+      model.mix_count = 12;
+      for (uint8_t axis = 4; axis < kMaxAxes; ++axis) {
+        model.inputs[axis].enabled = true;
+        model.inputs[axis].source_axis = axis;
+        model.inputs[axis].destination = axis;
+        model.inputs[axis].weight_percent = 100;
+        const auto mix = static_cast<uint8_t>(8 + axis - 4);
+        model.mixes[mix].enabled = true;
+        model.mixes[mix].destination = mix;
+        model.mixes[mix].source = {SourceKind::Input, axis, 0};
+        model.mixes[mix].weight_percent = 100;
+      }
+    }
+  }
   if (source_schema > Model::kSchemaVersion) {
     error = "migration target unavailable";
     return false;

@@ -8,6 +8,12 @@ namespace rivettx {
 
 namespace {
 
+constexpr TimeUs kSwitchDebounceUs = 20000;
+constexpr TimeUs kTrimInitialRepeatUs = 500000;
+constexpr TimeUs kTrimRepeatUs = 100000;
+constexpr int16_t kTrimStep = 8;
+constexpr int16_t kTrimLimit = 512;
+
 constexpr int16_t scale_percent(int32_t value, int16_t percent)
 {
   return static_cast<int16_t>(
@@ -28,8 +34,8 @@ Model make_default_model()
   Model model{};
   constexpr char name[] = "Default";
   std::copy(name, name + sizeof(name), model.name.begin());
-  model.input_count = 4;
-  model.mix_count = 8;
+  model.input_count = 8;
+  model.mix_count = 12;
   model.flight_mode_count = 1;
   model.flight_modes[0].enabled = true;
   model.flight_modes[0].condition.index = -1;
@@ -51,6 +57,17 @@ Model make_default_model()
     model.mixes[mix].source = {
         SourceKind::Switch,
         static_cast<uint8_t>(kFirstAuxSwitch + aux), 0};
+    model.mixes[mix].weight_percent = 100;
+  }
+  for (uint8_t axis = 4; axis < kMaxAxes; ++axis) {
+    model.inputs[axis].enabled = true;
+    model.inputs[axis].source_axis = axis;
+    model.inputs[axis].destination = axis;
+    model.inputs[axis].weight_percent = 100;
+    const auto mix = static_cast<uint8_t>(8 + axis - 4);
+    model.mixes[mix].enabled = true;
+    model.mixes[mix].destination = mix;
+    model.mixes[mix].source = {SourceKind::Input, axis, 0};
     model.mixes[mix].weight_percent = 100;
   }
   model.required_switch_mask =
@@ -82,9 +99,38 @@ const std::array<AxisCalibration, kMaxAxes>& InputProcessor::calibration() const
 ControlInputs InputProcessor::process(const RawInputs& raw)
 {
   ControlInputs result{};
-  result.switches = raw.switches;
   result.sampled_at_us = raw.sampled_at_us;
   result.valid = raw.valid;
+
+  std::array<int8_t, kMaxSwitches> sampled_positions{};
+  for (std::size_t i = 0; i < sampled_positions.size(); ++i) {
+    sampled_positions[i] =
+        raw.switch_positions_valid
+            ? clamp<int8_t>(-1, raw.switch_positions[i], 1)
+            : static_cast<int8_t>(raw.switches[i] ? 1 : -1);
+  }
+  if (!switches_initialized_) {
+    switch_candidates_ = sampled_positions;
+    stable_switches_ = sampled_positions;
+    switch_changed_at_us_.fill(raw.sampled_at_us);
+    switches_initialized_ = true;
+  } else if (raw.valid) {
+    for (std::size_t i = 0; i < sampled_positions.size(); ++i) {
+      if (sampled_positions[i] != switch_candidates_[i]) {
+        switch_candidates_[i] = sampled_positions[i];
+        switch_changed_at_us_[i] = raw.sampled_at_us;
+      } else if (stable_switches_[i] != switch_candidates_[i] &&
+                 raw.sampled_at_us >= switch_changed_at_us_[i] &&
+                 raw.sampled_at_us - switch_changed_at_us_[i] >=
+                     kSwitchDebounceUs) {
+        stable_switches_[i] = switch_candidates_[i];
+      }
+    }
+  }
+  result.switch_positions = stable_switches_;
+  for (std::size_t i = 0; i < result.switches.size(); ++i) {
+    result.switches[i] = result.switch_positions[i] > 0;
+  }
 
   for (std::size_t i = 0; i < kMaxAxes; ++i) {
     const auto& cal = calibration_[i];
@@ -251,12 +297,121 @@ int16_t MixerEngine::source_value(
       }
       return 0;
     case SourceKind::Switch:
-      return source.index < controls.switches.size() &&
-                     controls.switches[source.index]
-                 ? kResolution
-                 : -kResolution;
+      return source.index < controls.switch_positions.size()
+                 ? static_cast<int16_t>(
+                       controls.switch_positions[source.index] * kResolution)
+                 : 0;
   }
   return 0;
+}
+
+TrimUpdate TrimController::update(Model& model, uint8_t flight_mode,
+                                  const ControlInputs& inputs, TimeUs now_us)
+{
+  TrimUpdate update{};
+  if (!inputs.valid || flight_mode >= model.flight_mode_count ||
+      flight_mode >= kMaxFlightModes) {
+    return update;
+  }
+  std::array<int8_t, kTrimAxisCount> directions{};
+  for (std::size_t axis = 0; axis < directions.size(); ++axis) {
+    const bool negative =
+        inputs.switches[kFirstTrimSwitch + axis * 2];
+    const bool positive =
+        inputs.switches[kFirstTrimSwitch + axis * 2 + 1];
+    directions[axis] =
+        negative && positive ? 2 : (negative ? -1 : (positive ? 1 : 0));
+  }
+  if (!initialized_) {
+    previous_direction_ = directions;
+    initialized_ = true;
+    return update;
+  }
+
+  auto& trims = model.flight_modes[flight_mode].trims;
+  for (std::size_t axis = 0; axis < directions.size(); ++axis) {
+    const int8_t direction = directions[axis];
+    bool apply = false;
+    if (direction != previous_direction_[axis]) {
+      apply = direction != 0;
+      next_repeat_us_[axis] =
+          direction == -1 || direction == 1
+              ? now_us + kTrimInitialRepeatUs
+              : 0;
+    } else if ((direction == -1 || direction == 1) &&
+               next_repeat_us_[axis] != 0 &&
+               now_us >= next_repeat_us_[axis]) {
+      apply = true;
+      next_repeat_us_[axis] = now_us + kTrimRepeatUs;
+    }
+    previous_direction_[axis] = direction;
+    if (!apply) {
+      continue;
+    }
+
+    const int16_t before = trims[axis];
+    const int16_t after =
+        direction == 2
+            ? 0
+            : static_cast<int16_t>(clamp<int32_t>(
+                  -kTrimLimit,
+                  static_cast<int32_t>(before) + direction * kTrimStep,
+                  kTrimLimit));
+    trims[axis] = after;
+    if (after != before) {
+      const uint8_t bit = static_cast<uint8_t>(1U << axis);
+      update.changed_mask |= bit;
+      if (after == 0) {
+        update.centered_mask |= bit;
+      }
+      if (after == -kTrimLimit || after == kTrimLimit) {
+        update.limit_mask |= bit;
+      }
+    }
+  }
+  return update;
+}
+
+void TrimController::reset()
+{
+  previous_direction_ = {};
+  next_repeat_us_ = {};
+  initialized_ = false;
+}
+
+int8_t RotaryEncoderDecoder::update(bool phase_a, bool phase_b)
+{
+  const uint8_t current = static_cast<uint8_t>(
+      (phase_a ? 2U : 0U) | (phase_b ? 1U : 0U));
+  if (!initialized_) {
+    previous_state_ = current;
+    initialized_ = true;
+    return 0;
+  }
+
+  static constexpr std::array<int8_t, 16> transitions{
+      0, -1, 1, 0, 1, 0, 0, -1,
+      -1, 0, 0, 1, 0, 1, -1, 0};
+  accumulator_ = static_cast<int8_t>(
+      accumulator_ +
+      transitions[static_cast<std::size_t>(previous_state_ * 4 + current)]);
+  previous_state_ = current;
+  if (accumulator_ >= 4) {
+    accumulator_ = 0;
+    return 1;
+  }
+  if (accumulator_ <= -4) {
+    accumulator_ = 0;
+    return -1;
+  }
+  return 0;
+}
+
+void RotaryEncoderDecoder::reset()
+{
+  previous_state_ = 0;
+  accumulator_ = 0;
+  initialized_ = false;
 }
 
 void MixerEngine::evaluate_logical_switches(

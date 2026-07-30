@@ -26,6 +26,44 @@ class InputProcessor {
  private:
   std::array<AxisCalibration, kMaxAxes> calibration_{};
   std::array<int32_t, kMaxAxes> filtered_{};
+  std::array<int8_t, kMaxSwitches> switch_candidates_{};
+  std::array<int8_t, kMaxSwitches> stable_switches_{};
+  std::array<TimeUs, kMaxSwitches> switch_changed_at_us_{};
+  bool initialized_ = false;
+  bool switches_initialized_ = false;
+};
+
+struct TrimUpdate {
+  uint8_t changed_mask = 0;
+  uint8_t centered_mask = 0;
+  uint8_t limit_mask = 0;
+
+  bool changed() const
+  {
+    return changed_mask != 0;
+  }
+};
+
+class TrimController {
+ public:
+  TrimUpdate update(Model& model, uint8_t flight_mode,
+                    const ControlInputs& inputs, TimeUs now_us);
+  void reset();
+
+ private:
+  std::array<int8_t, kTrimAxisCount> previous_direction_{};
+  std::array<TimeUs, kTrimAxisCount> next_repeat_us_{};
+  bool initialized_ = false;
+};
+
+class RotaryEncoderDecoder {
+ public:
+  int8_t update(bool phase_a, bool phase_b);
+  void reset();
+
+ private:
+  uint8_t previous_state_ = 0;
+  int8_t accumulator_ = 0;
   bool initialized_ = false;
 };
 

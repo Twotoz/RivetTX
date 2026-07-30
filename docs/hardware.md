@@ -9,7 +9,8 @@ useful radio therefore contains:
 - ESP32-C3 or ESP32-S3 with at least 4 MiB flash
 - ExpressLRS TX module with a full-duplex 3.3 V CRSF UART
 - two two-axis gimbals or four other analog controls
-- one dedicated maintained ARM switch and up to three maintained AUX switches
+- one dedicated two-position ARM switch and up to three two- or three-position
+  maintained AUX switches
 - SSD1306-compatible 128x64 I2C OLED
 - UP, DOWN, ENTER, and BACK buttons
 - regulator sized for the chosen ESP32 and the peak current of the TX module
@@ -34,6 +35,13 @@ useful. On a dual-core S3 build RivetTX pins the 250 Hz control task to core 1
 and UI/service tasks to core 0. The C3 runs all three on its single core with
 their existing priorities.
 
+The full direct-GPIO control set (eight analog axes, three extra
+three-position contacts, encoder, eight trim contacts, battery, and buzzer)
+needs an S3 module/PCB with enough exposed pins; it does not fit alongside the
+development defaults on a C3. A C3 can use any smaller subset. On either
+target, verify ADC capability and flash/PSRAM/USB restrictions for every
+selected pin.
+
 Changing target regenerates the ESP-IDF configuration:
 
 ```bash
@@ -57,6 +65,10 @@ The defaults are examples, not a PCB design:
 | UP / DOWN | 8 / 9 | 10 / 11 |
 | ENTER / BACK | 10 / 20 | 12 / 14 |
 | AUX1-4 switches | disabled | disabled |
+| extra axes 4-7 | disabled | disabled |
+| AUX2-4 LOW contacts | disabled | disabled |
+| rotary encoder A / B / press | disabled | disabled |
+| eight trim contacts | disabled | disabled |
 | battery ADC | disabled | disabled |
 | passive piezo buzzer | disabled | disabled |
 
@@ -71,10 +83,26 @@ GPIO33-37 can be unavailable on ESP32-S3 modules that use octal flash or
 octal PSRAM. Confirm the module datasheet and board schematic, then change
 every assignment with `idf.py menuconfig`.
 
-The four optional AUX inputs are active low and use internal pull-ups. Wire
-each maintained switch between its configured GPIO and ground. AUX1 maps to
-CH5 and is the dedicated Betaflight/ExpressLRS arming switch; AUX2-AUX4 map to
-CH6-CH8. Disabled inputs remain low. See the
+All optional digital controls are active low and use internal pull-ups. AUX1
+maps to CH5 and remains a dedicated two-position Betaflight/ExpressLRS arming
+switch. AUX2-AUX4 map to CH6-CH8. A two-position switch needs only its normal
+AUX GPIO. For a three-position switch, wire its two outer contacts to the AUX
+GPIO and matching `*_LOW_GPIO`, and its common contact to ground. The output is
+-100% / 0% / +100%; activating both outer contacts together invalidates the
+input frame. Disabled AUX inputs remain low.
+
+Axes 4-7 accept analog scroll wheels, pots, or sliders and map to CH9-CH12 in
+the default model. Enable these axes contiguously: axis 4 first, then 5, 6, and
+7. Startup calibration automatically includes every configured axis.
+
+The optional quadrature encoder uses A and B contacts plus an independent
+press contact. Rotation selects fields or changes the current value; pressing
+acts as ENTER. Swap A and B if its physical direction is reversed.
+
+The eight trim GPIOs provide negative/positive buttons for AIL, ELE, THR, and
+RUD. A short press changes the current flight mode's trim by 8 units, holding
+repeats after 500 ms, and pressing both directions centers that trim. Changes
+are used immediately and persisted through the normal model-save path. See the
 [Betaflight setup guide](betaflight.md) before assigning GPIOs or modes.
 
 ## Controls
@@ -84,6 +112,9 @@ CH6-CH8. Disabled inputs remain low. See the
 - BACK cycles through normal screens.
 - UP/DOWN select a field; ENTER enters or leaves edit mode.
 - In edit mode UP/DOWN changes the value.
+- The rotary encoder can replace UP/DOWN and ENTER for those menu actions.
+- Trim buttons adjust the active flight mode live; press both directions to
+  center the corresponding trim.
 - Hold ENTER+BACK for one second to enable outputs or lock them again.
 - Configuration changes are saved after one second while locked and become
   active on the next boot.
@@ -96,19 +127,22 @@ CH6-CH8. Disabled inputs remain low. See the
 
 1. Build and flash development settings with the RF module disconnected.
 2. Verify all ADC directions and button levels in a serial log.
-3. Calibrate and verify CH1-CH4 reach the intended limits and CH5-CH8 follow
-   only their dedicated maintained switches.
-4. Scope the CRSF UART and measure the worst control-loop time.
-5. Connect the TX module at minimum RF power and verify telemetry/model ID.
-6. Verify mW selection, dynamic power, bind, Finder, and the module's Wi-Fi
+3. Calibrate and verify CH1-CH4 reach the intended limits, configured
+   scroll/pot axes move CH9-CH12, and CH5-CH8 follow only their dedicated
+   maintained switches at 1000/1500/2000 as applicable.
+4. Verify every trim direction, hold repeat, center chord, and encoder
+   direction/press before enabling RF output.
+5. Scope the CRSF UART and measure the worst control-loop time.
+6. Connect the TX module at minimum RF power and verify telemetry/model ID.
+7. Verify mW selection, dynamic power, bind, Finder, and the module's Wi-Fi
    update mode.
-7. With a receiver and flight controller, verify RSSI dBm, link quality, and
+8. With a receiver and flight controller, verify RSSI dBm, link quality, and
    TX power independently in the Betaflight OSD.
-8. Test loss of telemetry, input disconnect, low battery, brownout,
+9. Test loss of telemetry, input disconnect, low battery, brownout,
    watchdog reset, corrupt model storage, and failed OTA.
-9. Perform hardware-in-the-loop soak tests before removing propellers or
+10. Perform hardware-in-the-loop soak tests before removing propellers or
    otherwise making a vehicle capable of motion.
-10. Provision unique signing keys and a unique recovery password before applying
+11. Provision unique signing keys and a unique recovery password before applying
    the production security configuration.
 
 The buzzer must be a passive piezo suitable for GPIO drive or use an

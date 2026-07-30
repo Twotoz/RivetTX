@@ -238,9 +238,103 @@ void test_inputs_and_mixer()
   CHECK(frame.channels[4] == -kResolution);
 
   raw.switches[kFirstAuxSwitch] = true;
+  raw.sampled_at_us = 5000;
+  (void)processor.process(raw);
+  raw.sampled_at_us = 26000;
   const auto switched = processor.process(raw);
-  const auto armed = mixer.evaluate(model, switched, telemetry, 5000);
+  const auto armed = mixer.evaluate(model, switched, telemetry, 26000);
   CHECK(armed.channels[4] == kResolution);
+
+  ControlInputs extended{};
+  extended.valid = true;
+  extended.axes[4] = kResolution;
+  extended.switch_positions.fill(-1);
+  MixerEngine extended_mixer;
+  const auto extended_frame =
+      extended_mixer.evaluate(model, extended, telemetry, 30000);
+  CHECK(extended_frame.channels[8] == kResolution);
+
+  InputProcessor three_position_processor;
+  RawInputs three_position{};
+  three_position.valid = true;
+  three_position.switch_positions_valid = true;
+  three_position.switch_positions.fill(-1);
+  three_position.switch_positions[5] = 0;
+  three_position.sampled_at_us = 1000;
+  auto three_controls = three_position_processor.process(three_position);
+  MixerEngine three_position_mixer;
+  CHECK(three_position_mixer
+            .evaluate(model, three_controls, telemetry, 1000)
+            .channels[5] == 0);
+  three_position.switch_positions[5] = -1;
+  three_position.sampled_at_us = 5000;
+  (void)three_position_processor.process(three_position);
+  three_position.sampled_at_us = 26000;
+  three_controls = three_position_processor.process(three_position);
+  CHECK(three_position_mixer
+            .evaluate(model, three_controls, telemetry, 26000)
+            .channels[5] == -kResolution);
+  three_position.switch_positions[5] = 1;
+  three_position.sampled_at_us = 30000;
+  (void)three_position_processor.process(three_position);
+  three_position.sampled_at_us = 51000;
+  three_controls = three_position_processor.process(three_position);
+  CHECK(three_position_mixer
+            .evaluate(model, three_controls, telemetry, 51000)
+            .channels[5] == kResolution);
+}
+
+void test_trim_controls()
+{
+  Model model = make_default_model();
+  ControlInputs inputs{};
+  inputs.valid = true;
+  TrimController trims;
+  CHECK(!trims.update(model, 0, inputs, 1000).changed());
+
+  inputs.switches[kFirstTrimSwitch] = true;
+  auto first = trims.update(model, 0, inputs, 2000);
+  CHECK(first.changed());
+  CHECK(first.changed_mask == 1);
+  CHECK(model.flight_modes[0].trims[0] == -8);
+
+  auto repeated = trims.update(model, 0, inputs, 502000);
+  CHECK(repeated.changed());
+  CHECK(model.flight_modes[0].trims[0] == -16);
+
+  inputs.switches[kFirstTrimSwitch] = false;
+  (void)trims.update(model, 0, inputs, 510000);
+  inputs.switches[kFirstTrimSwitch] = true;
+  inputs.switches[kFirstTrimSwitch + 1] = true;
+  auto centered = trims.update(model, 0, inputs, 520000);
+  CHECK(centered.changed());
+  CHECK(centered.centered_mask == 1);
+  CHECK(model.flight_modes[0].trims[0] == 0);
+
+  trims.reset();
+  CHECK(!trims.update(model, 0, inputs, 600000).changed());
+}
+
+void test_rotary_encoder()
+{
+  RotaryEncoderDecoder encoder;
+  CHECK(encoder.update(false, false) == 0);
+  CHECK(encoder.update(true, false) == 0);
+  CHECK(encoder.update(true, true) == 0);
+  CHECK(encoder.update(false, true) == 0);
+  CHECK(encoder.update(false, false) == 1);
+
+  encoder.reset();
+  CHECK(encoder.update(false, false) == 0);
+  CHECK(encoder.update(false, true) == 0);
+  CHECK(encoder.update(true, true) == 0);
+  CHECK(encoder.update(true, false) == 0);
+  CHECK(encoder.update(false, false) == -1);
+
+  encoder.reset();
+  CHECK(encoder.update(false, false) == 0);
+  CHECK(encoder.update(true, true) == 0);
+  CHECK(encoder.update(false, false) == 0);
 }
 
 void test_mixer_features()
@@ -370,7 +464,11 @@ void test_safety()
 
   raw.switches[kFirstAuxSwitch] = true;
   raw.sampled_at_us = 25000;
-  auto arm_high = loop.run(model, raw, 3800, 25000, 25100);
+  auto arm_pending = loop.run(model, raw, 3800, 25000, 25100);
+  CHECK(!arm_pending.frame.safe);
+  CHECK(arm_pending.frame.channels[4] == -kResolution);
+  raw.sampled_at_us = 49000;
+  auto arm_high = loop.run(model, raw, 3800, 49000, 49100);
   CHECK(!arm_high.frame.safe);
   CHECK(arm_high.frame.channels[4] == kResolution);
   CHECK(arm_high.safety.state == SafetyState::Enabled);
@@ -379,8 +477,8 @@ void test_safety()
   model.outputs[model.throttle_channel].failsafe = kResolution;
   safety.request_lock();
   safety.request_enable();
-  raw.sampled_at_us = 29000;
-  auto unsafe_reenable = loop.run(model, raw, 3800, 29000, 29100);
+  raw.sampled_at_us = 53000;
+  auto unsafe_reenable = loop.run(model, raw, 3800, 53000, 53100);
   CHECK(unsafe_reenable.frame.safe);
   CHECK(unsafe_reenable.frame.channels[4] == -kResolution);
   CHECK(unsafe_reenable.frame.channels[model.throttle_channel] ==
@@ -389,11 +487,15 @@ void test_safety()
 
   raw.switches[kFirstAuxSwitch] = false;
   safety.request_enable();
-  raw.sampled_at_us = 33000;
-  auto reenable_pending = loop.run(model, raw, 3800, 33000, 33100);
+  raw.sampled_at_us = 57000;
+  auto debounce_pending = loop.run(model, raw, 3800, 57000, 57100);
+  CHECK(debounce_pending.frame.safe);
+  CHECK(debounce_pending.safety.reason == SafetyReason::SwitchMismatch);
+  raw.sampled_at_us = 81000;
+  auto reenable_pending = loop.run(model, raw, 3800, 81000, 81100);
   CHECK(reenable_pending.frame.safe);
-  raw.sampled_at_us = 37000;
-  auto safe_reenable = loop.run(model, raw, 3800, 37000, 37100);
+  raw.sampled_at_us = 85000;
+  auto safe_reenable = loop.run(model, raw, 3800, 85000, 85100);
   CHECK(!safe_reenable.frame.safe);
   CHECK(safe_reenable.safety.state == SafetyState::Enabled);
 
@@ -404,7 +506,7 @@ void test_safety()
 
   safety.report_battery(3000);
   CHECK(safety.status().state == SafetyState::Fault);
-  CHECK(watchdog.count == 11);
+  CHECK(watchdog.count == 13);
 }
 
 void test_crsf()
@@ -836,7 +938,8 @@ void test_storage()
   CHECK(result.generation == 7);
   CHECK(decoded.model_id == 17);
   CHECK(decoded.outputs[3].subtrim == 42);
-  CHECK(decoded.mix_count == 8);
+  CHECK(decoded.input_count == 8);
+  CHECK(decoded.mix_count == 12);
   CHECK(decoded.mixes[4].source.kind == SourceKind::Switch);
   CHECK(decoded.mixes[4].source.index == kFirstAuxSwitch);
 
@@ -857,6 +960,7 @@ void test_storage()
   CHECK(error == "invalid model shape");
 
   Model legacy_default = make_default_model();
+  legacy_default.input_count = 4;
   legacy_default.mix_count = 4;
   legacy_default.required_switch_mask = 0;
   legacy_default.outputs[4].failsafe = 0;
@@ -870,7 +974,8 @@ void test_storage()
   CHECK(ModelCodec::decode(legacy_encoded, migrated, migrated_generation,
                            error));
   CHECK(migrated_generation == 10);
-  CHECK(migrated.mix_count == 8);
+  CHECK(migrated.input_count == 8);
+  CHECK(migrated.mix_count == 12);
   CHECK(migrated.mixes[4].source.kind == SourceKind::Switch);
   CHECK(migrated.outputs[4].failsafe == -kResolution);
   CHECK((migrated.required_switch_mask &
@@ -899,6 +1004,8 @@ void test_ui()
   CHECK(display.flushes == 1);
   CHECK(ui.handle({UiEventType::Down, 0, 0, 0}));
   CHECK(ui.selected_index() == 1);
+  CHECK(ui.handle({UiEventType::Rotate, 2, 0, 0}));
+  CHECK(ui.selected_index() == 3);
   CHECK(ui.render());
 
   Model model = make_default_model();
@@ -1149,6 +1256,8 @@ void test_module_update_backup_and_calibration()
 int main()
 {
   test_inputs_and_mixer();
+  test_trim_controls();
+  test_rotary_encoder();
   test_mixer_features();
   test_safety();
   test_crsf();

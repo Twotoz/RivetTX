@@ -61,6 +61,20 @@ bool active_low_input(int gpio_number)
          gpio_get_level(static_cast<gpio_num_t>(gpio_number)) == 0;
 }
 
+int8_t switch_position(int high_gpio, int low_gpio, bool& valid)
+{
+  const bool high = active_low_input(high_gpio);
+  if (low_gpio < 0) {
+    return high ? 1 : -1;
+  }
+  const bool low = active_low_input(low_gpio);
+  if (high && low) {
+    valid = false;
+    return 0;
+  }
+  return high ? 1 : (low ? -1 : 0);
+}
+
 }  // namespace
 
 TimeUs now_us()
@@ -70,15 +84,28 @@ TimeUs now_us()
 
 bool validate_pin_configuration()
 {
-  const std::array<int, 18> pins{
+  const std::array<int, 36> pins{
       CONFIG_RIVETTX_AXIS0_GPIO,      CONFIG_RIVETTX_AXIS1_GPIO,
       CONFIG_RIVETTX_AXIS2_GPIO,      CONFIG_RIVETTX_AXIS3_GPIO,
+      CONFIG_RIVETTX_AXIS4_GPIO,      CONFIG_RIVETTX_AXIS5_GPIO,
+      CONFIG_RIVETTX_AXIS6_GPIO,      CONFIG_RIVETTX_AXIS7_GPIO,
       CONFIG_RIVETTX_I2C_SDA,         CONFIG_RIVETTX_I2C_SCL,
       CONFIG_RIVETTX_CRSF_TX,         CONFIG_RIVETTX_CRSF_RX,
       CONFIG_RIVETTX_BUTTON_UP,       CONFIG_RIVETTX_BUTTON_DOWN,
       CONFIG_RIVETTX_BUTTON_ENTER,    CONFIG_RIVETTX_BUTTON_BACK,
       CONFIG_RIVETTX_AUX1_GPIO,       CONFIG_RIVETTX_AUX2_GPIO,
       CONFIG_RIVETTX_AUX3_GPIO,       CONFIG_RIVETTX_AUX4_GPIO,
+      CONFIG_RIVETTX_AUX2_LOW_GPIO,   CONFIG_RIVETTX_AUX3_LOW_GPIO,
+      CONFIG_RIVETTX_AUX4_LOW_GPIO,   CONFIG_RIVETTX_ENCODER_A_GPIO,
+      CONFIG_RIVETTX_ENCODER_B_GPIO,  CONFIG_RIVETTX_ENCODER_PRESS_GPIO,
+      CONFIG_RIVETTX_TRIM_AIL_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_AIL_POS_GPIO,
+      CONFIG_RIVETTX_TRIM_ELE_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_ELE_POS_GPIO,
+      CONFIG_RIVETTX_TRIM_THR_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_THR_POS_GPIO,
+      CONFIG_RIVETTX_TRIM_RUD_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_RUD_POS_GPIO,
       CONFIG_RIVETTX_BATTERY_GPIO,    CONFIG_RIVETTX_BUZZER_GPIO};
   for (std::size_t index = 0; index < pins.size(); ++index) {
     const int pin = pins[index];
@@ -96,6 +123,35 @@ bool validate_pin_configuration()
         return false;
       }
     }
+  }
+
+  const std::array<int, 4> optional_axes{
+      CONFIG_RIVETTX_AXIS4_GPIO, CONFIG_RIVETTX_AXIS5_GPIO,
+      CONFIG_RIVETTX_AXIS6_GPIO, CONFIG_RIVETTX_AXIS7_GPIO};
+  bool saw_disabled_axis = false;
+  for (const int pin : optional_axes) {
+    if (pin < 0) {
+      saw_disabled_axis = true;
+    } else if (saw_disabled_axis) {
+      ESP_LOGE(kTag, "optional ADC axes must be enabled contiguously");
+      return false;
+    }
+  }
+  const std::array<std::pair<int, int>, 3> three_position_pairs{{
+      {CONFIG_RIVETTX_AUX2_GPIO, CONFIG_RIVETTX_AUX2_LOW_GPIO},
+      {CONFIG_RIVETTX_AUX3_GPIO, CONFIG_RIVETTX_AUX3_LOW_GPIO},
+      {CONFIG_RIVETTX_AUX4_GPIO, CONFIG_RIVETTX_AUX4_LOW_GPIO},
+  }};
+  for (const auto& pair : three_position_pairs) {
+    if (pair.second >= 0 && pair.first < 0) {
+      ESP_LOGE(kTag, "three-position LOW contact needs its AUX GPIO");
+      return false;
+    }
+  }
+  if ((CONFIG_RIVETTX_ENCODER_A_GPIO < 0) !=
+      (CONFIG_RIVETTX_ENCODER_B_GPIO < 0)) {
+    ESP_LOGE(kTag, "encoder A and B must both be configured or disabled");
+    return false;
   }
 
   const std::array<int, 4> output_pins{
@@ -151,14 +207,21 @@ bool EspBoard::initialize()
     return false;
   }
 
-  const std::array<int, 4> pins{
+  const std::array<int, kMaxAxes> pins{
       CONFIG_RIVETTX_AXIS0_GPIO, CONFIG_RIVETTX_AXIS1_GPIO,
-      CONFIG_RIVETTX_AXIS2_GPIO, CONFIG_RIVETTX_AXIS3_GPIO};
+      CONFIG_RIVETTX_AXIS2_GPIO, CONFIG_RIVETTX_AXIS3_GPIO,
+      CONFIG_RIVETTX_AXIS4_GPIO, CONFIG_RIVETTX_AXIS5_GPIO,
+      CONFIG_RIVETTX_AXIS6_GPIO, CONFIG_RIVETTX_AXIS7_GPIO};
+  configured_axis_count_ = 4;
   for (std::size_t i = 0; i < pins.size(); ++i) {
+    if (pins[i] < 0 && i >= 4) {
+      continue;
+    }
     if (!configure_adc_gpio(pins[i], axes_[i])) {
       ESP_LOGE(kTag, "ADC axis %u is invalid", static_cast<unsigned>(i));
       return false;
     }
+    configured_axis_count_ = static_cast<uint8_t>(i + 1);
   }
   if (CONFIG_RIVETTX_BATTERY_GPIO >= 0) {
     (void)configure_adc_gpio(CONFIG_RIVETTX_BATTERY_GPIO, battery_);
@@ -180,7 +243,21 @@ bool EspBoard::initialize()
          configure_optional_switch(CONFIG_RIVETTX_AUX1_GPIO) &&
          configure_optional_switch(CONFIG_RIVETTX_AUX2_GPIO) &&
          configure_optional_switch(CONFIG_RIVETTX_AUX3_GPIO) &&
-         configure_optional_switch(CONFIG_RIVETTX_AUX4_GPIO);
+         configure_optional_switch(CONFIG_RIVETTX_AUX4_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_AUX2_LOW_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_AUX3_LOW_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_AUX4_LOW_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_ENCODER_A_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_ENCODER_B_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_ENCODER_PRESS_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_TRIM_AIL_NEG_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_TRIM_AIL_POS_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_TRIM_ELE_NEG_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_TRIM_ELE_POS_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_TRIM_THR_NEG_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_TRIM_THR_POS_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_TRIM_RUD_NEG_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_TRIM_RUD_POS_GPIO);
 }
 
 RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
@@ -189,6 +266,9 @@ RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
   inputs.valid = true;
   inputs.sampled_at_us = sample_time_us;
   for (std::size_t i = 0; i < axes_.size(); ++i) {
+    if (!axes_[i].configured) {
+      continue;
+    }
     int value = 0;
     if (!read_adc(axes_[i], value)) {
       inputs.valid = false;
@@ -201,10 +281,49 @@ RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
   inputs.switches[2] = active_low_input(CONFIG_RIVETTX_BUTTON_ENTER);
   inputs.switches[3] = active_low_input(CONFIG_RIVETTX_BUTTON_BACK);
   inputs.switches[4] = active_low_input(CONFIG_RIVETTX_AUX1_GPIO);
-  inputs.switches[5] = active_low_input(CONFIG_RIVETTX_AUX2_GPIO);
-  inputs.switches[6] = active_low_input(CONFIG_RIVETTX_AUX3_GPIO);
-  inputs.switches[7] = active_low_input(CONFIG_RIVETTX_AUX4_GPIO);
+  inputs.switch_positions_valid = true;
+  for (std::size_t i = 0; i < kNavigationButtonCount; ++i) {
+    inputs.switch_positions[i] = inputs.switches[i] ? 1 : -1;
+  }
+  inputs.switch_positions[4] = inputs.switches[4] ? 1 : -1;
+  inputs.switch_positions[5] = switch_position(
+      CONFIG_RIVETTX_AUX2_GPIO, CONFIG_RIVETTX_AUX2_LOW_GPIO, inputs.valid);
+  inputs.switch_positions[6] = switch_position(
+      CONFIG_RIVETTX_AUX3_GPIO, CONFIG_RIVETTX_AUX3_LOW_GPIO, inputs.valid);
+  inputs.switch_positions[7] = switch_position(
+      CONFIG_RIVETTX_AUX4_GPIO, CONFIG_RIVETTX_AUX4_LOW_GPIO, inputs.valid);
+  for (std::size_t i = 5; i < 8; ++i) {
+    inputs.switches[i] = inputs.switch_positions[i] > 0;
+  }
+
+  const std::array<int, kTrimSwitchCount> trim_pins{
+      CONFIG_RIVETTX_TRIM_AIL_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_AIL_POS_GPIO,
+      CONFIG_RIVETTX_TRIM_ELE_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_ELE_POS_GPIO,
+      CONFIG_RIVETTX_TRIM_THR_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_THR_POS_GPIO,
+      CONFIG_RIVETTX_TRIM_RUD_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_RUD_POS_GPIO};
+  for (std::size_t i = 0; i < trim_pins.size(); ++i) {
+    const std::size_t index = kFirstTrimSwitch + i;
+    inputs.switches[index] = active_low_input(trim_pins[i]);
+    inputs.switch_positions[index] = inputs.switches[index] ? 1 : -1;
+  }
+
+  if (CONFIG_RIVETTX_ENCODER_A_GPIO >= 0) {
+    inputs.encoder_delta = encoder_decoder_.update(
+        active_low_input(CONFIG_RIVETTX_ENCODER_A_GPIO),
+        active_low_input(CONFIG_RIVETTX_ENCODER_B_GPIO));
+  }
+  inputs.encoder_pressed =
+      active_low_input(CONFIG_RIVETTX_ENCODER_PRESS_GPIO);
   return inputs;
+}
+
+uint8_t EspBoard::configured_axis_count() const
+{
+  return configured_axis_count_;
 }
 
 uint16_t EspBoard::sample_battery_mv()

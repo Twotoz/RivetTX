@@ -123,6 +123,7 @@ struct Application {
   ElrsFinder finder{audio};
   InputProcessor input_processor;
   MixerEngine mixer;
+  TrimController trim_controls;
   SafetyManager safety{safety_config()};
   BatteryMonitor battery{battery_config()};
   PosixFileStore files{"/models"};
@@ -153,6 +154,8 @@ struct Application {
   SafetyState latest_safety_state = SafetyState::Booting;
   portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
   uint8_t latest_buttons = 0;
+  int8_t latest_encoder_delta = 0;
+  bool latest_encoder_pressed = false;
   std::atomic<bool> finder_enabled{false};
   TimeUs safety_chord_started_us = 0;
   bool safety_chord_fired = false;
@@ -214,6 +217,18 @@ void control_task(void*)
     } else {
       app.safety_chord_started_us = 0;
       app.safety_chord_fired = false;
+    }
+
+    const TrimUpdate trim_update = app.trim_controls.update(
+        app.model, app.mixer.active_flight_mode(), controls, started);
+    if (trim_update.changed()) {
+      {
+        const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
+        app.runtime_model_to_persist = app.model;
+      }
+      app.persist_runtime_model.store(true, std::memory_order_release);
+      app.last_user_activity_ms.store(
+          static_cast<uint32_t>(started / 1000), std::memory_order_release);
     }
 
     const ChannelFrame proposed =
@@ -343,6 +358,11 @@ void control_task(void*)
                              (raw.switches[1] ? 2U : 0U) |
                              (raw.switches[2] ? 4U : 0U) |
                              (raw.switches[3] ? 8U : 0U));
+    app.latest_encoder_delta = static_cast<int8_t>(clamp<int16_t>(
+        -16,
+        static_cast<int16_t>(app.latest_encoder_delta) + raw.encoder_delta,
+        16));
+    app.latest_encoder_pressed = raw.encoder_pressed;
     taskEXIT_CRITICAL(&app.frame_lock);
 
     app.watchdog.kick();
@@ -424,7 +444,7 @@ UiScreen current_screen(uint8_t index, const ChannelFrame& frame,
 bool run_startup_calibration()
 {
   CalibrationWizard wizard;
-  wizard.begin(4);
+  wizard.begin(app.board.configured_axis_count());
   bool previous_enter = false;
   bool previous_back = false;
   bool buttons_released = false;
@@ -473,6 +493,7 @@ void ui_task(void*)
 {
   uint8_t screen = 0;
   uint8_t previous_buttons = 0;
+  bool previous_encoder_pressed = false;
   bool model_dirty = false;
   TimeUs dirty_since_us = 0;
   while (true) {
@@ -482,6 +503,8 @@ void ui_task(void*)
     ElrsManagerStatus elrs{};
     ElrsFinderStatus finder{};
     uint8_t buttons = 0;
+    int8_t encoder_delta = 0;
+    bool encoder_pressed = false;
     taskENTER_CRITICAL(&app.frame_lock);
     frame = app.latest_frame;
     timers = app.latest_timers;
@@ -489,12 +512,18 @@ void ui_task(void*)
     elrs = app.latest_elrs;
     finder = app.latest_finder;
     buttons = app.latest_buttons;
+    encoder_delta = app.latest_encoder_delta;
+    app.latest_encoder_delta = 0;
+    encoder_pressed = app.latest_encoder_pressed;
     taskEXIT_CRITICAL(&app.frame_lock);
 
     const uint8_t pressed =
         static_cast<uint8_t>(buttons & ~previous_buttons);
     previous_buttons = buttons;
-    if (pressed != 0) {
+    const bool encoder_press =
+        encoder_pressed && !previous_encoder_pressed;
+    previous_encoder_pressed = encoder_pressed;
+    if (pressed != 0 || encoder_delta != 0 || encoder_press) {
       app.last_user_activity_ms.store(
           static_cast<uint32_t>(now_us() / 1000),
           std::memory_order_release);
@@ -523,6 +552,12 @@ void ui_task(void*)
           screen = static_cast<uint8_t>((screen + 1) % kScreenCount);
         }
       }
+    }
+    if (encoder_delta != 0) {
+      (void)app.ui.handle({UiEventType::Rotate, encoder_delta});
+    }
+    if (encoder_press) {
+      (void)app.ui.handle({UiEventType::Enter});
     }
     app.finder_enabled.store(screen == 12, std::memory_order_release);
 

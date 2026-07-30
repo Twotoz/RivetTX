@@ -5,8 +5,8 @@ hardware evidence.
 
 | Area | Implemented | Verification |
 |---|---|---|
-| inputs | ADC sampling, calibration, deadband, filtering, inversion; four optional active-low maintained AUX switches | native unit tests; ESP ADC/GPIO needs board test |
-| mixer | inputs, expo, curves, 64 mixes, add/multiply/replace, delay, slow, trims, GVars, five flight modes | native unit tests |
+| inputs | eight-axis ADC sampling, calibration, deadband, filtering, inversion; two-/three-position AUX switches; eight live trim contacts; quadrature encoder with press | native unit tests cover processing, debounce, trim repeat/center, and encoder decoding; ESP ADC/GPIO needs board test |
+| mixer | inputs, expo, curves, 64 mixes, add/multiply/replace, delay, slow, per-flight-mode live trims, GVars, five flight modes | native unit tests |
 | outputs | 16 channels, reverse, subtrim, min/max, per-channel failsafe | native unit tests |
 | logic | 24 logical switches, edge/sticky/timer functions, three timers, 24 special-function slots | native unit tests |
 | safety | locked boot, throttle/switch checks, stale input, mixer deadline, low battery, watchdog recovery, failsafe gating | native tests plus stale/deadline system scenarios; HIL required |
