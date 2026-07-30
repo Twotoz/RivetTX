@@ -177,7 +177,7 @@ The reference profiles are intentionally focused:
 | Component | Role |
 |---|---|
 | ESP32-C3 or ESP32-S3, 4 MiB flash | control, UI, storage, and platform services |
-| ExpressLRS **TX module** | RF link over full-duplex 3.3 V CRSF UART |
+| ExpressLRS **TX module** or supported RX flashed as TX | RF link over full-duplex 3.3 V CRSF UART |
 | four required analog axes | two conventional two-axis gimbals |
 | up to four extra analog axes | scroll wheels, pots, or sliders on CH9-CH12 |
 | four maintained switches | two-position ARM/AUX1; AUX2-AUX4 may be two- or three-position |
@@ -187,8 +187,11 @@ The reference profiles are intentionally focused:
 | optional pressable rotary encoder | menu navigation and field editing |
 | suitable regulator | must tolerate the chosen TX module's peak current |
 
-An ExpressLRS receiver is not a substitute for the TX module. Do not power a
-high-power external module from a development board's 3.3 V pin. See the
+An ExpressLRS receiver running normal RX firmware is not a transmitter. A
+supported ESP8285/ESP32 receiver may be used after it has been flashed with
+ExpressLRS RX-as-TX firmware and its board-specific hardware configuration has
+been restored. Do not power a 100 mW or other amplified module from a
+development board's 3.3 V pin. See the
 [hardware and bring-up guide](docs/hardware.md) before wiring anything.
 
 ## Controls
