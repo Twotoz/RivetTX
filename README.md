@@ -84,10 +84,14 @@ failsafe frame before it reaches CRSF.
 
 - 8 axes, 16 virtual inputs, 16 output channels, and 64 mix lines
 - expo, 9-point curves, add/multiply/replace mixes, delay, and slew
-- trims, GVars, five flight modes, logical switches, and three timers
+- live trim buttons with repeat/center behavior, GVars, five flight modes,
+  logical switches, and three timers
 - per-channel reverse, subtrim, limits, and failsafe values
 - throttle/switch startup checks, stale-input detection, and deadline lockout
-- dedicated CH5-CH8/AUX switch inputs with safe CH5 arming behavior
+- dedicated CH5-CH8/AUX inputs with safe two-position CH5 arming and optional
+  three-position CH6-CH8 switches
+- four optional scroll-wheel/pot/slider axes on CH9-CH12 and an optional
+  pressable menu encoder
 - discovered ExpressLRS packet-rate, model-match, power, dynamic-power,
   switch-mode, telemetry-ratio, bind, and Wi-Fi update controls
 - CRC-checked CRSF telemetry for link, battery, and GPS data, including
@@ -98,7 +102,7 @@ failsafe frame before it reaches CRSF.
   TX-battery low/critical, ELRS module loss, safety state, and telemetry alarms
 - responsive model, input, mix, output, timer, telemetry, and system screens
 - calibration workflow, telemetry alarms, CSV logs, and crash diagnostics
-- virtual ELRS hardware scenarios, more than 200 host-side checks, sanitizer
+- virtual ELRS hardware scenarios, more than 300 host-side checks, sanitizer
   coverage, and complete ESP32-C3 and ESP32-S3 target builds
 
 For exact limits and validation status, see the
@@ -174,10 +178,13 @@ The reference profiles are intentionally focused:
 |---|---|
 | ESP32-C3 or ESP32-S3, 4 MiB flash | control, UI, storage, and platform services |
 | ExpressLRS **TX module** | RF link over full-duplex 3.3 V CRSF UART |
-| four analog axes | two conventional two-axis gimbals |
-| four maintained switches | ARM/AUX1, PREARM/AUX2, mode/AUX3, and AUX4 |
+| four required analog axes | two conventional two-axis gimbals |
+| up to four extra analog axes | scroll wheels, pots, or sliders on CH9-CH12 |
+| four maintained switches | two-position ARM/AUX1; AUX2-AUX4 may be two- or three-position |
+| eight optional trim contacts | negative/positive trim for AIL, ELE, THR, and RUD |
 | SSD1306 128×64 OLED | first physical display backend |
 | four buttons | UP, DOWN, ENTER, and BACK/recovery |
+| optional pressable rotary encoder | menu navigation and field editing |
 | suitable regulator | must tolerate the chosen TX module's peak current |
 
 An ExpressLRS receiver is not a substitute for the TX module. Do not power a

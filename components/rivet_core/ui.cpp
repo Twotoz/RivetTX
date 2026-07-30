@@ -388,6 +388,13 @@ bool UiController::handle(const UiEvent& event)
         field.value_text = number_string(field.value);
         pending_change_ = {screen_.id, field.id, field.value};
         change_pending_ = true;
+      } else if (event.type == UiEventType::Rotate &&
+                 event.value != 0) {
+        const int direction = event.value > 0 ? 1 : -1;
+        const int steps = std::min<int>(16, std::abs(event.value));
+        for (int step = 0; step < steps; ++step) {
+          find_visible(direction);
+        }
       }
       break;
     case UiEventType::TouchPress: {

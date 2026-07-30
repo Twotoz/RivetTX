@@ -8,31 +8,36 @@ RivetTX -- 400 kbaud CRSF --> ELRS TX module )) RF ((
 ELRS receiver -- CRSF UART --> Betaflight flight controller
 ```
 
-The default model uses the Betaflight-friendly `AETR1234` channel order and
-four dedicated, active-low switch inputs:
+The default model uses the Betaflight-friendly `AETR1234` channel order, four
+dedicated active-low AUX inputs, and four optional analog controls:
 
-| RivetTX input | CRSF channel | Betaflight use | Low / high |
+| RivetTX input | CRSF channel | Typical use | Values |
 |---|---:|---|---|
 | axis 0 | CH1 | Aileron | approximately 1000 / 2000 |
 | axis 1 | CH2 | Elevator | approximately 1000 / 2000 |
 | axis 2 | CH3 | Throttle | approximately 1000 / 2000 |
 | axis 3 | CH4 | Rudder | approximately 1000 / 2000 |
 | AUX1 GPIO | CH5 / AUX1 | ARM | disarmed / armed |
-| AUX2 GPIO | CH6 / AUX2 | PREARM (optional) | inactive / active |
-| AUX3 GPIO | CH7 / AUX3 | flight mode | inactive / active |
-| AUX4 GPIO | CH8 / AUX4 | beeper or another mode | inactive / active |
+| AUX2 GPIO pair | CH6 / AUX2 | PREARM (optional) | low / center / high |
+| AUX3 GPIO pair | CH7 / AUX3 | flight mode | low / center / high |
+| AUX4 GPIO pair | CH8 / AUX4 | beeper or another mode | low / center / high |
+| axis 4 | CH9 / AUX5 | left scroll wheel | approximately 1000-2000 |
+| axis 5 | CH10 / AUX6 | right scroll wheel | approximately 1000-2000 |
+| axis 6 | CH11 / AUX7 | pot or slider | approximately 1000-2000 |
+| axis 7 | CH12 / AUX8 | pot or slider | approximately 1000-2000 |
 
-Each switch GPIO uses the ESP32 internal pull-up. Connect a maintained
-two-position switch between the configured GPIO and ground. `-1` disables an
-input and keeps its channel low. Do not use the UP, DOWN, ENTER, or BACK
-buttons as flight switches: they are momentary controls shared with the UI and
-safety chord.
+Each switch GPIO uses the ESP32 internal pull-up. AUX1 is always two-position.
+AUX2-AUX4 remain backward-compatible two-position inputs when the matching
+LOW contact GPIO is disabled; configure both contacts for
+1000/1500/2000-style three-position output. `-1` disables an input. Do not use
+UP, DOWN, ENTER, BACK, the encoder, or trim buttons as flight switches: they
+are local UI/trim controls.
 
 The default model requires AUX1 to be low before RivetTX outputs can be
 enabled. Once enabled, AUX1 may go high normally. Any RivetTX-side safety
 lockout sends throttle and CH5 low. Legacy, unmodified stored models named
-`Default` are migrated to this CH5-CH8 mapping; custom model mappings are
-preserved.
+`Default` are migrated to the CH5-CH12 mapping; custom model mappings are
+preserved. Unconfigured extra analog axes stay centered.
 
 ## ExpressLRS TX module
 
@@ -62,7 +67,9 @@ For a UART receiver:
 6. Select `AETR1234`, or verify and correct the channel map in the Receiver
    preview.
 7. Assign ARM to AUX1 with low near 1000 and high near 2000. Assign PREARM,
-   modes, beeper, and other functions to AUX2-AUX4 as needed.
+   modes, beeper, and other functions to AUX2-AUX8 as needed. For a
+   three-position switch, make sure all three ranges around 1000, 1500, and
+   2000 select only the intended modes.
 8. Leave RSSI Channel and RSSI ADC disabled; use CRSF RSSI dBm and Link Quality
    telemetry.
 
@@ -80,14 +87,17 @@ Before making the craft capable of motion:
 
 1. Confirm CH1-CH4 move in the correct directions and show approximately
    1000/1500/2000 in Betaflight.
-2. Confirm CH5 is low after boot, during a RivetTX lockout, and whenever the
+2. Confirm every configured extra analog control moves only its CH9-CH12
+   channel and reaches the calibrated endpoints.
+3. Confirm CH5 is low after boot, during a RivetTX lockout, and whenever the
    dedicated ARM switch is low.
-3. Confirm the craft arms only with the intended ARM/PREARM sequence.
-4. Verify Model Match both rejects a wrong RivetTX model ID and accepts the
+4. Confirm each three-position AUX switch produces stable low/center/high
+   values and the craft arms only with the intended ARM/PREARM sequence.
+5. Verify Model Match both rejects a wrong RivetTX model ID and accepts the
    correct one.
-5. Test Betaflight Stage 1 and Stage 2 failsafe by interrupting the real RF
+6. Test Betaflight Stage 1 and Stage 2 failsafe by interrupting the real RF
    link, not only by locking RivetTX.
-6. Verify reconnect behavior, telemetry, brownout margin, UART integrity, and
+7. Verify reconnect behavior, telemetry, brownout margin, UART integrity, and
    a long hardware-in-the-loop soak with propellers removed.
 
 Primary references:

@@ -60,6 +60,30 @@ config RIVETTX_AXIS3_GPIO
     default 3 if IDF_TARGET_ESP32C3
     default 4 if IDF_TARGET_ESP32S3
 
+config RIVETTX_AXIS4_GPIO
+    int "Axis 4 / left scroll wheel ADC GPIO (-1 disables)"
+    range -1 4 if IDF_TARGET_ESP32C3
+    range -1 10 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_AXIS5_GPIO
+    int "Axis 5 / right scroll wheel ADC GPIO (-1 disables)"
+    range -1 4 if IDF_TARGET_ESP32C3
+    range -1 10 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_AXIS6_GPIO
+    int "Axis 6 / pot or slider ADC GPIO (-1 disables)"
+    range -1 4 if IDF_TARGET_ESP32C3
+    range -1 10 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_AXIS7_GPIO
+    int "Axis 7 / pot or slider ADC GPIO (-1 disables)"
+    range -1 4 if IDF_TARGET_ESP32C3
+    range -1 10 if IDF_TARGET_ESP32S3
+    default -1
+
 config RIVETTX_BUTTON_UP
     int "Up button GPIO"
     range 0 21 if IDF_TARGET_ESP32C3
@@ -122,6 +146,93 @@ config RIVETTX_AUX4_GPIO
     default -1
     help
         Active-low maintained switch sent on CH8/AUX4 by the default model.
+
+config RIVETTX_AUX2_LOW_GPIO
+    int "AUX2 three-position LOW contact GPIO (-1 uses two-position)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    help
+        When configured together with AUX2 GPIO, LOW active gives -100%,
+        neither contact gives center, and AUX2 active gives +100%.
+
+config RIVETTX_AUX3_LOW_GPIO
+    int "AUX3 three-position LOW contact GPIO (-1 uses two-position)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_AUX4_LOW_GPIO
+    int "AUX4 three-position LOW contact GPIO (-1 uses two-position)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_ENCODER_A_GPIO
+    int "Menu rotary encoder A GPIO (-1 disables encoder)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_ENCODER_B_GPIO
+    int "Menu rotary encoder B GPIO (-1 disables encoder)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_ENCODER_PRESS_GPIO
+    int "Menu rotary encoder press GPIO (-1 disables press)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_TRIM_AIL_NEG_GPIO
+    int "Aileron trim left GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_TRIM_AIL_POS_GPIO
+    int "Aileron trim right GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_TRIM_ELE_NEG_GPIO
+    int "Elevator trim down GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_TRIM_ELE_POS_GPIO
+    int "Elevator trim up GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_TRIM_THR_NEG_GPIO
+    int "Throttle trim down GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_TRIM_THR_POS_GPIO
+    int "Throttle trim up GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_TRIM_RUD_NEG_GPIO
+    int "Rudder trim left GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+
+config RIVETTX_TRIM_RUD_POS_GPIO
+    int "Rudder trim right GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
 
 config RIVETTX_BATTERY_GPIO
     int "Battery ADC GPIO (-1 disables battery sensing)"

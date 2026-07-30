@@ -13,6 +13,9 @@ constexpr std::size_t kMaxSwitches = 16;
 constexpr std::size_t kNavigationButtonCount = 4;
 constexpr std::size_t kFirstAuxSwitch = kNavigationButtonCount;
 constexpr std::size_t kAuxSwitchCount = 4;
+constexpr std::size_t kFirstTrimSwitch = 8;
+constexpr std::size_t kTrimAxisCount = 4;
+constexpr std::size_t kTrimSwitchCount = kTrimAxisCount * 2;
 constexpr std::size_t kMaxLogicalSwitches = 24;
 constexpr std::size_t kMaxMixes = 64;
 constexpr std::size_t kMaxCurves = 16;
@@ -42,8 +45,13 @@ struct AxisCalibration {
 };
 
 struct RawInputs {
-  std::array<int16_t, kMaxAxes> axes{};
+  std::array<int16_t, kMaxAxes> axes{
+      2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048};
   std::array<bool, kMaxSwitches> switches{};
+  std::array<int8_t, kMaxSwitches> switch_positions{};
+  int8_t encoder_delta = 0;
+  bool encoder_pressed = false;
+  bool switch_positions_valid = false;
   TimeUs sampled_at_us = 0;
   bool valid = false;
 };
@@ -51,6 +59,7 @@ struct RawInputs {
 struct ControlInputs {
   std::array<int16_t, kMaxAxes> axes{};
   std::array<bool, kMaxSwitches> switches{};
+  std::array<int8_t, kMaxSwitches> switch_positions{};
   TimeUs sampled_at_us = 0;
   bool valid = false;
 };
@@ -196,7 +205,7 @@ struct SpecialFunction {
 };
 
 struct Model {
-  static constexpr uint16_t kSchemaVersion = 4;
+  static constexpr uint16_t kSchemaVersion = 5;
 
   std::array<char, 24> name{};
   uint8_t model_id = 0;
@@ -260,10 +269,10 @@ struct DisplayCapabilities {
 };
 
 struct InputCapabilities {
-  uint8_t axes = 4;
+  uint8_t axes = 8;
   uint8_t switches = 4;
-  uint8_t buttons = 6;
-  bool encoder = false;
+  uint8_t buttons = 12;
+  bool encoder = true;
 };
 
 struct ModuleCapabilities {

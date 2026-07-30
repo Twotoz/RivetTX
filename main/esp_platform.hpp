@@ -29,6 +29,7 @@ class EspBoard {
   RawInputs sample_inputs(TimeUs now_us);
   uint16_t sample_battery_mv();
   bool recovery_button_pressed() const;
+  uint8_t configured_axis_count() const;
 
  private:
   struct AdcInput {
@@ -42,8 +43,10 @@ class EspBoard {
 
   adc_oneshot_unit_handle_t adc_ = nullptr;
   adc_cali_handle_t adc_calibration_ = nullptr;
-  std::array<AdcInput, 4> axes_{};
+  std::array<AdcInput, kMaxAxes> axes_{};
   AdcInput battery_{};
+  uint8_t configured_axis_count_ = 4;
+  RotaryEncoderDecoder encoder_decoder_{};
 };
 
 class EspCrsfTransport final : public ICrsfTransport {
