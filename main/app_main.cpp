@@ -282,10 +282,11 @@ void queue_crash_snapshot(uint32_t reason)
 void control_task(void*)
 {
   const esp_err_t watchdog_registration = esp_task_wdt_add(nullptr);
-  if (watchdog_registration != ESP_OK) {
+  const bool watchdog_registered = watchdog_registration == ESP_OK;
+  if (!watchdog_registered) {
     ESP_LOGE(kTag, "control watchdog registration failed: %s",
              esp_err_to_name(watchdog_registration));
-    app.safety.request_lock();
+    app.safety.report_watchdog_fault();
   }
   TickType_t last_wake = xTaskGetTickCount();
   TimeUs scheduled_release_us = now_us();
@@ -448,7 +449,7 @@ void control_task(void*)
     }
     app.module.poll(now_us());
     app.elrs.tick(now_us());
-    if (raw.valid &&
+    if (watchdog_registered && raw.valid &&
         mixer_duration <= safety_config().maximum_mixer_duration_us) {
       app.healthy_control_cycles.fetch_add(1, std::memory_order_relaxed);
     }
@@ -512,7 +513,9 @@ void control_task(void*)
     app.latest_encoder_pressed = raw.encoder_pressed;
     taskEXIT_CRITICAL(&app.frame_lock);
 
-    app.watchdog.kick();
+    if (watchdog_registered) {
+      app.watchdog.kick();
+    }
     scheduled_release_us += kControlPeriodUs;
     vTaskDelayUntil(&last_wake, period);
   }
@@ -606,6 +609,9 @@ UiHomeStatus current_home_status(
       break;
     case SafetyReason::WatchdogRecovery:
       add_warning(UiWarningCode::WatchdogRecovery);
+      break;
+    case SafetyReason::WatchdogUnavailable:
+      add_warning(UiWarningCode::WatchdogUnavailable);
       break;
     case SafetyReason::BatteryCritical:
       add_warning(UiWarningCode::BatteryCritical);

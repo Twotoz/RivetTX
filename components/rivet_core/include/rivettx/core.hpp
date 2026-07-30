@@ -153,6 +153,7 @@ enum class SafetyReason : uint8_t {
   StorageInvalid,
   CalibrationRequired,
   WatchdogRecovery,
+  WatchdogUnavailable,
   ManualLock,
 };
 
@@ -182,6 +183,7 @@ class SafetyManager {
   void request_lock();
   void report_battery(uint16_t millivolts);
   void report_battery_fault();
+  void report_watchdog_fault();
   void report_mixer_duration(uint32_t duration_us);
   ChannelFrame gate(const Model& model, const ControlInputs& inputs,
                     const ChannelFrame& proposed, TimeUs now_us);
@@ -203,6 +205,7 @@ class SafetyManager {
   bool enable_requested_ = false;
   bool storage_valid_ = false;
   bool calibration_valid_ = false;
+  bool watchdog_available_ = true;
   bool maintenance_active_ = false;
   mutable std::mutex mutex_;
 };

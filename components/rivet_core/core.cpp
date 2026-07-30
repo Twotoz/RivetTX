@@ -853,6 +853,16 @@ void SafetyManager::report_battery_fault()
   status_.reason = SafetyReason::BatterySensor;
 }
 
+void SafetyManager::report_watchdog_fault()
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  watchdog_available_ = false;
+  enable_requested_ = false;
+  healthy_cycles_ = 0;
+  status_.state = SafetyState::Fault;
+  status_.reason = SafetyReason::WatchdogUnavailable;
+}
+
 void SafetyManager::report_mixer_duration(uint32_t duration_us)
 {
   const std::lock_guard<std::mutex> lock(mutex_);
@@ -912,6 +922,13 @@ ChannelFrame SafetyManager::gate(const Model& model,
   if (!calibration_valid_) {
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::CalibrationRequired;
+    return safe_frame(model, now_us, proposed.sequence);
+  }
+  if (!watchdog_available_) {
+    enable_requested_ = false;
+    healthy_cycles_ = 0;
+    status_.state = SafetyState::Fault;
+    status_.reason = SafetyReason::WatchdogUnavailable;
     return safe_frame(model, now_us, proposed.sequence);
   }
   if (mixer_deadline_pending_) {

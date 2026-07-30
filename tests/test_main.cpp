@@ -596,6 +596,22 @@ void test_safety()
   CHECK(calibration_locked.safe);
   CHECK(uncalibrated.status().reason ==
         SafetyReason::CalibrationRequired);
+
+  SafetyManager missing_watchdog;
+  missing_watchdog.boot_complete(true, false, true);
+  missing_watchdog.report_watchdog_fault();
+  missing_watchdog.request_enable();
+  for (uint8_t cycle = 0; cycle < 25; ++cycle) {
+    calibrated_controls.sampled_at_us =
+        static_cast<TimeUs>(cycle + 1) * 1000;
+    const auto watchdog_locked = missing_watchdog.gate(
+        model, calibrated_controls, proposed,
+        calibrated_controls.sampled_at_us);
+    CHECK(watchdog_locked.safe);
+  }
+  CHECK(missing_watchdog.status().state == SafetyState::Fault);
+  CHECK(missing_watchdog.status().reason ==
+        SafetyReason::WatchdogUnavailable);
 }
 
 void test_crsf()
@@ -1216,6 +1232,9 @@ void test_ui()
   home.warnings[0] = UiWarningCode::SwitchPosition;
   CHECK(make_warnings_screen(home).fields[0].value_text ==
         "SET SWITCHES TO SAFE");
+  home.warnings[0] = UiWarningCode::WatchdogUnavailable;
+  CHECK(make_warnings_screen(home).fields[0].value_text ==
+        "RESTART RADIO");
 
   home.warning_count = 0;
   ui.update_home(home);

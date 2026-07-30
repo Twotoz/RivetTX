@@ -105,6 +105,7 @@ enum class UiWarningCode : uint8_t {
   SwitchPosition,
   MixerDeadline,
   WatchdogRecovery,
+  WatchdogUnavailable,
   BatteryCritical,
   BatterySensor,
   BatteryLow,

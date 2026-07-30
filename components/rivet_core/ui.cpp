@@ -101,6 +101,8 @@ const char* warning_text(UiWarningCode warning)
       return "CONTROL DEADLINE";
     case UiWarningCode::WatchdogRecovery:
       return "WATCHDOG RESET";
+    case UiWarningCode::WatchdogUnavailable:
+      return "WATCHDOG ERROR";
     case UiWarningCode::BatteryCritical:
       return "BATTERY CRITICAL";
     case UiWarningCode::BatterySensor:
@@ -148,6 +150,8 @@ const char* warning_action(UiWarningCode warning)
       return "RESTART AND CHECK LOG";
     case UiWarningCode::WatchdogRecovery:
       return "CHECK SYSTEM LOG";
+    case UiWarningCode::WatchdogUnavailable:
+      return "RESTART RADIO";
     case UiWarningCode::BatteryCritical:
       return "CHARGE OR REPLACE BAT";
     case UiWarningCode::BatterySensor:
@@ -188,6 +192,7 @@ bool warning_blocks_startup(UiWarningCode warning)
     case UiWarningCode::SwitchPosition:
     case UiWarningCode::MixerDeadline:
     case UiWarningCode::WatchdogRecovery:
+    case UiWarningCode::WatchdogUnavailable:
     case UiWarningCode::BatteryCritical:
     case UiWarningCode::BatterySensor:
     case UiWarningCode::ModuleOffline:
