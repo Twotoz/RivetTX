@@ -824,6 +824,13 @@ UiScreen make_elrs_screen(const ElrsManagerStatus& status,
              std::to_string(patch),
          UiFieldKind::Label, 0, 0, 0, false, true});
   }
+  if (status.packet_rate.available) {
+    screen.fields.push_back(
+        {"packet_rate", "PACKET RATE",
+         selection_text(status.packet_rate), UiFieldKind::Choice,
+         status.packet_rate.value, status.packet_rate.minimum,
+         status.packet_rate.maximum, ready, true});
+  }
   if (status.power.available) {
     screen.fields.push_back(
         {"power", "MAX POWER", selection_text(status.power),
@@ -850,6 +857,13 @@ UiScreen make_elrs_screen(const ElrsManagerStatus& status,
          selection_text(status.telemetry_ratio), UiFieldKind::Choice,
          status.telemetry_ratio.value, status.telemetry_ratio.minimum,
          status.telemetry_ratio.maximum, ready, true});
+  }
+  if (status.model_match.available) {
+    screen.fields.push_back(
+        {"model_match", "MODEL MATCH",
+         selection_text(status.model_match), UiFieldKind::Choice,
+         status.model_match.value, status.model_match.minimum,
+         status.model_match.maximum, ready, true});
   }
   if (!maintenance_allowed) {
     screen.fields.push_back(

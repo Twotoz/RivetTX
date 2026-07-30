@@ -12,7 +12,7 @@ namespace {
 
 constexpr uint32_t kCrsfBaud = 400000;
 constexpr std::size_t kMaximumQueuedBytes = 4096;
-constexpr uint8_t kVirtualFieldCount = 9;
+constexpr uint8_t kVirtualFieldCount = 11;
 constexpr uint8_t kFieldTelemetryRatio = 1;
 constexpr uint8_t kFieldSwitchMode = 2;
 constexpr uint8_t kFieldPowerFolder = 3;
@@ -22,6 +22,8 @@ constexpr uint8_t kFieldBind = 6;
 constexpr uint8_t kFieldWifiFolder = 7;
 constexpr uint8_t kFieldEnableWifi = 8;
 constexpr uint8_t kFieldVersion = 9;
+constexpr uint8_t kFieldPacketRate = 10;
+constexpr uint8_t kFieldModelMatch = 11;
 constexpr uint8_t kTypeTextSelection = 9;
 constexpr uint8_t kTypeFolder = 11;
 constexpr uint8_t kTypeInfo = 12;
@@ -226,6 +228,10 @@ void VirtualElrsModule::handle_radio_frame(const uint8_t* data,
       switch_mode_option_ = std::min<uint8_t>(value, 1);
     } else if (field_id == kFieldTelemetryRatio) {
       telemetry_ratio_option_ = std::min<uint8_t>(value, 4);
+    } else if (field_id == kFieldPacketRate) {
+      packet_rate_option_ = std::min<uint8_t>(value, 4);
+    } else if (field_id == kFieldModelMatch) {
+      model_match_option_ = std::min<uint8_t>(value, 1);
     } else if (field_id == kFieldBind && value == 1) {
       ++stats_.bind_commands_received;
       enqueue_parameter(field_id, 2);
@@ -423,6 +429,15 @@ void VirtualElrsModule::enqueue_parameter(uint8_t field_id,
     case kFieldVersion:
       data = info_data(0, "Virtual ELRS 4.0.1", "simulator");
       break;
+    case kFieldPacketRate:
+      data = selection_data(
+          0, "Packet Rate", "50Hz;100Hz;150Hz;250Hz;500Hz",
+          packet_rate_option_, 4, "");
+      break;
+    case kFieldModelMatch:
+      data = selection_data(
+          0, "Model Match", "Off;On", model_match_option_, 1, "");
+      break;
     default:
       return;
   }
@@ -468,6 +483,16 @@ uint8_t VirtualElrsModule::switch_mode_option() const
 uint8_t VirtualElrsModule::telemetry_ratio_option() const
 {
   return telemetry_ratio_option_;
+}
+
+uint8_t VirtualElrsModule::packet_rate_option() const
+{
+  return packet_rate_option_;
+}
+
+uint8_t VirtualElrsModule::model_match_option() const
+{
+  return model_match_option_;
 }
 
 bool VirtualElrsModule::wifi_update_mode() const

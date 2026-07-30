@@ -1,6 +1,7 @@
 #include "rivettx/elrs.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 
 namespace rivettx {
@@ -17,6 +18,7 @@ constexpr TimeUs kParameterTimeoutUs = 400000;
 constexpr TimeUs kOfflineRetryUs = 2000000;
 constexpr uint8_t kMaximumDevicePingRetries = 4;
 constexpr TimeUs kFinderFreshnessUs = 1000000;
+constexpr uint16_t kMaximumPacketRateAt400KBaud = 250;
 
 std::size_t bounded_string_length(const uint8_t* data, std::size_t size)
 {
@@ -36,6 +38,27 @@ void copy_text(char* destination, std::size_t capacity,
   const std::size_t count = std::min(capacity - 1, size);
   std::copy(source, source + count, destination);
   destination[count] = '\0';
+}
+
+uint16_t selection_rate_hz(const ElrsSelection& selection, uint8_t option)
+{
+  if (option >= selection.option_count) {
+    return 0;
+  }
+  const char* label = selection.options[option].data();
+  while (*label != '\0' &&
+         !std::isdigit(static_cast<unsigned char>(*label))) {
+    ++label;
+  }
+  uint32_t rate = 0;
+  while (std::isdigit(static_cast<unsigned char>(*label))) {
+    rate = rate * 10U + static_cast<uint32_t>(*label - '0');
+    if (rate > UINT16_MAX) {
+      return UINT16_MAX;
+    }
+    ++label;
+  }
+  return static_cast<uint16_t>(rate);
 }
 
 }  // namespace
@@ -73,10 +96,12 @@ void ElrsDeviceManager::reset_discovery(TimeUs now_us)
   current_chunk_ = 0;
   read_retries_ = 0;
   device_ping_retries_ = 0;
+  packet_rate_field_id_ = 0;
   power_field_id_ = 0;
   dynamic_power_field_id_ = 0;
   switch_mode_field_id_ = 0;
   telemetry_ratio_field_id_ = 0;
+  model_match_field_id_ = 0;
   bind_field_id_ = 0;
   wifi_field_id_ = 0;
   active_command_ = PendingAction::None;
@@ -201,7 +226,10 @@ void ElrsDeviceManager::parse_parameter(uint8_t field_id,
   const std::size_t value_size = size - 3 - name_size;
 
   if (type == kCrsfTextSelection) {
-    if (std::strcmp(name.data(), "Max Power") == 0) {
+    if (std::strcmp(name.data(), "Packet Rate") == 0) {
+      packet_rate_field_id_ = field_id;
+      store_selection(status_.packet_rate, value, value_size);
+    } else if (std::strcmp(name.data(), "Max Power") == 0) {
       power_field_id_ = field_id;
       store_selection(status_.power, value, value_size);
     } else if (std::strcmp(name.data(), "Dynamic") == 0) {
@@ -213,6 +241,9 @@ void ElrsDeviceManager::parse_parameter(uint8_t field_id,
     } else if (std::strcmp(name.data(), "Telem Ratio") == 0) {
       telemetry_ratio_field_id_ = field_id;
       store_selection(status_.telemetry_ratio, value, value_size);
+    } else if (std::strcmp(name.data(), "Model Match") == 0) {
+      model_match_field_id_ = field_id;
+      store_selection(status_.model_match, value, value_size);
     }
   } else if (type == kCrsfCommand) {
     if (std::strcmp(name.data(), "Bind") == 0) {
@@ -337,6 +368,15 @@ void ElrsDeviceManager::process_pending(TimeUs now_us)
   const uint8_t value = pending_value_.load(std::memory_order_acquire);
   uint8_t field_id = 0;
   switch (action) {
+    case PendingAction::SetPacketRate: {
+      const uint16_t rate = selection_rate_hz(status_.packet_rate, value);
+      if (rate == 0 || rate > kMaximumPacketRateAt400KBaud) {
+        set_message("400K UART: max 250Hz");
+        return;
+      }
+      field_id = packet_rate_field_id_;
+      break;
+    }
     case PendingAction::SetPower:
       field_id = power_field_id_;
       break;
@@ -348,6 +388,9 @@ void ElrsDeviceManager::process_pending(TimeUs now_us)
       break;
     case PendingAction::SetTelemetryRatio:
       field_id = telemetry_ratio_field_id_;
+      break;
+    case PendingAction::SetModelMatch:
+      field_id = model_match_field_id_;
       break;
     case PendingAction::Bind:
       field_id = bind_field_id_;
@@ -390,10 +433,12 @@ void ElrsDeviceManager::tick(TimeUs now_us)
       status_.state != ElrsManagerState::Discovering) {
     status_.state = ElrsManagerState::Unavailable;
     status_.fields_discovered = 0;
+    status_.packet_rate.available = false;
     status_.power.available = false;
     status_.dynamic_power.available = false;
     status_.switch_mode.available = false;
     status_.telemetry_ratio.available = false;
+    status_.model_match.available = false;
     status_.bind_available = false;
     status_.wifi_update_available = false;
     response_deadline_us_ = now_us;
@@ -444,6 +489,15 @@ void ElrsDeviceManager::tick(TimeUs now_us)
   process_pending(now_us);
 }
 
+bool ElrsDeviceManager::request_packet_rate(uint8_t option)
+{
+  pending_value_.store(option, std::memory_order_release);
+  pending_action_.store(
+      static_cast<uint8_t>(PendingAction::SetPacketRate),
+      std::memory_order_release);
+  return true;
+}
+
 bool ElrsDeviceManager::request_power(uint8_t option)
 {
   pending_value_.store(option, std::memory_order_release);
@@ -474,6 +528,15 @@ bool ElrsDeviceManager::request_telemetry_ratio(uint8_t option)
   pending_value_.store(option, std::memory_order_release);
   pending_action_.store(
       static_cast<uint8_t>(PendingAction::SetTelemetryRatio),
+      std::memory_order_release);
+  return true;
+}
+
+bool ElrsDeviceManager::request_model_match(uint8_t option)
+{
+  pending_value_.store(option, std::memory_order_release);
+  pending_action_.store(
+      static_cast<uint8_t>(PendingAction::SetModelMatch),
       std::memory_order_release);
   return true;
 }

@@ -60,6 +60,8 @@ class VirtualElrsModule final : public ICrsfTransport {
   uint8_t dynamic_power_option() const;
   uint8_t switch_mode_option() const;
   uint8_t telemetry_ratio_option() const;
+  uint8_t packet_rate_option() const;
+  uint8_t model_match_option() const;
   bool wifi_update_mode() const;
 
  private:
@@ -93,6 +95,8 @@ class VirtualElrsModule final : public ICrsfTransport {
   uint8_t dynamic_power_option_ = 0;
   uint8_t switch_mode_option_ = 0;
   uint8_t telemetry_ratio_option_ = 0;
+  uint8_t packet_rate_option_ = 3;
+  uint8_t model_match_option_ = 0;
   bool wifi_update_mode_ = false;
 };
 

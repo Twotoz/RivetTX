@@ -17,8 +17,10 @@ module actually advertises:
 
 - maximum RF power in mW
 - dynamic power
+- packet rate (limited to 250 Hz by the 400 kbaud handset UART)
 - switch mode
 - telemetry ratio
+- model match
 - bind
 - Enable WiFi for a module firmware update
 
@@ -41,6 +43,18 @@ or overloads the transmitter power supply.
 Bind is offered only when the connected module exposes the CRSF `Bind`
 command. Binding phrases remain the preferred ExpressLRS workflow for
 repeatable setups.
+
+## Packet rate and Model Match
+
+RivetTX uses the broadly compatible 400 kbaud CRSF link to the TX module.
+ExpressLRS supports packet rates up to 250 Hz at that baud rate, so RivetTX
+rejects faster advertised choices instead of accepting a configuration that
+can overrun the handset link.
+
+RivetTX sends each model's ID to the module and exposes the discovered
+`Model Match` setting. When matching is enabled, set the receiver to the same
+ID. A mismatch can still look connected over RF while the receiver withholds
+control data from the flight controller.
 
 ## ELRS Finder
 
@@ -112,10 +126,11 @@ A/B OTA and rollback path described in [Architecture](architecture.md).
 ## Validation boundary
 
 The virtual ELRS module verifies discovery, fragmented CRSF frames, power and
-mode writes, bind, Wi-Fi confirmation, RSSI filtering, Geiger timing, offline
-detection, and reconnection. A real module/receiver/flight-controller test is
-still mandatory because simulation cannot prove RF behavior, regional power
-limits, UART electrical integrity, or a Betaflight OSD configuration.
+mode writes, packet-rate limits, Model Match, bind, Wi-Fi confirmation, RSSI
+filtering, Geiger timing, offline detection, and reconnection. A real
+module/receiver/flight-controller test is still mandatory because simulation
+cannot prove RF behavior, regional power limits, UART electrical integrity,
+or a Betaflight configuration.
 
 ## Primary references
 
