@@ -187,9 +187,9 @@ RawInputs make_inputs(ScenarioKind kind, uint32_t cycle, TimeUs now_us)
 
   const bool startup = now_us < 400000;
   const bool recovery =
-      (kind == ScenarioKind::StaleInput ||
-       kind == ScenarioKind::MissedDeadline) &&
-      now_us >= 2300000 && now_us < 3000000;
+      ((kind == ScenarioKind::StaleInput && now_us >= 2300000) ||
+       (kind == ScenarioKind::MissedDeadline && now_us >= 2200000)) &&
+      now_us < 3000000;
   raw.axes[2] = startup || recovery ? 100 : 2048;
 
   if (kind == ScenarioKind::StaleInput &&

@@ -97,8 +97,8 @@ failsafe frame before it reaches CRSF.
   TX-battery low/critical, ELRS module loss, safety state, and telemetry alarms
 - responsive model, input, mix, output, timer, telemetry, and system screens
 - calibration workflow, telemetry alarms, CSV logs, and crash diagnostics
-- virtual ELRS hardware scenarios, 202 host-side checks, sanitizer coverage,
-  and complete ESP32-C3 and ESP32-S3 target builds
+- virtual ELRS hardware scenarios, more than 200 host-side checks, sanitizer
+  coverage, and complete ESP32-C3 and ESP32-S3 target builds
 
 For exact limits and validation status, see the
 [feature matrix](docs/feature-matrix.md).

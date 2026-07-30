@@ -572,6 +572,8 @@ void SafetyManager::report_mixer_duration(uint32_t duration_us)
 {
   if (duration_us > config_.maximum_mixer_duration_us) {
     ++status_.missed_deadlines;
+    healthy_cycles_ = 0;
+    mixer_deadline_pending_ = true;
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::MixerDeadline;
   }
@@ -613,6 +615,10 @@ ChannelFrame SafetyManager::gate(const Model& model,
   if (!storage_valid_) {
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::StorageInvalid;
+    return safe_frame(model, now_us, proposed.sequence);
+  }
+  if (mixer_deadline_pending_) {
+    mixer_deadline_pending_ = false;
     return safe_frame(model, now_us, proposed.sequence);
   }
   if (!inputs.valid) {
