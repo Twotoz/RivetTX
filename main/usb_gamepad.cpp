@@ -60,7 +60,7 @@ const uint8_t kHidConfigurationDescriptor[] = {
         TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     TUD_HID_DESCRIPTOR(
         0, 4, false, sizeof(kHidReportDescriptor),
-        kHidEndpoint, 16, 4),
+        kHidEndpoint, CFG_TUD_HID_EP_BUFSIZE, 4),
 };
 
 const char* kUsbStrings[] = {
@@ -85,6 +85,7 @@ struct HidOpenPocketReport {
 };
 
 static_assert(sizeof(HidOpenPocketReport) == 20);
+static_assert(sizeof(HidOpenPocketReport) <= CFG_TUD_HID_EP_BUFSIZE);
 
 #endif
 

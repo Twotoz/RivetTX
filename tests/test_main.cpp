@@ -1057,6 +1057,10 @@ void test_storage()
   invalid = model;
   invalid.vrx_band = 6;
   CHECK(ModelCodec::encode(invalid, 9).empty());
+  invalid = model;
+  invalid.mixes[0].condition = {
+      -1, false, SwitchPosition::Middle};
+  CHECK(ModelCodec::encode(invalid, 9).empty());
 
   Model product_model = make_default_model();
   product_model.vrx_band = 3;

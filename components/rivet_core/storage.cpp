@@ -167,7 +167,8 @@ bool read_switch(Reader& reader, SwitchRef& value, uint16_t schema)
          value.index <
              static_cast<int8_t>(kMaxSwitches + kMaxLogicalSwitches) &&
          value.position <= SwitchPosition::High &&
-         (value.index < static_cast<int8_t>(kMaxSwitches) ||
+         ((value.index >= 0 &&
+           value.index < static_cast<int8_t>(kMaxSwitches)) ||
           value.position == SwitchPosition::Active);
 }
 
@@ -214,7 +215,8 @@ bool model_shape_valid(const Model& model)
            reference.index <
                static_cast<int8_t>(kMaxSwitches + kMaxLogicalSwitches) &&
            reference.position <= SwitchPosition::High &&
-           (reference.index < static_cast<int8_t>(kMaxSwitches) ||
+           ((reference.index >= 0 &&
+             reference.index < static_cast<int8_t>(kMaxSwitches)) ||
             reference.position == SwitchPosition::Active);
   };
   const auto source_valid = [](const SourceRef& source) {
