@@ -37,3 +37,10 @@ jobs:
           esp_idf_version: v5.5.2
           target: esp32c3
           path: "."
+
+      - name: Verify firmware headroom
+        run: |
+          firmware_size=$(stat -c %s build/rivettx.bin)
+          maximum_size=$((0x1A0000 * 90 / 100))
+          echo "Firmware size: ${firmware_size} bytes; CI limit: ${maximum_size} bytes"
+          test "${firmware_size}" -le "${maximum_size}"
