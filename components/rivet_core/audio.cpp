@@ -1,6 +1,6 @@
 #include "rivettx/audio.hpp"
 
-#include <algorithm>
+#include <initializer_list>
 
 namespace rivettx {
 
@@ -35,9 +35,14 @@ AudioAlertScheduler::Pattern AudioAlertScheduler::pattern_for(
 {
   Pattern result{};
   auto set = [&result](std::initializer_list<Note> notes) {
-    result.count =
-        static_cast<uint8_t>(std::min(notes.size(), result.notes.size()));
-    std::copy_n(notes.begin(), result.count, result.notes.begin());
+    std::size_t index = 0;
+    for (const Note& note : notes) {
+      if (index >= result.notes.size()) {
+        break;
+      }
+      result.notes[index++] = note;
+    }
+    result.count = static_cast<uint8_t>(index);
   };
   switch (alert) {
     case AudioAlert::CustomTone:
