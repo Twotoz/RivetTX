@@ -8,4 +8,5 @@ idf_component_register(
     lua
 )
 
+target_compile_definitions(${COMPONENT_LIB} PRIVATE LUA_32BITS=1)
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)

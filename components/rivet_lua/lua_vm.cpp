@@ -178,7 +178,9 @@ bool LuaVm::initialize()
   }
   allocator_state_.current = 0;
   allocator_state_.denied = false;
-  state_ = lua_newstate(allocator, &allocator_state_);
+  state_ = lua_newstate(
+      allocator, &allocator_state_,
+      static_cast<unsigned>(esp_timer_get_time()));
   if (state_ == nullptr) {
     return false;
   }
