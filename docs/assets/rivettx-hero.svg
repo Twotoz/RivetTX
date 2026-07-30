@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="320" viewBox="0 0 1120 320" role="img" aria-labelledby="title desc">
+  <title id="title">RivetTX</title>
+  <desc id="desc">Compact ESP32-C3 radio transmitter firmware</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.55" stop-color="#0d1b2d"/>
+      <stop offset="1" stop-color="#12233b"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e6edf5"/>
+      <stop offset="0.45" stop-color="#8da3ba"/>
+      <stop offset="1" stop-color="#41566d"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#86a8c7" stroke-opacity=".08"/>
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".45"/>
+    </filter>
+  </defs>
+
+  <rect width="1120" height="320" rx="28" fill="url(#background)"/>
+  <rect width="1120" height="320" rx="28" fill="url(#grid)"/>
+  <path d="M0 260C180 210 300 300 470 245S760 185 1120 250V320H0Z" fill="#2dd4bf" opacity=".035"/>
+  <path d="M0 282C190 235 335 315 510 265S805 210 1120 275" fill="none" stroke="url(#accent)" stroke-opacity=".18" stroke-width="2"/>
+
+  <g transform="translate(70 48)" filter="url(#shadow)">
+    <rect width="224" height="224" rx="54" fill="#091625" stroke="#29425b" stroke-width="2"/>
+    <circle cx="112" cy="112" r="76" fill="#0b1b2d" stroke="url(#metal)" stroke-width="9"/>
+    <circle cx="112" cy="112" r="61" fill="#10263d" stroke="#223d56" stroke-width="2"/>
+    <circle cx="55" cy="55" r="7" fill="url(#metal)"/>
+    <circle cx="169" cy="55" r="7" fill="url(#metal)"/>
+    <circle cx="55" cy="169" r="7" fill="url(#metal)"/>
+    <circle cx="169" cy="169" r="7" fill="url(#metal)"/>
+    <text x="112" y="145" text-anchor="middle" fill="#f5f9fc" font-family="Arial, Helvetica, sans-serif" font-size="94" font-weight="900">R</text>
+    <path d="M145 87c13 7 22 20 22 35M151 71c20 10 34 29 36 52" fill="none" stroke="url(#accent)" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <g transform="translate(350 62)">
+    <text x="0" y="72" fill="#f5f9fc" font-family="Arial, Helvetica, sans-serif" font-size="74" font-weight="800">RivetTX</text>
+    <rect x="2" y="92" width="418" height="5" rx="2.5" fill="url(#accent)"/>
+    <text x="2" y="139" fill="#b7c7d8" font-family="Arial, Helvetica, sans-serif" font-size="24">Compact firmware. Deterministic control.</text>
+    <text x="2" y="171" fill="#b7c7d8" font-family="Arial, Helvetica, sans-serif" font-size="24">Built for ESP32-C3 + ExpressLRS.</text>
+
+    <g transform="translate(2 201)" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700">
+      <rect width="126" height="34" rx="17" fill="#132a3f" stroke="#2dd4bf" stroke-opacity=".55"/>
+      <text x="63" y="22" text-anchor="middle" fill="#6ee7d8">REAL-TIME CORE</text>
+      <rect x="140" width="112" height="34" rx="17" fill="#132a3f" stroke="#38bdf8" stroke-opacity=".55"/>
+      <text x="196" y="22" text-anchor="middle" fill="#7dd3fc">CRSF NATIVE</text>
+      <rect x="266" width="112" height="34" rx="17" fill="#132a3f" stroke="#a5b4fc" stroke-opacity=".55"/>
+      <text x="322" y="22" text-anchor="middle" fill="#c7d2fe">OPEN SOURCE</text>
+    </g>
+  </g>
+</svg>

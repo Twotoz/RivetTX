@@ -1,0 +1,25 @@
+name: Host Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native core and simulator
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build and run unit tests
+        run: make test
+
+      - name: Build and run simulator
+        run: |
+          make build/rivettx-sim
+          ./build/rivettx-sim
