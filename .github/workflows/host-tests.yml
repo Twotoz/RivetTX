@@ -55,7 +55,7 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
-          firmware_dir=build/firmware
+          firmware_dir=firmware
           mkdir -p "${firmware_dir}/bootloader"
           mkdir -p "${firmware_dir}/partition_table"
           cp build/rivettx-factory.bin "${firmware_dir}/"
@@ -83,6 +83,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: rivettx-esp32c3-${{ github.sha }}
-          path: build/firmware/
+          path: firmware/
           if-no-files-found: error
           retention-days: 30
