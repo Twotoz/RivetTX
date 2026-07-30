@@ -122,6 +122,11 @@ idf.py build
 idf.py flash monitor
 ```
 
+Every successful CI run also provides a `rivettx-esp32c3-<commit>` artifact
+with a one-file factory image, separate OTA/application image, exact flash
+arguments, source commit, and SHA-256 checksums. See the
+[firmware bundle guide](docs/firmware-bundle.md) before flashing it.
+
 Configure the real pinout under:
 
 ```text
@@ -167,6 +172,7 @@ Model edits are staged, saved while locked, and activated on the next boot.
 | [Architecture](docs/architecture.md) | safety invariants, task separation, storage, OTA, and Lua boundaries |
 | [Feature matrix](docs/feature-matrix.md) | implemented behavior versus hardware validation still required |
 | [Hardware guide](docs/hardware.md) | minimum electronics, default GPIOs, controls, and bring-up sequence |
+| [Firmware bundle](docs/firmware-bundle.md) | CI artifact contents, checksum verification, and one-file flashing |
 
 ## Project status
 

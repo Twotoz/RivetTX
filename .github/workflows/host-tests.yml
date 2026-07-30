@@ -37,6 +37,12 @@ jobs:
           esp_idf_version: v5.5.2
           target: esp32c3
           path: "."
+          command: >-
+            idf.py build &&
+            cd build &&
+            esptool.py --chip esp32c3 merge_bin
+            -o rivettx-factory.bin
+            @flash_args
 
       - name: Verify firmware headroom
         run: |
@@ -44,3 +50,39 @@ jobs:
           maximum_size=$((0x1A0000 * 90 / 100))
           echo "Firmware size: ${firmware_size} bytes; CI limit: ${maximum_size} bytes"
           test "${firmware_size}" -le "${maximum_size}"
+
+      - name: Package flashable firmware
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          firmware_dir=firmware
+          mkdir -p "${firmware_dir}/bootloader"
+          mkdir -p "${firmware_dir}/partition_table"
+          cp build/rivettx-factory.bin "${firmware_dir}/"
+          cp build/rivettx.bin "${firmware_dir}/"
+          cp build/bootloader/bootloader.bin "${firmware_dir}/bootloader/"
+          cp build/partition_table/partition-table.bin "${firmware_dir}/partition_table/"
+          cp build/ota_data_initial.bin "${firmware_dir}/"
+          cp build/flash_args "${firmware_dir}/"
+          cp build/flasher_args.json "${firmware_dir}/"
+          cp docs/firmware-bundle.md "${firmware_dir}/README.md"
+          printf '%s\n' "${SOURCE_COMMIT}" > "${firmware_dir}/SOURCE_COMMIT"
+          cd "${firmware_dir}"
+          sha256sum \
+            rivettx-factory.bin \
+            rivettx.bin \
+            bootloader/bootloader.bin \
+            partition_table/partition-table.bin \
+            ota_data_initial.bin \
+            flash_args \
+            flasher_args.json \
+            SOURCE_COMMIT \
+            README.md > SHA256SUMS
+
+      - name: Upload flashable firmware
+        uses: actions/upload-artifact@v7
+        with:
+          name: rivettx-esp32c3-${{ github.sha }}
+          path: firmware/
+          if-no-files-found: error
+          retention-days: 30
