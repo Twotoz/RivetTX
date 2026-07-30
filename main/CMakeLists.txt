@@ -17,5 +17,6 @@ idf_component_register(
     nvs_flash
     wear_levelling
   PRIV_REQUIRES
+    app_update
     mbedtls
 )
