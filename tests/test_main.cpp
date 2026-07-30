@@ -236,6 +236,8 @@ void test_inputs_and_mixer()
   CHECK(frame.channels[1] == 0);
   CHECK(frame.channels[2] >= 1000);
   CHECK(frame.channels[4] == -kResolution);
+  CHECK(frame.channels[8] == 0);
+  CHECK(frame.channels[11] == 0);
 
   raw.switches[kFirstAuxSwitch] = true;
   raw.sampled_at_us = 5000;
@@ -310,6 +312,25 @@ void test_trim_controls()
   CHECK(centered.changed());
   CHECK(centered.centered_mask == 1);
   CHECK(model.flight_modes[0].trims[0] == 0);
+
+  model.flight_mode_count = 2;
+  model.flight_modes[1].enabled = true;
+  inputs.switches[kFirstTrimSwitch] = false;
+  inputs.switches[kFirstTrimSwitch + 1] = false;
+  (void)trims.update(model, 1, inputs, 530000);
+  inputs.switches[kFirstTrimSwitch + 3] = true;
+  auto flight_mode_trim = trims.update(model, 1, inputs, 540000);
+  CHECK(flight_mode_trim.changed_mask == 2);
+  CHECK(model.flight_modes[0].trims[1] == 0);
+  CHECK(model.flight_modes[1].trims[1] == 8);
+
+  model.flight_modes[1].trims[1] = 510;
+  inputs.switches[kFirstTrimSwitch + 3] = false;
+  (void)trims.update(model, 1, inputs, 550000);
+  inputs.switches[kFirstTrimSwitch + 3] = true;
+  auto limited = trims.update(model, 1, inputs, 560000);
+  CHECK(limited.limit_mask == 2);
+  CHECK(model.flight_modes[1].trims[1] == 512);
 
   trims.reset();
   CHECK(!trims.update(model, 0, inputs, 600000).changed());
@@ -980,6 +1001,24 @@ void test_storage()
   CHECK(migrated.outputs[4].failsafe == -kResolution);
   CHECK((migrated.required_switch_mask &
          static_cast<uint8_t>(1U << kFirstAuxSwitch)) != 0);
+
+  Model legacy_v4 = make_default_model();
+  legacy_v4.input_count = 4;
+  legacy_v4.mix_count = 8;
+  auto legacy_v4_encoded = ModelCodec::encode(legacy_v4, 11);
+  CHECK(legacy_v4_encoded.size() > 6);
+  legacy_v4_encoded[4] = 4;
+  legacy_v4_encoded[5] = 0;
+  Model migrated_v4{};
+  uint32_t migrated_v4_generation = 0;
+  error.clear();
+  CHECK(ModelCodec::decode(legacy_v4_encoded, migrated_v4,
+                           migrated_v4_generation, error));
+  CHECK(migrated_v4_generation == 11);
+  CHECK(migrated_v4.input_count == 8);
+  CHECK(migrated_v4.mix_count == 12);
+  CHECK(migrated_v4.mixes[8].source.kind == SourceKind::Input);
+  CHECK(migrated_v4.mixes[8].source.index == 4);
 
   std::array<AxisCalibration, kMaxAxes> calibration{};
   CalibrationStore calibration_store(files, "calibration.bin");
