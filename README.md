@@ -93,9 +93,11 @@ failsafe frame before it reaches CRSF.
   active-antenna RSSI and correctly decoded TX power in mW
 - built-in ELRS Finder with fresh-data protection, visual meter, and optional
   Geiger-counter buzzer
+- prioritized audio alerts for weak/critical link, telemetry loss/recovery,
+  TX-battery low/critical, ELRS module loss, safety state, and telemetry alarms
 - responsive model, input, mix, output, timer, telemetry, and system screens
 - calibration workflow, telemetry alarms, CSV logs, and crash diagnostics
-- virtual ELRS hardware scenarios, 177 host-side checks, sanitizer coverage,
+- virtual ELRS hardware scenarios, 199 host-side checks, sanitizer coverage,
   and a complete ESP32-C3 target build
 
 For exact limits and validation status, see the
@@ -199,6 +201,7 @@ Model edits are staged, saved while locked, and activated on the next boot.
 | [Simulation](docs/simulation.md) | virtual ELRS scenarios, fault injection, outputs, and validation limits |
 | [Hardware guide](docs/hardware.md) | minimum electronics, default GPIOs, controls, and bring-up sequence |
 | [ExpressLRS guide](docs/expresslrs.md) | mW settings, bind, Finder, Betaflight OSD telemetry, and TX-module Wi-Fi updates |
+| [Audio alerts](docs/audio-alerts.md) | prioritized buzzer patterns, link thresholds, TX-battery warnings, and configuration |
 | [Firmware bundle](docs/firmware-bundle.md) | CI artifact contents, checksum verification, and one-file flashing |
 
 ## Project status

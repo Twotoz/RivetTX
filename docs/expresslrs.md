@@ -66,6 +66,10 @@ numeric dBm and bar display still work. Lua scripts can use `getValue("RSSI")`,
 `getValueAge("RSSI")`, and `playTone(frequency, duration)` for custom finder
 interfaces; `1RSS` and `2RSS` expose the individual antennas.
 
+Outside the Finder screen, RivetTX monitors link quality while outputs are
+enabled. Weak, critical, lost, and recovered states have distinct prioritized
+patterns; see [Audio alerts](audio-alerts.md).
+
 ## Betaflight OSD
 
 Betaflight gets link statistics from the **ELRS receiver connected to the

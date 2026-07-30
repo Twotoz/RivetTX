@@ -1,3 +1,4 @@
+#include "rivettx/audio.hpp"
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
@@ -529,6 +530,144 @@ void test_elrs_management_and_finder()
   CHECK(recovering_management.status().state == ElrsManagerState::Ready);
 }
 
+void test_audio_alerts()
+{
+  FakeToneOutput tones;
+  AudioAlertScheduler audio(tones);
+  audio.notify(AudioAlert::BatteryLow);
+  audio.tick(1000);
+  CHECK(audio.current_alert() == AudioAlert::BatteryLow);
+  CHECK(tones.last_frequency == 520);
+
+  const uint32_t stops_before_preemption = tones.stops;
+  audio.notify(AudioAlert::LinkCritical);
+  audio.tick(2000);
+  CHECK(audio.current_alert() == AudioAlert::LinkCritical);
+  CHECK(tones.last_frequency == 1250);
+  CHECK(tones.stops > stops_before_preemption);
+
+  TimeUs now_us = 2000;
+  for (int step = 0; step < 20; ++step) {
+    now_us += 100000;
+    audio.tick(now_us);
+  }
+  CHECK(audio.current_alert() == AudioAlert::Count);
+
+  CHECK(audio.play_tone(777, 30));
+  audio.tick(now_us + 1000);
+  CHECK(audio.current_alert() == AudioAlert::CustomTone);
+  CHECK(tones.last_frequency == 777);
+  audio.stop_tone();
+  CHECK(audio.current_alert() == AudioAlert::Count);
+
+  FakeToneOutput warning_tones;
+  AudioAlertScheduler warning_audio(warning_tones);
+  AudioWarningMonitor warnings;
+  TelemetryRegistry telemetry;
+  now_us = 1000000;
+  telemetry.update(crsf::SensorUplinkLinkQuality, 25,
+                   TelemetryUnit::Percent, now_us);
+  warnings.tick(telemetry, BatteryState::Normal, ModuleState::Online,
+                SafetyState::Enabled, now_us, warning_audio);
+  warning_audio.tick(now_us);
+  CHECK(warning_audio.current_alert() == AudioAlert::LinkCritical);
+
+  telemetry.update(crsf::SensorUplinkLinkQuality, 85,
+                   TelemetryUnit::Percent, now_us + 100000);
+  warnings.tick(telemetry, BatteryState::Normal, ModuleState::Online,
+                SafetyState::Enabled, now_us + 100000, warning_audio);
+  for (int step = 0; step < 20; ++step) {
+    now_us += 100000;
+    warning_audio.tick(now_us);
+  }
+  CHECK(warning_audio.current_alert() == AudioAlert::LinkRecovered ||
+        warning_audio.current_alert() == AudioAlert::OutputsEnabled ||
+        warning_audio.current_alert() == AudioAlert::Count);
+
+  warnings.tick(telemetry, BatteryState::Normal, ModuleState::Online,
+                SafetyState::Enabled, now_us + 2000000, warning_audio);
+  warning_audio.tick(now_us + 2000000);
+  CHECK(warning_audio.current_alert() == AudioAlert::TelemetryLost);
+
+  FakeToneOutput battery_tones;
+  AudioAlertScheduler battery_audio(battery_tones);
+  AudioWarningMonitor battery_warnings;
+  battery_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Low, ModuleState::Starting,
+      SafetyState::Locked, 1000000, battery_audio);
+  battery_audio.tick(1000000);
+  CHECK(battery_audio.current_alert() == AudioAlert::BatteryLow);
+  battery_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Critical, ModuleState::Starting,
+      SafetyState::Locked, 2000000, battery_audio);
+  battery_audio.tick(2000000);
+  CHECK(battery_audio.current_alert() == AudioAlert::BatteryCritical);
+
+  FakeToneOutput recovery_tones;
+  AudioAlertScheduler recovery_audio(recovery_tones);
+  AudioWarningMonitor recovery_warnings;
+  recovery_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Low, ModuleState::Starting,
+      SafetyState::Locked, 1000000, recovery_audio);
+  for (int step = 0; step < 10; ++step) {
+    recovery_audio.tick(
+        1000000 + static_cast<TimeUs>(step) * 100000);
+  }
+  recovery_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Normal, ModuleState::Starting,
+      SafetyState::Locked, 3000000, recovery_audio);
+  recovery_audio.tick(3000000);
+  CHECK(recovery_audio.current_alert() == AudioAlert::BatteryRecovered);
+
+  FakeToneOutput no_link_tones;
+  AudioAlertScheduler no_link_audio(no_link_tones);
+  AudioWarningMonitor no_link_warnings;
+  no_link_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Normal, ModuleState::Starting,
+      SafetyState::Enabled, 1000000, no_link_audio);
+  no_link_audio.tick(1000000);
+  CHECK(no_link_audio.current_alert() == AudioAlert::OutputsEnabled);
+  no_link_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Normal, ModuleState::Starting,
+      SafetyState::Enabled, 2600000, no_link_audio);
+  no_link_audio.tick(2600000);
+  CHECK(no_link_audio.current_alert() == AudioAlert::TelemetryLost);
+
+  FakeToneOutput fault_tones;
+  AudioAlertScheduler fault_audio(fault_tones);
+  AudioWarningMonitor fault_warnings;
+  fault_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Normal, ModuleState::Starting,
+      SafetyState::Ready, 1000000, fault_audio);
+  fault_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Normal, ModuleState::Starting,
+      SafetyState::Fault, 2000000, fault_audio);
+  fault_audio.tick(2000000);
+  CHECK(fault_audio.current_alert() == AudioAlert::SafetyFault);
+
+  FakeToneOutput module_tones;
+  AudioAlertScheduler module_audio(module_tones);
+  AudioWarningMonitor module_warnings;
+  module_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Normal, ModuleState::Online,
+      SafetyState::Locked, 1000000, module_audio);
+  module_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Normal, ModuleState::Offline,
+      SafetyState::Locked, 2000000, module_audio);
+  module_audio.tick(2000000);
+  CHECK(module_audio.current_alert() == AudioAlert::ModuleOffline);
+  module_warnings.tick(
+      TelemetryRegistry{}, BatteryState::Normal, ModuleState::Online,
+      SafetyState::Locked, 3000000, module_audio);
+  module_audio.tick(3000000);
+  CHECK(module_audio.current_alert() == AudioAlert::ModuleOffline);
+  for (int step = 0; step < 20; ++step) {
+    module_audio.tick(3100000 + static_cast<TimeUs>(step) * 100000);
+  }
+  CHECK(module_audio.current_alert() == AudioAlert::ModuleRecovered ||
+        module_audio.current_alert() == AudioAlert::Count);
+}
+
 void test_storage()
 {
   const std::string root =
@@ -783,6 +922,7 @@ int main()
   test_crsf();
   test_virtual_elrs_module();
   test_elrs_management_and_finder();
+  test_audio_alerts();
   test_storage();
   test_ui();
   test_services();

@@ -38,6 +38,10 @@ The defaults are examples, not a PCB design:
 | battery ADC | disabled |
 | passive piezo buzzer | disabled |
 
+Battery low/critical voltage and ELRS weak/critical LQ thresholds are also
+configured in this menu. The default battery values assume a one-cell
+development supply and must be changed for other pack configurations.
+
 Some GPIOs are boot-strapping pins on common ESP32-C3 boards. Confirm the
 module datasheet and board schematic, then change every assignment with
 `idf.py menuconfig`.
@@ -76,4 +80,5 @@ The buzzer must be a passive piezo suitable for GPIO drive or use an
 appropriate transistor driver. Set its GPIO and duty percentage under
 `Component config -> RivetTX hardware`; the default `-1` keeps audio disabled.
 See the [ExpressLRS guide](expresslrs.md) for the module/receiver distinction,
-Finder behavior, Betaflight path, and update workflow.
+Finder behavior, Betaflight path, and update workflow. The
+[audio-alert guide](audio-alerts.md) lists every pattern and its priority.
