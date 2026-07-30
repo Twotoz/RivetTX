@@ -100,12 +100,12 @@ void set_function(lua_State* state, const char* name,
 }  // namespace
 
 LuaVm::LuaVm(TelemetryRegistry& telemetry, CrsfParser& parser,
-             ICrsfTransport& transport, Canvas& canvas,
+             ILuaCrsfSink& crsf_sink, Canvas& canvas,
              IToneOutput* tones,
              uint32_t memory_limit_bytes)
     : telemetry_(telemetry),
       parser_(parser),
-      transport_(transport),
+      crsf_sink_(crsf_sink),
       canvas_(canvas),
       tones_(tones)
 {
@@ -533,7 +533,7 @@ int LuaVm::api_crossfire_push(lua_State* state)
   frame.size = static_cast<uint8_t>(length + 4);
   lua_pushboolean(
       state,
-      runtime->transport_.write(frame.bytes.data(), frame.size));
+      runtime->crsf_sink_.submit(frame));
   return 1;
 }
 

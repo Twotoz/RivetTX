@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -224,7 +225,10 @@ bool EspBoard::initialize()
     configured_axis_count_ = static_cast<uint8_t>(i + 1);
   }
   if (CONFIG_RIVETTX_BATTERY_GPIO >= 0) {
-    (void)configure_adc_gpio(CONFIG_RIVETTX_BATTERY_GPIO, battery_);
+    if (!configure_adc_gpio(CONFIG_RIVETTX_BATTERY_GPIO, battery_)) {
+      ESP_LOGE(kTag, "battery ADC GPIO is invalid");
+      return false;
+    }
   }
   adc_cali_curve_fitting_config_t calibration_config{};
   calibration_config.unit_id = ADC_UNIT_1;
@@ -326,14 +330,17 @@ uint8_t EspBoard::configured_axis_count() const
   return configured_axis_count_;
 }
 
-uint16_t EspBoard::sample_battery_mv()
+BatterySample EspBoard::sample_battery()
 {
+  BatterySample sample{};
+  sample.configured = battery_.configured;
   if (!battery_.configured) {
-    return 0;
+    sample.valid = true;
+    return sample;
   }
   int raw = 0;
   if (!read_adc(battery_, raw)) {
-    return 0;
+    return sample;
   }
   int calibrated_mv = 0;
   const uint32_t pin_mv =
@@ -342,9 +349,11 @@ uint16_t EspBoard::sample_battery_mv()
                                       &calibrated_mv) == ESP_OK
           ? static_cast<uint32_t>(std::max(0, calibrated_mv))
           : static_cast<uint32_t>(raw) * 3300U / 4095U;
-  return static_cast<uint16_t>(std::min<uint32_t>(
+  sample.millivolts = static_cast<uint16_t>(std::min<uint32_t>(
       UINT16_MAX,
       pin_mv * CONFIG_RIVETTX_BATTERY_DIVIDER_MILLI / 1000U));
+  sample.valid = true;
+  return sample;
 }
 
 bool EspBoard::recovery_button_pressed() const
@@ -474,7 +483,11 @@ bool Ssd1306Display::flush(const MonoCanvas& canvas)
 
 void EspWatchdog::kick()
 {
-  (void)esp_task_wdt_reset();
+  const esp_err_t result = esp_task_wdt_reset();
+  if (result != ESP_OK) {
+    ESP_LOGE(kTag, "watchdog kick failed: %s",
+             esp_err_to_name(result));
+  }
 }
 
 void EspToneOutput::stop_callback(void* context)
@@ -648,6 +661,16 @@ CsvTelemetrySink::CsvTelemetrySink(std::string path,
 {
 }
 
+CsvTelemetrySink::~CsvTelemetrySink()
+{
+  if (file_ != nullptr) {
+    FILE* stream = static_cast<FILE*>(file_);
+    (void)std::fflush(stream);
+    (void)std::fclose(stream);
+    file_ = nullptr;
+  }
+}
+
 bool CsvTelemetrySink::append(TimeUs time_us, uint16_t sensor_id,
                               int32_t value)
 {
@@ -661,11 +684,15 @@ bool CsvTelemetrySink::append(TimeUs time_us, uint16_t sensor_id,
   const long position = std::ftell(stream);
   if (position >= 0 &&
       static_cast<std::size_t>(position) >= maximum_bytes_) {
-    (void)std::fflush(stream);
-    (void)std::fclose(stream);
+    if (std::fflush(stream) != 0 || std::fclose(stream) != 0) {
+      file_ = nullptr;
+      return false;
+    }
     file_ = nullptr;
     const std::string rotated = path_ + ".1";
-    (void)std::remove(rotated.c_str());
+    if (std::remove(rotated.c_str()) != 0 && errno != ENOENT) {
+      return false;
+    }
     if (std::rename(path_.c_str(), rotated.c_str()) != 0) {
       return false;
     }
@@ -675,10 +702,12 @@ bool CsvTelemetrySink::append(TimeUs time_us, uint16_t sensor_id,
     }
     stream = static_cast<FILE*>(file_);
   }
-  return std::fprintf(stream, "%llu,%u,%ld\n",
-                      static_cast<unsigned long long>(time_us),
-                      static_cast<unsigned>(sensor_id),
-                      static_cast<long>(value)) > 0;
+  const int written =
+      std::fprintf(stream, "%llu,%u,%ld\n",
+                   static_cast<unsigned long long>(time_us),
+                   static_cast<unsigned>(sensor_id),
+                   static_cast<long>(value));
+  return written > 0 && std::ferror(stream) == 0;
 }
 
 bool CsvTelemetrySink::flush()
@@ -688,9 +717,30 @@ bool CsvTelemetrySink::flush()
 }
 
 WifiBackupPortal::WifiBackupPortal(TransactionalModelStore& models,
+                                   ModelLibrary& library,
                                    SafetyManager& safety)
-    : models_(models), safety_(safety)
+    : models_(models), library_(library), safety_(safety)
 {
+}
+
+esp_err_t WifiBackupPortal::get_index(httpd_req_t* request)
+{
+  static constexpr char page[] =
+      "<!doctype html><meta name=viewport "
+      "content='width=device-width,initial-scale=1'>"
+      "<title>OpenPocket Config</title>"
+      "<h1>OpenPocket</h1>"
+      "<p>Outputs are locked while this page is active.</p>"
+      "<p><a href=/backup>Download active model</a></p>"
+      "<form method=post action=/restore enctype=application/octet-stream>"
+      "<label>Restore .rvm: <input type=file id=f></label>"
+      "<button type=button onclick='fetch(\"/restore\","
+      "{method:\"POST\",body:f.files[0]}).then(r=>r.text())"
+      ".then(alert)'>Verify and restore</button></form>"
+      "<p><a href=/status>Device status</a></p>";
+  httpd_resp_set_type(request, "text/html");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, page, HTTPD_RESP_USE_STRLEN);
 }
 
 esp_err_t WifiBackupPortal::get_backup(httpd_req_t* request)
@@ -702,7 +752,7 @@ esp_err_t WifiBackupPortal::get_backup(httpd_req_t* request)
     return ESP_FAIL;
   }
   std::vector<uint8_t> data;
-  if (!portal->models_.export_active(data)) {
+  if (!portal->library_.export_active(data)) {
     httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
                         "no valid active model");
     return ESP_FAIL;
@@ -722,7 +772,7 @@ esp_err_t WifiBackupPortal::post_restore(httpd_req_t* request)
                         "lock transmitter before restore");
     return ESP_FAIL;
   }
-  if (request->content_len <= 0 || request->content_len > 128 * 1024) {
+  if (request->content_len <= 0 || request->content_len > 32 * 1024) {
     httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
                         "invalid model size");
     return ESP_FAIL;
@@ -741,12 +791,13 @@ esp_err_t WifiBackupPortal::post_restore(httpd_req_t* request)
     received += static_cast<std::size_t>(result);
   }
   std::string error;
-  if (!portal->models_.import_candidate(data, error)) {
+  if (!portal->library_.import_active(data, error) ||
+      !portal->models_.import_candidate(data, error)) {
     httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, error.c_str());
     return ESP_FAIL;
   }
   return httpd_resp_sendstr(
-      request, "model verified and restored; reboot to activate");
+      request, "model verified and restored; leave Wi-Fi mode to activate");
 }
 
 esp_err_t WifiBackupPortal::get_status(httpd_req_t* request)
@@ -810,10 +861,15 @@ bool WifiBackupPortal::start()
   }
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.max_uri_handlers = 4;
+  config.max_uri_handlers = 5;
   if (httpd_start(&server_, &config) != ESP_OK) {
     return fail();
   }
+  httpd_uri_t index{};
+  index.uri = "/";
+  index.method = HTTP_GET;
+  index.handler = get_index;
+  index.user_ctx = this;
   httpd_uri_t backup{};
   backup.uri = "/backup";
   backup.method = HTTP_GET;
@@ -830,6 +886,7 @@ bool WifiBackupPortal::start()
   status.handler = get_status;
   status.user_ctx = this;
   const bool registered =
+      httpd_register_uri_handler(server_, &index) == ESP_OK &&
       httpd_register_uri_handler(server_, &backup) == ESP_OK &&
       httpd_register_uri_handler(server_, &restore) == ESP_OK &&
       httpd_register_uri_handler(server_, &status) == ESP_OK;

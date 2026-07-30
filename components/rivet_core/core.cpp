@@ -235,7 +235,24 @@ bool MixerEngine::switch_value(const SwitchRef& ref,
   bool value = true;
   if (ref.index >= 0) {
     const auto index = static_cast<std::size_t>(ref.index);
-    value = index < controls.switches.size() && controls.switches[index];
+    if (index >= controls.switches.size()) {
+      value = false;
+    } else {
+      switch (ref.position) {
+        case SwitchPosition::Active:
+          value = controls.switches[index];
+          break;
+        case SwitchPosition::Low:
+          value = controls.switch_positions[index] < 0;
+          break;
+        case SwitchPosition::Middle:
+          value = controls.switch_positions[index] == 0;
+          break;
+        case SwitchPosition::High:
+          value = controls.switch_positions[index] > 0;
+          break;
+      }
+    }
   }
   return ref.inverted ? !value : value;
 }
@@ -245,7 +262,7 @@ bool MixerEngine::switch_value_with_logic(
 {
   bool value = true;
   if (ref.index >= 0 && ref.index < static_cast<int8_t>(kMaxSwitches)) {
-    value = controls.switches[static_cast<std::size_t>(ref.index)];
+    return switch_value(ref, controls);
   } else if (ref.index >= static_cast<int8_t>(kMaxSwitches)) {
     const int logical_index = ref.index - static_cast<int8_t>(kMaxSwitches);
     value = logical_index >= 0 &&
@@ -820,6 +837,15 @@ void SafetyManager::report_battery(uint16_t millivolts)
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::BatteryCritical;
   }
+}
+
+void SafetyManager::report_battery_fault()
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  enable_requested_ = false;
+  healthy_cycles_ = 0;
+  status_.state = SafetyState::Fault;
+  status_.reason = SafetyReason::BatterySensor;
 }
 
 void SafetyManager::report_mixer_duration(uint32_t duration_us)

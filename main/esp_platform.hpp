@@ -3,6 +3,7 @@
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
+#include "rivettx/product.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
@@ -23,11 +24,17 @@
 
 namespace rivettx::esp32 {
 
+struct BatterySample {
+  uint16_t millivolts = 0;
+  bool configured = false;
+  bool valid = false;
+};
+
 class EspBoard {
  public:
   bool initialize();
   RawInputs sample_inputs(TimeUs now_us);
-  uint16_t sample_battery_mv();
+  BatterySample sample_battery();
   bool recovery_button_pressed() const;
   uint8_t configured_axis_count() const;
 
@@ -79,6 +86,17 @@ class EspWatchdog final : public IWatchdog {
   void kick() override;
 };
 
+class EspUsbGamepad {
+ public:
+  bool initialize();
+  bool send(const UsbGamepadReport& report);
+  bool supported() const;
+  bool mounted() const;
+
+ private:
+  bool initialized_ = false;
+};
+
 class EspToneOutput final : public IToneOutput {
  public:
   bool initialize();
@@ -128,7 +146,8 @@ class NvsBootState {
 class CsvTelemetrySink final : public ITelemetryLogSink {
  public:
   explicit CsvTelemetrySink(std::string path,
-                            std::size_t maximum_bytes = 1024 * 1024);
+                            std::size_t maximum_bytes = 64 * 1024);
+  ~CsvTelemetrySink() override;
   bool append(TimeUs time_us, uint16_t sensor_id, int32_t value) override;
   bool flush() override;
 
@@ -141,17 +160,20 @@ class CsvTelemetrySink final : public ITelemetryLogSink {
 class WifiBackupPortal {
  public:
   WifiBackupPortal(TransactionalModelStore& models,
+                   ModelLibrary& library,
                    SafetyManager& safety);
   bool start();
   void stop();
   bool running() const;
 
  private:
+  static esp_err_t get_index(httpd_req_t* request);
   static esp_err_t get_backup(httpd_req_t* request);
   static esp_err_t post_restore(httpd_req_t* request);
   static esp_err_t get_status(httpd_req_t* request);
 
   TransactionalModelStore& models_;
+  ModelLibrary& library_;
   SafetyManager& safety_;
   httpd_handle_t server_ = nullptr;
 };

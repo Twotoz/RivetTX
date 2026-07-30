@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="TODO.md">Roadmap</a> ·
   <a href="#why-rivettx">Why RivetTX</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#quick-start">Quick start</a> ·

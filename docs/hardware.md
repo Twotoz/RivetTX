@@ -145,15 +145,18 @@ are used immediately and persisted through the normal model-save path. See the
 
 - Hold UP+DOWN during boot to enter stick calibration.
 - During calibration, ENTER advances and BACK cancels.
-- BACK cycles through normal screens.
+- ENTER on Home opens the main menu; BACK returns Detail → Menu → Home.
 - UP/DOWN select a field; ENTER enters or leaves edit mode.
 - In edit mode UP/DOWN changes the value.
 - The rotary encoder can replace UP/DOWN and ENTER for those menu actions.
 - Trim buttons adjust the active flight mode live; press both directions to
   center the corresponding trim.
 - Hold ENTER+BACK for one second to enable outputs or lock them again.
-- Configuration changes are saved after one second while locked and become
-  active on the next boot.
+- Configuration changes are saved after one second while locked and are
+  atomically activated without reboot; outputs and CH5 stay low throughout.
+- On ESP32-S3, start USB Simulator from the menu only while locked. It exposes
+  the controls as a native HID gamepad and keeps RF locked by default. ESP32-C3
+  has no native programmable USB HID device.
 - Hold BACK during boot for the recovery Wi-Fi portal.
 - Hold UP + DOWN + BACK during boot to explicitly reformat model storage
   after an unrecoverable mount failure. This erases stored models and

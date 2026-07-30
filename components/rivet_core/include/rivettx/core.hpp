@@ -149,6 +149,7 @@ enum class SafetyReason : uint8_t {
   SwitchMismatch,
   MixerDeadline,
   BatteryCritical,
+  BatterySensor,
   StorageInvalid,
   WatchdogRecovery,
   ManualLock,
@@ -178,6 +179,7 @@ class SafetyManager {
   void request_enable();
   void request_lock();
   void report_battery(uint16_t millivolts);
+  void report_battery_fault();
   void report_mixer_duration(uint32_t duration_us);
   ChannelFrame gate(const Model& model, const ControlInputs& inputs,
                     const ChannelFrame& proposed, TimeUs now_us);

@@ -248,6 +248,11 @@ int32_t CrsfParser::read_i32_be(const uint8_t* data)
 bool CrsfParser::feed(uint8_t byte, TimeUs now_us)
 {
   if (position_ == 0) {
+    if (byte != crsf::kAddressRadio &&
+        byte != crsf::kAddressBroadcast) {
+      ++stats_.dropped_bytes;
+      return false;
+    }
     buffer_[position_++] = byte;
     return false;
   }

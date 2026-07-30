@@ -8,6 +8,7 @@ CORE := \
 	components/rivet_core/core.cpp \
 	components/rivet_core/crsf.cpp \
 	components/rivet_core/elrs.cpp \
+	components/rivet_core/product.cpp \
 	components/rivet_core/services.cpp \
 	components/rivet_core/storage.cpp \
 	components/rivet_core/ui.cpp

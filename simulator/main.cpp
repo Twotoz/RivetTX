@@ -402,7 +402,19 @@ bool render_displays(const Options& options, const Model& model,
     sim::PbmDisplay display(profile.capabilities, path.string());
     MonoCanvas canvas(profile.capabilities.width, profile.capabilities.height);
     UiController ui(display, canvas);
-    ui.set_screen(make_main_screen(model, channels, 3800, 96, true));
+    UiHomeStatus home{};
+    for (std::size_t axis = 0; axis < home.axes.size(); ++axis) {
+      home.axes[axis] = channels.channels[axis];
+    }
+    home.channels = channels.channels;
+    home.battery_mv = 3800;
+    home.battery_percent = 67;
+    home.battery_percent_valid = true;
+    home.link_quality = 96;
+    home.outputs_enabled = true;
+    home.module_online = true;
+    home.video_signal = true;
+    ui.set_screen(make_openpocket_home_screen(model, home));
     const bool rendered = ui.render();
     if (!rendered || display.flushes() != 1 ||
         display.last_lit_pixels() == 0) {

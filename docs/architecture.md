@@ -12,6 +12,11 @@
 5. Model writes are copy-on-write and verified before becoming active.
 6. New OTA firmware must pass its startup self-test or the bootloader rolls
    back to the previously valid image.
+7. CRSF UART writes have one owner: the control task sends channels first and
+   may then drain one bounded Lua management frame.
+8. Logging, USB simulator, Wi-Fi, model activation and other flash or
+   maintenance workflows hold an exclusive output lock for their full
+   lifetime.
 
 ## Tasks
 
@@ -58,7 +63,7 @@ engine render the same screen tree at three responsive densities:
 Normal screens declare rows and fields. Only custom telemetry widgets use
 absolute canvas coordinates.
 
-## Model storage
+## Model storage and activation
 
 Each file consists of a fixed header and a deterministic little-endian payload:
 
@@ -75,9 +80,35 @@ Saving `model.rvm` performs:
 5. synchronize directory metadata and recover `.bak` on the next boot if the
    active file is corrupt; a mount error never formats storage automatically
 
-Migrations happen after decoding and before a model is activated.
+The model library owns 32 fixed slots and a separately checksummed active-slot
+index. Migrations happen after decoding and before a model is activated.
 Both ESP32 targets mount the `models` partition as wear-levelled FATFS; the
 codec and transaction protocol are filesystem-independent.
+
+Saving or selecting a model is a locked hand-off:
+
+1. enter exclusive maintenance and force safe outputs
+2. validate and transactionally save the candidate
+3. publish a fixed runtime candidate to the control task
+4. reset mixer, trims and special-function runtime state
+5. send the new ExpressLRS Model ID while CH5 remains low
+6. acknowledge the activation and only then release maintenance
+
+No reboot is required, and a failed hand-off remains locked.
+
+## OpenPocket presentation boundary
+
+The home renderer consumes synchronized snapshots only. It draws two live
+gimbal plots (yaw/throttle and roll/pitch), battery/link/module/video status
+and the highest-priority warning. The warning page lists all current causes,
+including storage, calibration, invalid or stale input, high throttle, ARM
+switch, mixer deadline, watchdog recovery, battery sensor/level, module/link,
+logging, unsaved model, maintenance and video loss.
+
+The VRX controller and 30×16 analog OSD compositor are platform-independent.
+They do not access SPI or video hardware themselves. The selected production
+VRX and AT7456E-class device must implement those target interfaces after the
+schematic and pinout are frozen.
 
 ## Updates and recovery
 

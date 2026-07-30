@@ -2,14 +2,17 @@
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
+#include "rivettx/product.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
 #include "virtual_hardware.hpp"
 
 #include <array>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -40,6 +43,30 @@ class FakeWatchdog final : public IWatchdog {
     ++count;
   }
   uint32_t count = 0;
+};
+
+class FakeVrxHardware final : public IVrxHardware {
+ public:
+  bool tune(uint16_t frequency_mhz) override
+  {
+    tuned = frequency_mhz;
+    ++tunes;
+    return available;
+  }
+
+  bool sample(int16_t& rssi, bool& video_signal) override
+  {
+    if (!available) {
+      return false;
+    }
+    rssi = tuned == 5800 ? -20 : -90;
+    video_signal = tuned == 5800;
+    return true;
+  }
+
+  uint16_t tuned = 0;
+  uint32_t tunes = 0;
+  bool available = true;
 };
 
 class FakeToneOutput final : public IToneOutput {
@@ -163,13 +190,16 @@ class MemoryTelemetrySink final : public ITelemetryLogSink {
  public:
   bool append(TimeUs time_us, uint16_t sensor_id, int32_t value) override
   {
+    if (fail_append) {
+      return false;
+    }
     samples.push_back({time_us, sensor_id, value});
     return true;
   }
   bool flush() override
   {
     ++flushes;
-    return true;
+    return !fail_flush;
   }
   struct Sample {
     TimeUs time_us;
@@ -178,6 +208,8 @@ class MemoryTelemetrySink final : public ITelemetryLogSink {
   };
   std::vector<Sample> samples;
   uint32_t flushes = 0;
+  bool fail_append = false;
+  bool fail_flush = false;
 };
 
 class MemoryBackup final : public IBackupEndpoint {
@@ -385,6 +417,30 @@ void test_mixer_features()
   CHECK(first.channels[0] > 0);
   CHECK(second.channels[0] >= first.channels[0]);
 
+  Model position_model = make_default_model();
+  position_model.input_count = 0;
+  position_model.mix_count = 1;
+  position_model.mixes[0].enabled = true;
+  position_model.mixes[0].destination = 0;
+  position_model.mixes[0].source = {
+      SourceKind::Constant, 0, kResolution};
+  position_model.mixes[0].condition = {
+      5, false, SwitchPosition::Middle};
+  ControlInputs positioned = inputs;
+  positioned.switch_positions[5] = -1;
+  MixerEngine position_mixer;
+  CHECK(position_mixer.evaluate(
+            position_model, positioned, telemetry, 150000)
+            .channels[0] == 0);
+  positioned.switch_positions[5] = 0;
+  CHECK(position_mixer.evaluate(
+            position_model, positioned, telemetry, 154000)
+            .channels[0] == kResolution);
+  positioned.switch_positions[5] = 1;
+  CHECK(position_mixer.evaluate(
+            position_model, positioned, telemetry, 158000)
+            .channels[0] == 0);
+
   model.logical_switch_count = 1;
   model.logical_switches[0].operation = LogicalSwitchOp::Greater;
   model.logical_switches[0].lhs = {SourceKind::Axis, 0, 0};
@@ -575,6 +631,9 @@ void test_crsf()
   CHECK(parser.stats().valid_frames == 1);
   CHECK(telemetry.value(crsf::SensorBatteryVoltage, voltage));
   CHECK(voltage == 12300);
+  const auto dropped_before = parser.stats().dropped_bytes;
+  CHECK(!parser.feed(crsf::kAddressModule, 5250));
+  CHECK(parser.stats().dropped_bytes == dropped_before + 1);
   crsf::Frame popped{};
   CHECK(!parser.pop_frame(popped));
 
@@ -963,6 +1022,10 @@ void test_storage()
   CHECK(decoded.mix_count == 12);
   CHECK(decoded.mixes[4].source.kind == SourceKind::Switch);
   CHECK(decoded.mixes[4].source.index == kFirstAuxSwitch);
+  CHECK(decoded.vrx_band == 0);
+  CHECK(decoded.vrx_channel == 0);
+  CHECK(decoded.video_overlay_enabled);
+  CHECK(decoded.simulator_rf_lock);
 
   model.model_id = 18;
   CHECK(store.save(model, 8, error));
@@ -980,45 +1043,48 @@ void test_storage()
   CHECK(!store.save(invalid, 9, error));
   CHECK(error == "invalid model shape");
 
-  Model legacy_default = make_default_model();
-  legacy_default.input_count = 4;
-  legacy_default.mix_count = 4;
-  legacy_default.required_switch_mask = 0;
-  legacy_default.outputs[4].failsafe = 0;
-  auto legacy_encoded = ModelCodec::encode(legacy_default, 10);
-  CHECK(legacy_encoded.size() > 6);
-  legacy_encoded[4] = 3;
-  legacy_encoded[5] = 0;
-  Model migrated{};
-  uint32_t migrated_generation = 0;
+  Model product_model = make_default_model();
+  product_model.vrx_band = 3;
+  product_model.vrx_channel = 6;
+  product_model.video_overlay_enabled = false;
+  product_model.simulator_rf_lock = false;
+  product_model.mixes[0].condition = {
+      static_cast<int8_t>(kFirstAuxSwitch + 1), false,
+      SwitchPosition::Middle};
+  const auto product_encoded = ModelCodec::encode(product_model, 10);
+  Model product_decoded{};
+  uint32_t product_generation = 0;
   error.clear();
-  CHECK(ModelCodec::decode(legacy_encoded, migrated, migrated_generation,
-                           error));
-  CHECK(migrated_generation == 10);
-  CHECK(migrated.input_count == 8);
-  CHECK(migrated.mix_count == 12);
-  CHECK(migrated.mixes[4].source.kind == SourceKind::Switch);
-  CHECK(migrated.outputs[4].failsafe == -kResolution);
-  CHECK((migrated.required_switch_mask &
-         static_cast<uint8_t>(1U << kFirstAuxSwitch)) != 0);
+  CHECK(ModelCodec::decode(product_encoded, product_decoded,
+                           product_generation, error));
+  CHECK(product_generation == 10);
+  CHECK(product_decoded.vrx_band == 3);
+  CHECK(product_decoded.vrx_channel == 6);
+  CHECK(!product_decoded.video_overlay_enabled);
+  CHECK(!product_decoded.simulator_rf_lock);
+  CHECK(product_decoded.mixes[0].condition.position ==
+        SwitchPosition::Middle);
 
-  Model legacy_v4 = make_default_model();
-  legacy_v4.input_count = 4;
-  legacy_v4.mix_count = 8;
-  auto legacy_v4_encoded = ModelCodec::encode(legacy_v4, 11);
-  CHECK(legacy_v4_encoded.size() > 6);
-  legacy_v4_encoded[4] = 4;
-  legacy_v4_encoded[5] = 0;
-  Model migrated_v4{};
-  uint32_t migrated_v4_generation = 0;
-  error.clear();
-  CHECK(ModelCodec::decode(legacy_v4_encoded, migrated_v4,
-                           migrated_v4_generation, error));
-  CHECK(migrated_v4_generation == 11);
-  CHECK(migrated_v4.input_count == 8);
-  CHECK(migrated_v4.mix_count == 12);
-  CHECK(migrated_v4.mixes[8].source.kind == SourceKind::Input);
-  CHECK(migrated_v4.mixes[8].source.index == 4);
+  ModelLibrary library(files);
+  Model active = make_default_model();
+  uint32_t active_generation = 1;
+  CHECK(library.bootstrap(active, active_generation, error));
+  CHECK(library.active_slot() == 0);
+  Model second = make_default_model();
+  std::snprintf(second.name.data(), second.name.size(), "Second");
+  second.model_id = 2;
+  uint8_t second_slot = 0;
+  CHECK(library.create(second, 1, second_slot, error));
+  CHECK(second_slot == 1);
+  const auto summaries = library.summaries();
+  CHECK(summaries[0].present);
+  CHECK(summaries[1].present);
+  CHECK(std::strcmp(summaries[1].name.data(), "Second") == 0);
+  CHECK(library.select(second_slot, active, active_generation, error));
+  CHECK(library.active_slot() == second_slot);
+  CHECK(active.model_id == 2);
+  CHECK(!library.remove(second_slot, error));
+  CHECK(library.remove(0, error));
 
   std::array<AxisCalibration, kMaxAxes> calibration{};
   CalibrationStore calibration_store(files, "calibration.bin");
@@ -1075,6 +1141,21 @@ void test_ui()
   CHECK(!make_timers_screen(model, {}).fields.empty());
   CHECK(!make_elrs_screen(ElrsManagerStatus{}, true).fields.empty());
   CHECK(!make_elrs_finder_screen(ElrsFinderStatus{}).fields.empty());
+  CHECK(!make_main_menu_screen().fields.empty());
+
+  UiHomeStatus home{};
+  home.axes = {-1024, 1024, -512, 512};
+  home.battery_mv = 3800;
+  home.link_quality = 87;
+  home.module_online = true;
+  home.warning_count = 2;
+  home.warnings[0] = UiWarningCode::ThrottleHigh;
+  home.warnings[1] = UiWarningCode::BatteryLow;
+  ui.set_screen(make_openpocket_home_screen(model, home));
+  CHECK(ui.render());
+  CHECK(canvas.pixel_at(0, 9));
+  CHECK(canvas.pixel_at(2, 20));
+  CHECK(!make_warnings_screen(home).fields.empty());
 
   const OutputLimit unchanged = model.outputs[0];
   CHECK(!ModelEditor::apply(
@@ -1145,6 +1226,16 @@ void test_services()
   CHECK(sink.samples.size() == 2);
   logger.stop();
   CHECK(sink.flushes == 1);
+  sink.fail_append = true;
+  logger.start();
+  CHECK(!logger.sample(telemetry, 200000));
+  CHECK(logger.failed());
+  CHECK(!logger.active());
+  sink.fail_append = false;
+  sink.fail_flush = true;
+  logger.start();
+  CHECK(!logger.stop());
+  CHECK(logger.failed());
 
   FakeScript script;
   ScriptSupervisor scripts(script, diagnostics,
@@ -1182,7 +1273,7 @@ void test_module_update_backup_and_calibration()
   BootManager boot(ota, diagnostics);
   ota.pending = true;
   CHECK(boot.finish_startup(
-      {true, true, true, true, true, true, true}, 1000));
+      {true, true, true, true, true, true, false}, 1000));
   CHECK(ota.marked);
   ota.marked = false;
   CHECK(!boot.finish_startup(
@@ -1290,6 +1381,89 @@ void test_module_update_backup_and_calibration()
         PowerDecision::LockAndShutdown);
 }
 
+void test_openpocket_product_services()
+{
+  CHECK(vrx_frequency_mhz(0, 0) == 5865);
+  CHECK(vrx_frequency_mhz(5, 7) == 5621);
+  CHECK(vrx_frequency_mhz(6, 0) == 0);
+
+  FakeVrxHardware hardware;
+  VrxController vrx(hardware, 80);
+  CHECK(vrx.select(3, 3, 1000));
+  vrx.tick(2000);
+  CHECK(vrx.status().frequency_mhz == 5800);
+  CHECK(vrx.status().video_signal);
+  CHECK(vrx.status().strength_percent == 100);
+  CHECK(vrx.begin_scan(100000));
+  for (std::size_t step = 0;
+       step <= kVrxBandCount * kVrxChannelsPerBand; ++step) {
+    vrx.tick(100000 + (step + 1) * 80000);
+  }
+  CHECK(!vrx.status().scanning);
+  CHECK(vrx.status().frequency_mhz == 5800);
+
+  Model model = make_default_model();
+  UiHomeStatus home{};
+  home.battery_mv = 3900;
+  home.link_quality = 92;
+  home.module_online = true;
+  home.channels[4] = -kResolution;
+  CharacterOsdComposer osd;
+  osd.compose(model, home, vrx.status());
+  CHECK(osd.frame().at(0, 0) == 'D');
+  CHECK(osd.frame().at(0, 4) == 'T');
+  CHECK(osd.frame().at(10, 6) == 'V');
+
+  UsbSimulator usb;
+  CHECK(!usb.enter(false, true));
+  CHECK(usb.enter(true, true));
+  CHECK(usb.active());
+  CHECK(!usb.rf_output_allowed());
+  ControlInputs controls{};
+  controls.axes[0] = 512;
+  controls.axes[4] = -333;
+  controls.switches[4] = true;
+  ChannelFrame channels{};
+  channels.channels[4] = 1024;
+  const auto report = usb.report(controls, channels);
+  CHECK(report.axes[0] == 512);
+  CHECK(report.axes[4] == -333);
+  CHECK((report.buttons & (1UL << 4)) != 0);
+  usb.leave();
+  CHECK(usb.rf_output_allowed());
+
+  BatteryEstimator estimator;
+  const auto power =
+      estimator.estimate(3750, true, ChargeState::Charging, true, 500, 750);
+  CHECK(power.percentage_valid);
+  CHECK(power.percentage == 50);
+  CHECK(power.runtime_valid);
+  CHECK(power.runtime_minutes == 90);
+  CHECK(estimator.estimate(0, false, ChargeState::Fault, false)
+            .sensor_fault);
+
+  OnboardingGuide guide;
+  OnboardingEvidence evidence{};
+  guide.begin();
+  CHECK(guide.advance(evidence));
+  evidence.calibration_valid = true;
+  CHECK(guide.advance(evidence));
+  evidence.arm_switch_identified = true;
+  CHECK(guide.advance(evidence));
+  evidence.aux_positions_verified = true;
+  CHECK(guide.advance(evidence));
+  evidence.elrs_online = true;
+  CHECK(guide.advance(evidence));
+  CHECK(guide.advance(evidence));
+  evidence.battery_profile_valid = true;
+  CHECK(guide.advance(evidence));
+  evidence.channel_preview_valid = true;
+  CHECK(!guide.advance(evidence));
+  evidence.arm_channel_low = true;
+  CHECK(guide.advance(evidence));
+  CHECK(guide.complete());
+}
+
 }  // namespace
 
 int main()
@@ -1307,6 +1481,7 @@ int main()
   test_ui();
   test_services();
   test_module_update_backup_and_calibration();
+  test_openpocket_product_services();
 
   if (failures != 0) {
     std::cerr << failures << " of " << checks << " checks failed\n";

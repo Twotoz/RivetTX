@@ -4,6 +4,7 @@
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
+#include "rivettx/product.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
@@ -12,7 +13,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
@@ -20,6 +23,7 @@
 #include <vector>
 
 #include "esp_log.h"
+#include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
@@ -35,7 +39,31 @@ using namespace rivettx::esp32;
 
 constexpr char kTag[] = "rivettx";
 constexpr uint32_t kControlPeriodUs = 4000;
-constexpr uint8_t kScreenCount = 15;
+
+enum class AppScreen : uint8_t {
+  Home,
+  Menu,
+  Warnings,
+  Models,
+  Outputs,
+  ModelSetup,
+  Inputs,
+  Mixes,
+  Limits,
+  FlightModes,
+  Curves,
+  Logical,
+  Special,
+  Timers,
+  Telemetry,
+  Finder,
+  Elrs,
+  Video,
+  Usb,
+  Web,
+  Power,
+  System,
+};
 
 #if CONFIG_FREERTOS_UNICORE
 constexpr BaseType_t kControlCore = 0;
@@ -101,11 +129,50 @@ class SpecialActionMailbox final : public ISpecialActionHandler {
   std::size_t count_ = 0;
 };
 
+class LuaCrsfMailbox final : public ILuaCrsfSink {
+ public:
+  bool submit(const crsf::Frame& frame) override
+  {
+    bool queued = false;
+    taskENTER_CRITICAL(&lock_);
+    if (count_ < frames_.size()) {
+      frames_[write_] = frame;
+      write_ = (write_ + 1) % frames_.size();
+      ++count_;
+      queued = true;
+    }
+    taskEXIT_CRITICAL(&lock_);
+    return queued;
+  }
+
+  bool pop(crsf::Frame& frame)
+  {
+    bool available = false;
+    taskENTER_CRITICAL(&lock_);
+    if (count_ != 0) {
+      frame = frames_[read_];
+      read_ = (read_ + 1) % frames_.size();
+      --count_;
+      available = true;
+    }
+    taskEXIT_CRITICAL(&lock_);
+    return available;
+  }
+
+ private:
+  std::array<crsf::Frame, 4> frames_{};
+  std::size_t read_ = 0;
+  std::size_t write_ = 0;
+  std::size_t count_ = 0;
+  portMUX_TYPE lock_ = portMUX_INITIALIZER_UNLOCKED;
+};
+
 struct Application {
   EspBoard board;
   EspCrsfTransport transport;
   Ssd1306Display display;
   EspToneOutput tones;
+  EspUsbGamepad usb_gamepad;
   AudioAlertScheduler audio{tones};
   AudioWarningMonitor audio_warnings{audio_warning_config()};
   EspWatchdog watchdog;
@@ -126,10 +193,14 @@ struct Application {
   TrimController trim_controls;
   SafetyManager safety{safety_config()};
   BatteryMonitor battery{battery_config()};
+  BatteryEstimator battery_estimator{
+      battery_config().critical_mv,
+      static_cast<uint16_t>(battery_config().low_mv + 700)};
   PosixFileStore files{"/models"};
   TransactionalModelStore model_store{files, "active.rvm"};
+  ModelLibrary model_library{files};
   CalibrationStore calibration_store{files, "calibration.bin"};
-  WifiBackupPortal backup_portal{model_store, safety};
+  WifiBackupPortal backup_portal{model_store, model_library, safety};
   CsvTelemetrySink telemetry_sink{"/models/telemetry.csv"};
   TelemetryLogger telemetry_logger{telemetry_sink, 100};
   AlarmEngine alarms;
@@ -138,17 +209,23 @@ struct Application {
   PowerManager power;
   MonoCanvas canvas{128, 64};
   MonoCanvas lua_canvas{128, 64};
-  LuaVm lua{service_telemetry, parser, transport, lua_canvas, &audio};
+  LuaCrsfMailbox lua_crsf;
+  LuaVm lua{service_telemetry, parser, lua_crsf, lua_canvas, &audio};
   ScriptSupervisor scripts{lua, service_diagnostics};
   UiController ui{display, canvas};
   BootManager boot{ota, boot_diagnostics};
   Model model = make_default_model();
   Model edit_model = make_default_model();
+  std::array<StoredModelSummary, kMaximumStoredModels> model_summaries{};
+  ControlInputs latest_controls{};
   ChannelFrame latest_frame{};
   std::array<TimerState, kMaxTimers> latest_timers{};
   std::array<TelemetryEntry, kMaxTelemetrySensors> latest_telemetry{};
   ElrsManagerStatus latest_elrs{};
   ElrsFinderStatus latest_finder{};
+  SafetyStatus latest_safety{};
+  uint16_t latest_battery_mv = 0;
+  bool latest_battery_sensor_valid = true;
   BatteryState latest_battery_state = BatteryState::Unknown;
   ModuleState latest_module_state = ModuleState::Starting;
   SafetyState latest_safety_state = SafetyState::Booting;
@@ -157,6 +234,8 @@ struct Application {
   int8_t latest_encoder_delta = 0;
   bool latest_encoder_pressed = false;
   std::atomic<bool> finder_enabled{false};
+  std::atomic<bool> usb_simulator_enabled{false};
+  std::atomic<bool> usb_rf_lock{true};
   TimeUs safety_chord_started_us = 0;
   bool safety_chord_fired = false;
   SafetyState previous_safety_state = SafetyState::Booting;
@@ -166,9 +245,14 @@ struct Application {
   std::atomic<bool> snapshot_pending{false};
   std::atomic<uint32_t> healthy_control_cycles{0};
   std::atomic<int8_t> logging_request{-1};
+  std::atomic<bool> logging_active{false};
+  std::atomic<bool> logging_failed{false};
   std::atomic<bool> screenshot_requested{false};
   std::atomic<bool> persist_runtime_model{false};
   Model runtime_model_to_persist = make_default_model();
+  Model pending_model_activation = make_default_model();
+  // 0 idle, 1 pending, 2 applied, -1 rejected.
+  std::atomic<int8_t> model_activation_state{0};
   std::mutex runtime_model_mutex;
   std::atomic<uint32_t> last_user_activity_ms{0};
   bool calibration_valid = false;
@@ -190,7 +274,12 @@ void queue_crash_snapshot(uint32_t reason)
 
 void control_task(void*)
 {
-  (void)esp_task_wdt_add(nullptr);
+  const esp_err_t watchdog_registration = esp_task_wdt_add(nullptr);
+  if (watchdog_registration != ESP_OK) {
+    ESP_LOGE(kTag, "control watchdog registration failed: %s",
+             esp_err_to_name(watchdog_registration));
+    app.safety.request_lock();
+  }
   TickType_t last_wake = xTaskGetTickCount();
   TimeUs scheduled_release_us = now_us();
   const TickType_t period =
@@ -198,6 +287,24 @@ void control_task(void*)
 
   while (true) {
     const TimeUs started = now_us();
+    if (app.usb_simulator_enabled.load(std::memory_order_acquire) &&
+        app.usb_rf_lock.load(std::memory_order_acquire)) {
+      app.safety.request_lock();
+    }
+    if (app.model_activation_state.load(std::memory_order_acquire) == 1) {
+      Model candidate{};
+      {
+        const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
+        candidate = app.pending_model_activation;
+      }
+      app.safety.request_lock();
+      app.model = candidate;
+      app.mixer.reset();
+      app.trim_controls.reset();
+      app.special_functions.reset();
+      app.module.set_model_id(app.model.model_id, started);
+      app.model_activation_state.store(2, std::memory_order_release);
+    }
     const RawInputs raw = app.board.sample_inputs(started);
     const ControlInputs controls = app.input_processor.process(raw);
 
@@ -296,19 +403,27 @@ void control_task(void*)
     const uint32_t mixer_duration = static_cast<uint32_t>(
         mixed_at >= scheduled_release_us ? mixed_at - scheduled_release_us : 0);
 
-    const uint16_t raw_battery = app.board.sample_battery_mv();
-    const BatteryState battery_state = app.battery.update(raw_battery);
-    app.safety.report_battery(app.battery.voltage_mv());
+    const BatterySample battery_sample = app.board.sample_battery();
+    const BatteryState battery_state =
+        app.battery.update(battery_sample.millivolts);
+    if (battery_sample.configured && !battery_sample.valid) {
+      app.safety.report_battery_fault();
+    } else {
+      app.safety.report_battery(app.battery.voltage_mv());
+    }
     app.safety.report_mixer_duration(mixer_duration);
     ChannelFrame frame =
         app.safety.gate(app.model, controls, proposed, mixed_at);
 
     (void)app.module.send_channels(frame, now_us());
+    crsf::Frame lua_frame{};
+    if (app.lua_crsf.pop(lua_frame)) {
+      (void)app.transport.write(lua_frame.bytes.data(), lua_frame.size);
+    }
     app.module.poll(now_us());
     app.elrs.tick(now_us());
     if (raw.valid &&
-        mixer_duration <= safety_config().maximum_mixer_duration_us &&
-        app.module.status().state == ModuleState::Online) {
+        mixer_duration <= safety_config().maximum_mixer_duration_us) {
       app.healthy_control_cycles.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -325,7 +440,8 @@ void control_task(void*)
       app.previous_battery_state = battery_state;
     }
 
-    const SafetyState safety_state = app.safety.status().state;
+    const SafetyStatus safety_status = app.safety.status();
+    const SafetyState safety_state = safety_status.state;
     if (safety_state != app.previous_safety_state) {
       app.diagnostics.push(
           {now_us(),
@@ -346,10 +462,15 @@ void control_task(void*)
     }
 
     taskENTER_CRITICAL(&app.frame_lock);
+    app.latest_controls = controls;
     app.latest_frame = frame;
     app.latest_timers = app.mixer.timer_states();
     app.latest_telemetry = app.telemetry.entries();
     app.latest_elrs = app.elrs.status();
+    app.latest_safety = safety_status;
+    app.latest_battery_mv = app.battery.voltage_mv();
+    app.latest_battery_sensor_valid =
+        !battery_sample.configured || battery_sample.valid;
     app.latest_battery_state = battery_state;
     app.latest_module_state = app.module.status().state;
     app.latest_safety_state = safety_state;
@@ -371,55 +492,273 @@ void control_task(void*)
   }
 }
 
-UiScreen current_screen(uint8_t index, const ChannelFrame& frame,
-                        const std::array<TimerState, kMaxTimers>& timers,
-                        const std::array<TelemetryEntry,
-                                         kMaxTelemetrySensors>& telemetry,
-                        const ElrsManagerStatus& elrs,
-                        const ElrsFinderStatus& finder)
+UiHomeStatus current_home_status(
+    const ControlInputs& controls, const ChannelFrame& frame,
+    const std::array<TelemetryEntry, kMaxTelemetrySensors>& telemetry,
+    const SafetyStatus& safety, BatteryState battery_state,
+    uint16_t battery_mv, bool battery_sensor_valid,
+    ModuleState module_state, bool model_dirty)
+{
+  UiHomeStatus home{};
+  for (std::size_t axis = 0; axis < home.axes.size(); ++axis) {
+    home.axes[axis] = controls.axes[axis];
+  }
+  home.channels = frame.channels;
+  home.battery_mv = battery_mv;
+  const auto product_power = app.battery_estimator.estimate(
+      battery_mv, battery_sensor_valid, ChargeState::Unknown, false);
+  home.battery_percent = product_power.percentage;
+  home.battery_percent_valid = product_power.percentage_valid;
+  home.outputs_enabled = safety.state == SafetyState::Enabled;
+  home.module_online = module_state == ModuleState::Online;
+  home.logging = app.logging_active.load(std::memory_order_acquire);
+  home.video_signal = true;
+  home.vrx_band = app.edit_model.vrx_band;
+  home.vrx_channel = app.edit_model.vrx_channel;
+
+  bool link_discovered = false;
+  for (const auto& sensor : telemetry) {
+    if (sensor.discovered &&
+        sensor.id == crsf::SensorUplinkLinkQuality) {
+      home.link_quality = static_cast<uint8_t>(
+          clamp<int32_t>(0, sensor.value, 100));
+      link_discovered = true;
+      break;
+    }
+  }
+  const auto add_warning = [&home](UiWarningCode warning) {
+    for (std::size_t index = 0; index < home.warning_count; ++index) {
+      if (home.warnings[index] == warning) {
+        return;
+      }
+    }
+    if (home.warning_count < home.warnings.size()) {
+      home.warnings[home.warning_count++] = warning;
+    }
+  };
+  switch (safety.reason) {
+    case SafetyReason::StorageInvalid:
+      add_warning(UiWarningCode::StorageInvalid);
+      break;
+    case SafetyReason::InputsInvalid:
+      add_warning(UiWarningCode::InputInvalid);
+      break;
+    case SafetyReason::InputsStale:
+      add_warning(UiWarningCode::InputStale);
+      break;
+    case SafetyReason::ThrottleHigh:
+      add_warning(UiWarningCode::ThrottleHigh);
+      break;
+    case SafetyReason::SwitchMismatch:
+      add_warning(UiWarningCode::ArmSwitch);
+      break;
+    case SafetyReason::MixerDeadline:
+      add_warning(UiWarningCode::MixerDeadline);
+      break;
+    case SafetyReason::WatchdogRecovery:
+      add_warning(UiWarningCode::WatchdogRecovery);
+      break;
+    case SafetyReason::BatteryCritical:
+      add_warning(UiWarningCode::BatteryCritical);
+      break;
+    case SafetyReason::BatterySensor:
+      add_warning(UiWarningCode::BatterySensor);
+      break;
+    case SafetyReason::None:
+    case SafetyReason::Startup:
+    case SafetyReason::ManualLock:
+      break;
+  }
+  if (!app.calibration_valid) {
+    add_warning(UiWarningCode::CalibrationRequired);
+  }
+  if (!battery_sensor_valid) {
+    add_warning(UiWarningCode::BatterySensor);
+  } else if (battery_state == BatteryState::Critical) {
+    add_warning(UiWarningCode::BatteryCritical);
+  } else if (battery_state == BatteryState::Low) {
+    add_warning(UiWarningCode::BatteryLow);
+  }
+  if (module_state == ModuleState::Offline) {
+    add_warning(UiWarningCode::ModuleOffline);
+  }
+  if (link_discovered) {
+    if (home.link_quality == 0) {
+      add_warning(UiWarningCode::LinkLost);
+    } else if (home.link_quality <= CONFIG_RIVETTX_LINK_CRITICAL_LQ) {
+      add_warning(UiWarningCode::LinkCritical);
+    } else if (home.link_quality <= CONFIG_RIVETTX_LINK_WARNING_LQ) {
+      add_warning(UiWarningCode::LinkWeak);
+    }
+  }
+  if (app.logging_failed.load(std::memory_order_acquire)) {
+    add_warning(UiWarningCode::LoggingFailed);
+  }
+  if (model_dirty) {
+    add_warning(UiWarningCode::ModelUnsaved);
+  }
+  if (app.backup_portal.running() || home.logging ||
+      app.usb_simulator_enabled.load(std::memory_order_acquire) ||
+      app.model_activation_state.load(std::memory_order_acquire) != 0) {
+    add_warning(UiWarningCode::Maintenance);
+  }
+  return home;
+}
+
+const char* telemetry_name(uint16_t id)
+{
+  switch (id) {
+    case crsf::SensorUplinkRssi1:
+      return "RSSI ANT1";
+    case crsf::SensorUplinkRssi2:
+      return "RSSI ANT2";
+    case crsf::SensorUplinkLinkQuality:
+      return "UPLINK LQ";
+    case crsf::SensorUplinkSnr:
+      return "UPLINK SNR";
+    case crsf::SensorRfMode:
+      return "RF MODE";
+    case crsf::SensorTxPower:
+      return "TX POWER";
+    case crsf::SensorDownlinkRssi:
+      return "DOWN RSSI";
+    case crsf::SensorDownlinkLinkQuality:
+      return "DOWN LQ";
+    case crsf::SensorDownlinkSnr:
+      return "DOWN SNR";
+    case crsf::SensorBatteryVoltage:
+      return "RX BATTERY";
+    case crsf::SensorBatteryCurrent:
+      return "RX CURRENT";
+    case crsf::SensorBatteryCapacity:
+      return "RX CAPACITY";
+    case crsf::SensorBatteryRemaining:
+      return "RX REMAIN";
+    case crsf::SensorGpsLatitude:
+      return "GPS LAT";
+    case crsf::SensorGpsLongitude:
+      return "GPS LON";
+    case crsf::SensorGpsSpeed:
+      return "GPS SPEED";
+    case crsf::SensorGpsHeading:
+      return "GPS HEADING";
+    case crsf::SensorGpsAltitude:
+      return "GPS ALT";
+    case crsf::SensorGpsSatellites:
+      return "GPS SATS";
+    case crsf::SensorActiveAntenna:
+      return "ACTIVE ANT";
+    case crsf::SensorUplinkRssi:
+      return "UPLINK RSSI";
+    default:
+      return "SENSOR";
+  }
+}
+
+const char* telemetry_unit(TelemetryUnit unit)
+{
+  switch (unit) {
+    case TelemetryUnit::Percent:
+      return "%";
+    case TelemetryUnit::Dbm:
+      return "DBM";
+    case TelemetryUnit::Db:
+      return "DB";
+    case TelemetryUnit::Milliwatt:
+      return "MW";
+    case TelemetryUnit::Millivolt:
+      return "MV";
+    case TelemetryUnit::Milliamp:
+      return "MA";
+    case TelemetryUnit::MilliampHour:
+      return "MAH";
+    case TelemetryUnit::DegreesE7:
+      return "E7";
+    case TelemetryUnit::Centimeters:
+      return "CM";
+    case TelemetryUnit::CentimetersPerSecond:
+      return "CM/S";
+    case TelemetryUnit::Raw:
+      return "";
+  }
+  return "";
+}
+
+UiScreen current_screen(
+    AppScreen index, const ChannelFrame& frame,
+    const std::array<TimerState, kMaxTimers>& timers,
+    const std::array<TelemetryEntry, kMaxTelemetrySensors>& telemetry,
+    const ElrsManagerStatus& elrs, const ElrsFinderStatus& finder,
+    const SafetyStatus& safety, BatteryState battery_state,
+    uint16_t battery_mv, bool battery_sensor_valid,
+    const UiHomeStatus& home)
 {
   switch (index) {
-    case 0: {
-      int32_t link_quality = 0;
-      for (const auto& sensor : telemetry) {
-        if (sensor.discovered &&
-            sensor.id == crsf::SensorUplinkLinkQuality) {
-          link_quality = sensor.value;
-          break;
+    case AppScreen::Home:
+      return make_openpocket_home_screen(app.edit_model, home);
+    case AppScreen::Menu:
+      return make_main_menu_screen();
+    case AppScreen::Warnings:
+      return make_warnings_screen(home);
+    case AppScreen::Models: {
+      UiScreen screen{"models", "Models", {}};
+      for (const auto& summary : app.model_summaries) {
+        if (!summary.present) {
+          continue;
+        }
+        const std::string slot = std::to_string(summary.slot);
+        screen.fields.push_back(
+            {"select." + slot, summary.name.data(),
+             summary.slot == app.model_library.active_slot()
+                 ? "ACTIVE"
+                 : "ID " + std::to_string(summary.model_id),
+             UiFieldKind::Action, summary.slot, 0,
+             static_cast<int32_t>(kMaximumStoredModels - 1),
+             false, true});
+        if (summary.slot != app.model_library.active_slot()) {
+          screen.fields.push_back(
+              {"delete." + slot, "DELETE " + std::string(summary.name.data()),
+               "ENTER", UiFieldKind::Action, summary.slot, 0,
+               static_cast<int32_t>(kMaximumStoredModels - 1),
+               false, true});
         }
       }
-      return make_main_screen(
-          app.model, frame, app.battery.voltage_mv(),
-          static_cast<uint8_t>(clamp<int32_t>(0, link_quality, 100)),
-          app.safety.status().state == SafetyState::Enabled);
+      screen.fields.push_back(
+          {"new", "NEW MODEL", "ENTER", UiFieldKind::Action,
+           0, 0, 1, false, true});
+      screen.fields.push_back(
+          {"copy", "COPY ACTIVE", "ENTER", UiFieldKind::Action,
+           0, 0, 1, false, true});
+      return screen;
     }
-    case 1:
+    case AppScreen::Outputs:
       return make_outputs_screen(frame);
-    case 2:
+    case AppScreen::ModelSetup:
       return make_model_setup_screen(app.edit_model);
-    case 3:
+    case AppScreen::Inputs:
       return make_inputs_screen(app.edit_model);
-    case 4:
+    case AppScreen::Mixes:
       return make_mixes_screen(app.edit_model);
-    case 5:
+    case AppScreen::Limits:
       return make_output_limits_screen(app.edit_model);
-    case 6:
+    case AppScreen::FlightModes:
       return make_flight_modes_screen(app.edit_model);
-    case 7:
+    case AppScreen::Curves:
       return make_curves_screen(app.edit_model);
-    case 8:
+    case AppScreen::Logical:
       return make_logical_switches_screen(app.edit_model);
-    case 9:
+    case AppScreen::Special:
       return make_special_functions_screen(app.edit_model);
-    case 10:
+    case AppScreen::Timers:
       return make_timers_screen(app.edit_model, timers);
-    case 11: {
+    case AppScreen::Telemetry: {
       std::vector<UiField> sensors;
       for (const auto& sensor : telemetry) {
         if (sensor.discovered) {
           sensors.push_back(
               {"sensor." + std::to_string(sensor.id),
-               "S" + std::to_string(sensor.id), std::to_string(sensor.value),
+               telemetry_name(sensor.id),
+               std::to_string(sensor.value) + telemetry_unit(sensor.unit),
                UiFieldKind::Label, sensor.value, 0, 0, false, true});
         }
       }
@@ -430,15 +769,107 @@ UiScreen current_screen(uint8_t index, const ChannelFrame& frame,
       }
       return make_telemetry_screen(sensors);
     }
-    case 12:
+    case AppScreen::Finder:
       return make_elrs_finder_screen(finder);
-    case 13:
+    case AppScreen::Elrs:
       return make_elrs_screen(elrs, app.safety.maintenance_allowed());
-    default:
+    case AppScreen::Video: {
+      UiScreen screen{"video", "Video RX OSD", {}};
+      screen.fields.push_back(
+          {"vrx_band", "VRX BAND", "", UiFieldKind::Number,
+           app.edit_model.vrx_band, 0, 5, true, true});
+      screen.fields.push_back(
+          {"vrx_channel", "VRX CHANNEL", "", UiFieldKind::Number,
+           app.edit_model.vrx_channel + 1, 1, 8, true, true});
+      screen.fields.push_back(
+          {"overlay", "VIDEO OVERLAY", "", UiFieldKind::Boolean,
+           app.edit_model.video_overlay_enabled ? 1 : 0,
+           0, 1, true, true});
+      screen.fields.push_back(
+          {"backend", "HARDWARE", "NOT DETECTED", UiFieldKind::Label,
+           0, 0, 0, false, true});
+      return screen;
+    }
+    case AppScreen::Usb: {
+      UiScreen screen{"usb", "USB Simulator", {}};
+      const bool supported = app.usb_gamepad.supported();
+      const bool active =
+          app.usb_simulator_enabled.load(std::memory_order_acquire);
+      screen.fields.push_back(
+          {"support", "USB GAMEPAD",
+           !supported
+               ? "S3 REQUIRED"
+               : (app.usb_gamepad.mounted() ? "HOST CONNECTED"
+                                            : "WAITING HOST"),
+           UiFieldKind::Label,
+           0, 0, 0, false, true});
+      screen.fields.push_back(
+          {"mode", "SIM MODE", active ? "ACTIVE" : "OFF",
+           UiFieldKind::Label, active ? 1 : 0, 0, 1, false, true});
+      screen.fields.push_back(
+          {"rf_lock", "RF SAFETY LOCK", "", UiFieldKind::Boolean,
+           app.edit_model.simulator_rf_lock ? 1 : 0,
+           0, 1, !active, true});
+      screen.fields.push_back(
+          {active ? "disable" : "enable",
+           active ? "STOP SIMULATOR" : "START SIMULATOR",
+           supported ? "ENTER" : "UNAVAILABLE", UiFieldKind::Action,
+           0, 0, 1, false, supported});
+      return screen;
+    }
+    case AppScreen::Web: {
+      UiScreen screen{"web", "Web Config", {}};
+      const bool running = app.backup_portal.running();
+      screen.fields.push_back(
+          {"state", "CONFIG WIFI", running ? "ACTIVE" : "OFF",
+           UiFieldKind::Label, running ? 1 : 0, 0, 1, false, true});
+      if (running) {
+        screen.fields.push_back(
+            {"ssid", "NETWORK", "RivetTX-Recovery",
+             UiFieldKind::Label, 0, 0, 0, false, true});
+        screen.fields.push_back(
+            {"url", "OPEN", "192.168.4.1", UiFieldKind::Label,
+             0, 0, 0, false, true});
+      }
+      screen.fields.push_back(
+          {running ? "stop" : "start",
+           running ? "STOP WEB CONFIG" : "START WEB CONFIG",
+           "ENTER", UiFieldKind::Action, 0, 0, 1, false, true});
+      return screen;
+    }
+    case AppScreen::Power: {
+      UiScreen screen{"power", "Power", {}};
+      const auto product_power = app.battery_estimator.estimate(
+          battery_mv, battery_sensor_valid, ChargeState::Unknown, false);
+      screen.fields.push_back(
+          {"voltage", "BATTERY", std::to_string(battery_mv) + "MV",
+           UiFieldKind::Label, battery_mv, 0, 0, false, true});
+      screen.fields.push_back(
+          {"percentage", "CHARGE",
+           product_power.percentage_valid
+               ? std::to_string(product_power.percentage) + "%"
+               : "UNKNOWN",
+           UiFieldKind::Label, product_power.percentage, 0, 100,
+           false, true});
+      screen.fields.push_back(
+          {"state", "STATE",
+           !battery_sensor_valid
+               ? "SENSOR ERROR"
+               : (battery_state == BatteryState::Critical
+                      ? "CRITICAL"
+                      : (battery_state == BatteryState::Low ? "LOW" : "OK")),
+           UiFieldKind::Label, 0, 0, 0, false, true});
+      screen.fields.push_back(
+          {"hardware", "FUEL GAUGE", "NOT FITTED", UiFieldKind::Label,
+           0, 0, 0, false, true});
+      return screen;
+    }
+    case AppScreen::System:
       return make_system_screen(
-          app.battery.voltage_mv(), esp_get_free_heap_size(),
-          app.safety.status().missed_deadlines, "0.1.0");
+          battery_mv, esp_get_free_heap_size(),
+          safety.missed_deadlines, esp_app_get_description()->version);
   }
+  return make_openpocket_home_screen(app.edit_model, home);
 }
 
 bool run_startup_calibration()
@@ -489,28 +920,97 @@ bool run_startup_calibration()
   return true;
 }
 
+bool menu_target(const std::string& id, AppScreen& target)
+{
+  const std::array<std::pair<const char*, AppScreen>, 20> targets{{
+      {"warnings", AppScreen::Warnings},
+      {"models", AppScreen::Models},
+      {"model", AppScreen::ModelSetup},
+      {"inputs", AppScreen::Inputs},
+      {"mixes", AppScreen::Mixes},
+      {"outputs", AppScreen::Outputs},
+      {"limits", AppScreen::Limits},
+      {"flight_modes", AppScreen::FlightModes},
+      {"curves", AppScreen::Curves},
+      {"logical", AppScreen::Logical},
+      {"special", AppScreen::Special},
+      {"timers", AppScreen::Timers},
+      {"elrs", AppScreen::Elrs},
+      {"finder", AppScreen::Finder},
+      {"video", AppScreen::Video},
+      {"usb", AppScreen::Usb},
+      {"web", AppScreen::Web},
+      {"telemetry", AppScreen::Telemetry},
+      {"power", AppScreen::Power},
+      {"system", AppScreen::System},
+  }};
+  for (const auto& item : targets) {
+    if (id == item.first) {
+      target = item.second;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool parse_slot_action(const std::string& id, const char* prefix,
+                       uint8_t& slot)
+{
+  const std::string marker = std::string(prefix) + ".";
+  if (id.rfind(marker, 0) != 0) {
+    return false;
+  }
+  const char* value = id.c_str() + marker.size();
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (end == value || *end != '\0' || parsed >= kMaximumStoredModels) {
+    return false;
+  }
+  slot = static_cast<uint8_t>(parsed);
+  return true;
+}
+
 void ui_task(void*)
 {
-  uint8_t screen = 0;
+  AppScreen screen = AppScreen::Home;
   uint8_t previous_buttons = 0;
   bool previous_encoder_pressed = false;
   bool model_dirty = false;
+  bool activation_needed = false;
+  bool activation_maintenance = false;
+  bool usb_maintenance = false;
+  bool screen_rendered = false;
+  bool force_screen_rebuild = true;
+  AppScreen rendered_screen = AppScreen::Home;
+  TimeUs next_live_refresh_us = 0;
   TimeUs dirty_since_us = 0;
   while (true) {
+    ControlInputs controls{};
     ChannelFrame frame{};
     std::array<TimerState, kMaxTimers> timers{};
     std::array<TelemetryEntry, kMaxTelemetrySensors> telemetry{};
     ElrsManagerStatus elrs{};
     ElrsFinderStatus finder{};
+    SafetyStatus safety{};
+    BatteryState battery_state = BatteryState::Unknown;
+    ModuleState module_state = ModuleState::Starting;
+    uint16_t battery_mv = 0;
+    bool battery_sensor_valid = true;
     uint8_t buttons = 0;
     int8_t encoder_delta = 0;
     bool encoder_pressed = false;
     taskENTER_CRITICAL(&app.frame_lock);
+    controls = app.latest_controls;
     frame = app.latest_frame;
     timers = app.latest_timers;
     telemetry = app.latest_telemetry;
     elrs = app.latest_elrs;
     finder = app.latest_finder;
+    safety = app.latest_safety;
+    battery_state = app.latest_battery_state;
+    module_state = app.latest_module_state;
+    battery_mv = app.latest_battery_mv;
+    battery_sensor_valid = app.latest_battery_sensor_valid;
     buttons = app.latest_buttons;
     encoder_delta = app.latest_encoder_delta;
     app.latest_encoder_delta = 0;
@@ -531,9 +1031,37 @@ void ui_task(void*)
     if (app.persist_runtime_model.exchange(false,
                                            std::memory_order_acq_rel)) {
       const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
-      app.edit_model = app.runtime_model_to_persist;
+      if (activation_needed) {
+        for (std::size_t mode = 0; mode < kMaxFlightModes; ++mode) {
+          app.edit_model.flight_modes[mode].trims =
+              app.runtime_model_to_persist.flight_modes[mode].trims;
+        }
+        for (std::size_t channel = 0; channel < kChannelCount; ++channel) {
+          app.edit_model.outputs[channel].failsafe =
+              app.runtime_model_to_persist.outputs[channel].failsafe;
+        }
+      } else {
+        app.edit_model = app.runtime_model_to_persist;
+      }
       model_dirty = true;
+      force_screen_rebuild = true;
       dirty_since_us = now_us();
+    }
+    const int8_t activation_state =
+        app.model_activation_state.load(std::memory_order_acquire);
+    if (activation_maintenance &&
+        (activation_state == 2 || activation_state == -1)) {
+      if (activation_state == 2) {
+        model_dirty = false;
+        activation_needed = false;
+        force_screen_rebuild = true;
+      } else {
+        ESP_LOGE(kTag, "runtime model activation failed");
+        dirty_since_us = now_us();
+      }
+      app.model_activation_state.store(0, std::memory_order_release);
+      app.safety.end_maintenance();
+      activation_maintenance = false;
     }
     if ((buttons & 0x0CU) != 0x0CU) {
       if ((pressed & 0x01U) != 0) {
@@ -543,13 +1071,22 @@ void ui_task(void*)
         (void)app.ui.handle({UiEventType::Down});
       }
       if ((pressed & 0x04U) != 0) {
-        (void)app.ui.handle({UiEventType::Enter});
+        if (screen == AppScreen::Home) {
+          screen = AppScreen::Menu;
+          force_screen_rebuild = true;
+        } else {
+          (void)app.ui.handle({UiEventType::Enter});
+        }
       }
       if ((pressed & 0x08U) != 0) {
         if (app.ui.editing()) {
           (void)app.ui.handle({UiEventType::Back});
+        } else if (screen == AppScreen::Menu) {
+          screen = AppScreen::Home;
+          force_screen_rebuild = true;
         } else {
-          screen = static_cast<uint8_t>((screen + 1) % kScreenCount);
+          screen = AppScreen::Menu;
+          force_screen_rebuild = true;
         }
       }
     }
@@ -557,12 +1094,155 @@ void ui_task(void*)
       (void)app.ui.handle({UiEventType::Rotate, encoder_delta});
     }
     if (encoder_press) {
-      (void)app.ui.handle({UiEventType::Enter});
+      if (screen == AppScreen::Home) {
+        screen = AppScreen::Menu;
+        force_screen_rebuild = true;
+      } else {
+        (void)app.ui.handle({UiEventType::Enter});
+      }
     }
-    app.finder_enabled.store(screen == 12, std::memory_order_release);
+    app.finder_enabled.store(
+        screen == AppScreen::Finder, std::memory_order_release);
 
     UiChange change{};
     while (app.ui.take_change(change)) {
+      if (change.screen_id == "menu" &&
+          menu_target(change.field_id, screen)) {
+        force_screen_rebuild = true;
+        continue;
+      }
+      if (change.screen_id == "web" &&
+          (change.field_id == "start" ||
+           change.field_id == "stop")) {
+        if (change.field_id == "start") {
+          if (!app.backup_portal.start()) {
+            ESP_LOGW(kTag, "web configurator start rejected");
+          }
+        } else {
+          Model restored{};
+          uint32_t restored_generation = 0;
+          std::string error;
+          const bool loaded = app.model_library.select(
+              app.model_library.active_slot(), restored,
+              restored_generation, error);
+          app.safety.request_lock();
+          app.backup_portal.stop();
+          if (loaded && app.safety.begin_maintenance()) {
+            app.edit_model = restored;
+            app.generation = restored_generation;
+            {
+              const std::lock_guard<std::mutex> lock(
+                  app.runtime_model_mutex);
+              app.pending_model_activation = restored;
+            }
+            app.model_activation_state.store(
+                1, std::memory_order_release);
+            activation_maintenance = true;
+          } else if (!loaded) {
+            ESP_LOGE(kTag, "restored model load failed: %s",
+                     error.c_str());
+          }
+          app.model_summaries = app.model_library.summaries();
+        }
+        force_screen_rebuild = true;
+        continue;
+      }
+      if (change.screen_id == "usb" &&
+          (change.field_id == "enable" ||
+           change.field_id == "disable")) {
+        if (change.field_id == "enable") {
+          if (!usb_maintenance && app.usb_gamepad.supported() &&
+              !app.backup_portal.running() &&
+              app.safety.begin_maintenance()) {
+            app.usb_rf_lock.store(
+                app.edit_model.simulator_rf_lock,
+                std::memory_order_release);
+            app.usb_simulator_enabled.store(
+                true, std::memory_order_release);
+            usb_maintenance = true;
+          } else {
+            ESP_LOGW(kTag, "USB simulator start rejected");
+          }
+        } else {
+          app.usb_simulator_enabled.store(
+              false, std::memory_order_release);
+          if (usb_maintenance) {
+            app.safety.end_maintenance();
+            usb_maintenance = false;
+          }
+        }
+        continue;
+      }
+      if (change.screen_id == "models") {
+        if (activation_maintenance ||
+            app.backup_portal.running() ||
+            !app.safety.begin_maintenance()) {
+          ESP_LOGW(kTag, "model library action rejected while busy");
+          continue;
+        }
+        bool hold_maintenance = false;
+        std::string error;
+        uint8_t slot = 0;
+        if (parse_slot_action(change.field_id, "select", slot)) {
+          Model selected{};
+          uint32_t selected_generation = 0;
+          if (app.model_library.select(
+                  slot, selected, selected_generation, error)) {
+            app.edit_model = selected;
+            app.generation = selected_generation;
+            {
+              const std::lock_guard<std::mutex> lock(
+                  app.runtime_model_mutex);
+              app.pending_model_activation = selected;
+            }
+            app.model_activation_state.store(
+                1, std::memory_order_release);
+            activation_maintenance = true;
+            hold_maintenance = true;
+            model_dirty = false;
+            activation_needed = false;
+            std::string mirror_error;
+            if (!app.model_store.save(selected, selected_generation,
+                                      mirror_error)) {
+              ESP_LOGW(kTag, "active model mirror failed: %s",
+                       mirror_error.c_str());
+            }
+          }
+        } else if (parse_slot_action(
+                       change.field_id, "delete", slot)) {
+          if (!app.model_library.remove(slot, error)) {
+            ESP_LOGW(kTag, "model delete failed: %s", error.c_str());
+          }
+        } else if (change.field_id == "new" ||
+                   change.field_id == "copy") {
+          Model candidate =
+              change.field_id == "copy" ? app.edit_model
+                                         : make_default_model();
+          uint8_t expected_slot = 0;
+          while (expected_slot < app.model_summaries.size() &&
+                 app.model_summaries[expected_slot].present) {
+            ++expected_slot;
+          }
+          if (expected_slot < kMaximumStoredModels) {
+            (void)std::snprintf(
+                candidate.name.data(), candidate.name.size(),
+                change.field_id == "copy" ? "Copy %u" : "Model %u",
+                static_cast<unsigned>(expected_slot + 1));
+            candidate.model_id = expected_slot;
+          }
+          uint8_t created_slot = 0;
+          if (!app.model_library.create(
+                  candidate, 1, created_slot, error)) {
+            ESP_LOGW(kTag, "model create failed: %s", error.c_str());
+          }
+        }
+        app.model_summaries = app.model_library.summaries();
+        force_screen_rebuild = true;
+        if (!hold_maintenance) {
+          app.safety.end_maintenance();
+        }
+        continue;
+      }
       const bool maintenance =
           !app.backup_portal.running() &&
           app.safety.maintenance_allowed();
@@ -595,6 +1275,8 @@ void ui_task(void*)
       if (!elrs_change && maintenance &&
           ModelEditor::apply(app.edit_model, change)) {
         model_dirty = true;
+        activation_needed = true;
+        force_screen_rebuild = true;
         dirty_since_us = now_us();
       }
     }
@@ -605,21 +1287,66 @@ void ui_task(void*)
       const bool maintenance_started = app.safety.begin_maintenance();
       if (!maintenance_started) {
         dirty_since_us = now_us();
-      } else if (app.model_store.save(app.edit_model, app.generation + 1,
+      } else if (app.model_library.save_active(
+                     app.edit_model, app.generation + 1, error) &&
+                 app.model_store.save(app.edit_model, app.generation + 1,
                                       error)) {
         ++app.generation;
-        model_dirty = false;
+        app.model_summaries = app.model_library.summaries();
+        if (activation_needed) {
+          {
+            const std::lock_guard<std::mutex> lock(
+                app.runtime_model_mutex);
+            app.pending_model_activation = app.edit_model;
+          }
+          app.model_activation_state.store(1, std::memory_order_release);
+          activation_maintenance = true;
+        } else {
+          model_dirty = false;
+        }
       } else {
         ESP_LOGE(kTag, "model save failed: %s", error.c_str());
         dirty_since_us = now_us();
       }
-      if (maintenance_started) {
+      if (maintenance_started && !activation_maintenance) {
         app.safety.end_maintenance();
       }
     }
 
-    app.ui.set_screen(
-        current_screen(screen, frame, timers, telemetry, elrs, finder));
+    const TimeUs render_time = now_us();
+    const UiHomeStatus home = current_home_status(
+        controls, frame, telemetry, safety, battery_state, battery_mv,
+        battery_sensor_valid, module_state, model_dirty);
+    const bool screen_changed =
+        !screen_rendered || rendered_screen != screen;
+    bool rebuild = force_screen_rebuild || screen_changed;
+    if (!rebuild && render_time >= next_live_refresh_us) {
+      rebuild = screen == AppScreen::Warnings ||
+                screen == AppScreen::Timers ||
+                screen == AppScreen::Telemetry ||
+                screen == AppScreen::Finder ||
+                screen == AppScreen::Elrs ||
+                screen == AppScreen::Usb ||
+                screen == AppScreen::Web ||
+                screen == AppScreen::Power ||
+                screen == AppScreen::System;
+    }
+    if (screen == AppScreen::Home && !screen_changed) {
+      app.ui.update_home(home);
+    } else if (screen == AppScreen::Outputs && !screen_changed) {
+      app.ui.update_outputs(frame);
+    } else if (rebuild || screen_changed) {
+      app.ui.set_screen(
+          current_screen(screen, frame, timers, telemetry, elrs, finder,
+                         safety, battery_state, battery_mv,
+                         battery_sensor_valid, home));
+    }
+    if (rebuild || screen_changed) {
+      next_live_refresh_us = render_time + 500000;
+    }
+    rendered_screen = screen;
+    screen_rendered = true;
+    force_screen_rebuild = false;
     (void)app.ui.render();
     if (app.screenshot_requested.exchange(false,
                                           std::memory_order_acq_rel) &&
@@ -637,14 +1364,28 @@ void ui_task(void*)
 void service_task(void*)
 {
   PowerDecision previous_power_decision = PowerDecision::StayOn;
+  bool logging_maintenance = false;
   while (true) {
     const TimeUs current = now_us();
     const int8_t logging =
         app.logging_request.exchange(-1, std::memory_order_acq_rel);
     if (logging == 1) {
-      app.telemetry_logger.start();
+      if (!logging_maintenance && app.safety.begin_maintenance()) {
+        app.telemetry_logger.start();
+        logging_maintenance = true;
+        app.logging_active.store(true, std::memory_order_release);
+        app.logging_failed.store(false, std::memory_order_release);
+      } else {
+        app.logging_failed.store(true, std::memory_order_release);
+      }
     } else if (logging == 0) {
-      app.telemetry_logger.stop();
+      const bool stopped = app.telemetry_logger.stop();
+      app.logging_active.store(false, std::memory_order_release);
+      app.logging_failed.store(!stopped, std::memory_order_release);
+      if (logging_maintenance) {
+        app.safety.end_maintenance();
+        logging_maintenance = false;
+      }
     }
     const uint32_t user_activity_ms =
         app.last_user_activity_ms.exchange(0, std::memory_order_acq_rel);
@@ -676,7 +1417,16 @@ void service_task(void*)
             sensor.id, sensor.value, sensor.unit, sensor.updated_at_us);
       }
     }
-    app.telemetry_logger.sample(app.service_telemetry, current);
+    if (app.logging_active.load(std::memory_order_acquire) &&
+        !app.telemetry_logger.sample(app.service_telemetry, current)) {
+      app.logging_active.store(false, std::memory_order_release);
+      app.logging_failed.store(true, std::memory_order_release);
+      if (logging_maintenance) {
+        app.safety.end_maintenance();
+        logging_maintenance = false;
+      }
+      ESP_LOGE(kTag, "telemetry logging stopped after storage failure");
+    }
     AlarmEvent alarm{};
     if (app.alarms.evaluate(app.service_telemetry, current, alarm)) {
       // This task never writes the diagnostic ring directly. The control task
@@ -710,6 +1460,34 @@ void service_task(void*)
   }
 }
 
+void usb_task(void*)
+{
+  UsbSimulator simulator;
+  bool active = false;
+  while (true) {
+    const bool requested =
+        app.usb_simulator_enabled.load(std::memory_order_acquire);
+    const bool rf_lock =
+        app.usb_rf_lock.load(std::memory_order_acquire);
+    if (requested && !active) {
+      active = simulator.enter(true, rf_lock);
+    } else if (!requested && active) {
+      simulator.leave();
+      active = false;
+    }
+    if (active) {
+      ControlInputs controls{};
+      ChannelFrame channels{};
+      taskENTER_CRITICAL(&app.frame_lock);
+      controls = app.latest_controls;
+      channels = app.latest_frame;
+      taskEXIT_CRITICAL(&app.frame_lock);
+      (void)app.usb_gamepad.send(simulator.report(controls, channels));
+    }
+    vTaskDelay(pdMS_TO_TICKS(4));
+  }
+}
+
 bool initialize_storage(bool explicit_format_requested)
 {
   if (explicit_format_requested) {
@@ -721,6 +1499,11 @@ bool initialize_storage(bool explicit_format_requested)
   const auto loaded = app.model_store.load(app.model);
   if (loaded.success) {
     app.generation = loaded.generation;
+    if (!loaded.error.empty()) {
+      ESP_LOGE(kTag, "model recovery persistence failed: %s",
+               loaded.error.c_str());
+      return false;
+    }
     if (loaded.recovered) {
       app.diagnostics.push(
           {now_us(), LogSeverity::Warning, LogCode::StorageRecovered, 0, 0});
@@ -734,6 +1517,24 @@ bool initialize_storage(bool explicit_format_requested)
     }
     app.generation = 1;
   }
+  std::string library_error;
+  if (!app.model_library.bootstrap(app.model, app.generation,
+                                   library_error)) {
+    ESP_LOGE(kTag, "cannot initialize model library: %s",
+             library_error.c_str());
+    return false;
+  }
+  std::vector<uint8_t> active_mirror;
+  const auto expected_mirror =
+      ModelCodec::encode(app.model, app.generation);
+  if ((!app.model_store.export_active(active_mirror) ||
+       active_mirror != expected_mirror) &&
+      !app.model_store.save(app.model, app.generation, library_error)) {
+      ESP_LOGE(kTag, "cannot mirror active model: %s",
+               library_error.c_str());
+      return false;
+  }
+  app.model_summaries = app.model_library.summaries();
   app.edit_model = app.model;
 
   std::array<AxisCalibration, kMaxAxes> calibration{};
@@ -797,6 +1598,8 @@ extern "C" void app_main()
       startup_inputs.switches[3];
   bool storage_ok = initialize_storage(storage_format_requested);
   const bool display_ok = pins_ok && app.display.initialize();
+  const bool usb_ok =
+      !app.usb_gamepad.supported() || app.usb_gamepad.initialize();
   if (pins_ok) {
     (void)app.tones.initialize();
   }
@@ -804,7 +1607,9 @@ extern "C" void app_main()
   app.alarms.set_alarm(
       0, {true, crsf::SensorUplinkLinkQuality, AlarmComparison::Below,
           CONFIG_RIVETTX_LINK_WARNING_LQ, 5, 10});
-  if (calibration_requested && display_ok) {
+  if ((calibration_requested || !app.calibration_valid) && display_ok) {
+    ESP_LOGI(kTag, "%s calibration wizard",
+             calibration_requested ? "requested" : "first-run");
     if (run_startup_calibration()) {
       app.calibration_valid = true;
     } else {
@@ -839,6 +1644,14 @@ extern "C" void app_main()
           : pdFAIL;
   const BaseType_t service_created = xTaskCreatePinnedToCore(
       service_task, "rivet-service", 5120, nullptr, 3, nullptr, kServiceCore);
+  const BaseType_t usb_created =
+      app.usb_gamepad.supported()
+          ? (usb_ok
+                 ? xTaskCreatePinnedToCore(
+                       usb_task, "rivet-usb", 3072, nullptr, 4, nullptr,
+                       kServiceCore)
+                 : pdFAIL)
+          : pdPASS;
 
   SelfTestResult self_test{};
   self_test.storage = storage_ok;
@@ -847,7 +1660,8 @@ extern "C" void app_main()
   self_test.crsf_uart = crsf_ok;
   self_test.control_task = control_created == pdPASS &&
                            ui_created == pdPASS &&
-                           service_created == pdPASS;
+                           service_created == pdPASS &&
+                           usb_created == pdPASS;
   ModuleState runtime_module_state = ModuleState::Starting;
   if (self_test.control_task) {
     const TimeUs runtime_deadline = now_us() + 3000000;
@@ -855,8 +1669,7 @@ extern "C" void app_main()
       taskENTER_CRITICAL(&app.frame_lock);
       runtime_module_state = app.latest_module_state;
       taskEXIT_CRITICAL(&app.frame_lock);
-      if (app.healthy_control_cycles.load(std::memory_order_relaxed) >= 20 &&
-          runtime_module_state == ModuleState::Online) {
+      if (app.healthy_control_cycles.load(std::memory_order_relaxed) >= 20) {
         break;
       }
       vTaskDelay(pdMS_TO_TICKS(20));
