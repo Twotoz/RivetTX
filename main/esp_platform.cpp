@@ -121,13 +121,13 @@ bool EspBoard::configure_adc_gpio(int gpio, AdcInput& input)
   return true;
 }
 
-int EspBoard::read_adc(const AdcInput& input) const
+bool EspBoard::read_adc(const AdcInput& input, int& value) const
 {
+  value = 0;
   if (!input.configured) {
-    return 0;
+    return false;
   }
-  int value = 0;
-  return adc_oneshot_read(adc_, input.channel, &value) == ESP_OK ? value : 0;
+  return adc_oneshot_read(adc_, input.channel, &value) == ESP_OK;
 }
 
 bool EspBoard::initialize()
@@ -172,7 +172,12 @@ RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
   inputs.valid = true;
   inputs.sampled_at_us = sample_time_us;
   for (std::size_t i = 0; i < axes_.size(); ++i) {
-    inputs.axes[i] = static_cast<int16_t>(read_adc(axes_[i]));
+    int value = 0;
+    if (!read_adc(axes_[i], value)) {
+      inputs.valid = false;
+      continue;
+    }
+    inputs.axes[i] = static_cast<int16_t>(value);
   }
   inputs.switches[0] = gpio_get_level(
                            static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_UP)) ==
@@ -194,7 +199,10 @@ uint16_t EspBoard::sample_battery_mv()
   if (!battery_.configured) {
     return 0;
   }
-  const int raw = read_adc(battery_);
+  int raw = 0;
+  if (!read_adc(battery_, raw)) {
+    return 0;
+  }
   int calibrated_mv = 0;
   const uint32_t pin_mv =
       adc_calibration_ != nullptr &&
@@ -501,8 +509,10 @@ uint32_t NvsBootState::failed_attempts() const
   return attempts_;
 }
 
-CsvTelemetrySink::CsvTelemetrySink(std::string path)
-    : path_(std::move(path))
+CsvTelemetrySink::CsvTelemetrySink(std::string path,
+                                   std::size_t maximum_bytes)
+    : path_(std::move(path)),
+      maximum_bytes_(std::max<std::size_t>(4096, maximum_bytes))
 {
 }
 
@@ -515,7 +525,25 @@ bool CsvTelemetrySink::append(TimeUs time_us, uint16_t sensor_id,
   if (file_ == nullptr) {
     return false;
   }
-  return std::fprintf(static_cast<FILE*>(file_), "%llu,%u,%ld\n",
+  FILE* stream = static_cast<FILE*>(file_);
+  const long position = std::ftell(stream);
+  if (position >= 0 &&
+      static_cast<std::size_t>(position) >= maximum_bytes_) {
+    (void)std::fflush(stream);
+    (void)std::fclose(stream);
+    file_ = nullptr;
+    const std::string rotated = path_ + ".1";
+    (void)std::remove(rotated.c_str());
+    if (std::rename(path_.c_str(), rotated.c_str()) != 0) {
+      return false;
+    }
+    file_ = std::fopen(path_.c_str(), "w");
+    if (file_ == nullptr) {
+      return false;
+    }
+    stream = static_cast<FILE*>(file_);
+  }
+  return std::fprintf(stream, "%llu,%u,%ld\n",
                       static_cast<unsigned long long>(time_us),
                       static_cast<unsigned>(sensor_id),
                       static_cast<long>(value)) > 0;
@@ -604,24 +632,36 @@ esp_err_t WifiBackupPortal::get_status(httpd_req_t* request)
 bool WifiBackupPortal::start()
 {
 #if CONFIG_RIVETTX_WIFI_BACKUP
-  if (server_ != nullptr || !safety_.maintenance_allowed()) {
-    return server_ != nullptr;
+  if (server_ != nullptr) {
+    return true;
+  }
+  if (!safety_.begin_maintenance()) {
+    return false;
+  }
+  const auto fail = [this]() {
+    safety_.end_maintenance();
+    return false;
+  };
+  if (std::strlen(CONFIG_RIVETTX_WIFI_PASSWORD) < 8 ||
+      std::strlen(CONFIG_RIVETTX_WIFI_PASSWORD) > 63) {
+    ESP_LOGE(kTag, "recovery Wi-Fi password must contain 8..63 bytes");
+    return fail();
   }
   if (esp_netif_init() != ESP_OK) {
-    return false;
+    return fail();
   }
   const esp_err_t loop_result = esp_event_loop_create_default();
   if (loop_result != ESP_OK && loop_result != ESP_ERR_INVALID_STATE) {
-    return false;
+    return fail();
   }
   if (esp_netif_create_default_wifi_ap() == nullptr) {
-    return false;
+    return fail();
   }
   wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
   if (esp_wifi_init(&init) != ESP_OK ||
       esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK ||
       esp_wifi_set_mode(WIFI_MODE_AP) != ESP_OK) {
-    return false;
+    return fail();
   }
   wifi_config_t wifi{};
   std::strncpy(reinterpret_cast<char*>(wifi.ap.ssid),
@@ -631,18 +671,16 @@ bool WifiBackupPortal::start()
   wifi.ap.ssid_len = 0;
   wifi.ap.channel = 1;
   wifi.ap.max_connection = 2;
-  wifi.ap.authmode = std::strlen(CONFIG_RIVETTX_WIFI_PASSWORD) >= 8
-                         ? WIFI_AUTH_WPA2_PSK
-                         : WIFI_AUTH_OPEN;
+  wifi.ap.authmode = WIFI_AUTH_WPA2_PSK;
   if (esp_wifi_set_config(WIFI_IF_AP, &wifi) != ESP_OK ||
       esp_wifi_start() != ESP_OK) {
-    return false;
+    return fail();
   }
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.max_uri_handlers = 4;
   if (httpd_start(&server_, &config) != ESP_OK) {
-    return false;
+    return fail();
   }
   httpd_uri_t backup{};
   backup.uri = "/backup";
@@ -659,9 +697,16 @@ bool WifiBackupPortal::start()
   status.method = HTTP_GET;
   status.handler = get_status;
   status.user_ctx = this;
-  return httpd_register_uri_handler(server_, &backup) == ESP_OK &&
-         httpd_register_uri_handler(server_, &restore) == ESP_OK &&
-         httpd_register_uri_handler(server_, &status) == ESP_OK;
+  const bool registered =
+      httpd_register_uri_handler(server_, &backup) == ESP_OK &&
+      httpd_register_uri_handler(server_, &restore) == ESP_OK &&
+      httpd_register_uri_handler(server_, &status) == ESP_OK;
+  if (!registered) {
+    (void)httpd_stop(server_);
+    server_ = nullptr;
+    return fail();
+  }
+  return true;
 #else
   return false;
 #endif
@@ -672,6 +717,7 @@ void WifiBackupPortal::stop()
   if (server_ != nullptr) {
     (void)httpd_stop(server_);
     server_ = nullptr;
+    safety_.end_maintenance();
   }
 #if CONFIG_RIVETTX_WIFI_BACKUP
   (void)esp_wifi_stop();
@@ -683,10 +729,10 @@ bool WifiBackupPortal::running() const
   return server_ != nullptr;
 }
 
-bool mount_model_filesystem()
+bool mount_model_filesystem(bool format_if_mount_failed)
 {
   esp_vfs_fat_mount_config_t config{};
-  config.format_if_mount_failed = true;
+  config.format_if_mount_failed = format_if_mount_failed;
   config.max_files = 8;
   config.allocation_unit_size = 4096;
   return esp_vfs_fat_spiflash_mount_rw_wl(

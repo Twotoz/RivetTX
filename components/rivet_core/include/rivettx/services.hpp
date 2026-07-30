@@ -214,6 +214,7 @@ class ModuleSupervisor {
   ModuleStatus status_{};
   uint8_t model_id_ = 0;
   TimeUs next_ping_us_ = 0;
+  TimeUs started_at_us_ = 0;
   TimeUs last_parser_frame_us_ = 0;
 };
 
@@ -293,10 +294,13 @@ struct SelfTestResult {
   bool display = false;
   bool crsf_uart = false;
   bool control_task = false;
+  bool control_runtime = false;
+  bool module_link = false;
 
   bool passed() const
   {
-    return storage && inputs && display && crsf_uart && control_task;
+    return storage && inputs && display && crsf_uart && control_task &&
+           control_runtime && module_link;
   }
 };
 
@@ -332,7 +336,8 @@ struct FirmwareManifest {
 class UpdateManager {
  public:
   UpdateManager(IOtaBackend& ota, DiagnosticLog& diagnostics,
-                std::string target);
+                std::string target,
+                std::string current_version = "0.1.0");
   bool install(const FirmwareManifest& manifest, bool maintenance_allowed,
                TimeUs now_us);
   const std::string& rejection_reason() const;
@@ -341,6 +346,7 @@ class UpdateManager {
   IOtaBackend& ota_;
   DiagnosticLog& diagnostics_;
   std::string target_;
+  std::string current_version_;
   std::string rejection_reason_;
 };
 

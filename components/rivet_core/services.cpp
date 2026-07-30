@@ -6,6 +6,47 @@
 
 namespace rivettx {
 
+namespace {
+
+bool version_is_newer(const std::string& candidate,
+                      const std::string& current)
+{
+  const auto parse = [](const std::string& value,
+                        std::array<uint32_t, 3>& parts) {
+    parts = {};
+    std::size_t part = 0;
+    bool digit_seen = false;
+    for (const char character : value) {
+      if (character == '.') {
+        if (!digit_seen || part + 1 >= parts.size()) {
+          return false;
+        }
+        ++part;
+        digit_seen = false;
+      } else if (character >= '0' && character <= '9') {
+        digit_seen = true;
+        const uint32_t digit =
+            static_cast<uint32_t>(character - '0');
+        if (parts[part] > (UINT32_MAX - digit) / 10U) {
+          return false;
+        }
+        parts[part] = parts[part] * 10U + digit;
+      } else {
+        return false;
+      }
+    }
+    return digit_seen;
+  };
+
+  std::array<uint32_t, 3> candidate_parts{};
+  std::array<uint32_t, 3> current_parts{};
+  return parse(candidate, candidate_parts) &&
+         parse(current, current_parts) &&
+         candidate_parts > current_parts;
+}
+
+}  // namespace
+
 void DiagnosticLog::push(LogEvent event)
 {
   events_[write_index_] = event;
@@ -123,19 +164,34 @@ BatteryState BatteryMonitor::update(uint16_t sample_mv)
     filtered_mv_ = static_cast<uint32_t>(std::max<int32_t>(0, next));
   }
 
-  if (filtered_mv_ <= config_.critical_mv) {
-    state_ = BatteryState::Critical;
-  } else if (filtered_mv_ <= config_.low_mv) {
-    state_ = BatteryState::Low;
-  } else if (state_ == BatteryState::Critical &&
-             filtered_mv_ <
-                 config_.critical_mv + config_.hysteresis_mv) {
-    // Keep the critical state until the voltage recovers beyond hysteresis.
-  } else if (state_ == BatteryState::Low &&
-             filtered_mv_ < config_.low_mv + config_.hysteresis_mv) {
-    // Keep the low state until the voltage recovers beyond hysteresis.
-  } else {
-    state_ = BatteryState::Normal;
+  switch (state_) {
+    case BatteryState::Critical:
+      if (filtered_mv_ >=
+          static_cast<uint32_t>(config_.critical_mv) +
+              config_.hysteresis_mv) {
+        state_ = filtered_mv_ <= config_.low_mv ? BatteryState::Low
+                                                : BatteryState::Normal;
+      }
+      break;
+    case BatteryState::Low:
+      if (filtered_mv_ <= config_.critical_mv) {
+        state_ = BatteryState::Critical;
+      } else if (filtered_mv_ >=
+                 static_cast<uint32_t>(config_.low_mv) +
+                     config_.hysteresis_mv) {
+        state_ = BatteryState::Normal;
+      }
+      break;
+    case BatteryState::Unknown:
+    case BatteryState::Normal:
+      if (filtered_mv_ <= config_.critical_mv) {
+        state_ = BatteryState::Critical;
+      } else if (filtered_mv_ <= config_.low_mv) {
+        state_ = BatteryState::Low;
+      } else {
+        state_ = BatteryState::Normal;
+      }
+      break;
   }
   return state_;
 }
@@ -163,15 +219,24 @@ void AlarmEngine::set_alarm(std::size_t index, TelemetryAlarm alarm)
 bool AlarmEngine::evaluate(const TelemetryRegistry& telemetry, TimeUs now_us,
                            AlarmEvent& event)
 {
+  constexpr TimeUs kMaximumTelemetryAgeUs = 2000000;
   for (std::size_t i = 0; i < alarms_.size(); ++i) {
     const auto& alarm = alarms_[i];
     if (!alarm.enabled) {
       continue;
     }
-    int32_t value = 0;
-    if (!telemetry.value(alarm.sensor_id, value)) {
+    const TelemetryEntry* entry = telemetry.find(alarm.sensor_id);
+    if (entry == nullptr || !entry->discovered ||
+        now_us < entry->updated_at_us ||
+        now_us - entry->updated_at_us > kMaximumTelemetryAgeUs) {
+      if (active_[i]) {
+        active_[i] = false;
+        event = {alarm.sensor_id, 0, false};
+        return true;
+      }
       continue;
     }
+    const int32_t value = entry->value;
 
     bool triggered = false;
     if (alarm.comparison == AlarmComparison::Below) {
@@ -227,6 +292,8 @@ void ModuleSupervisor::start(uint8_t model_id, TimeUs now_us)
 {
   model_id_ = model_id;
   status_.state = ModuleState::Starting;
+  status_.last_receive_us = 0;
+  started_at_us_ = now_us;
   next_ping_us_ = now_us;
   transport_.set_baud_rate(400000);
   send_model_id(now_us);
@@ -262,8 +329,10 @@ void ModuleSupervisor::poll(TimeUs now_us)
     }
   }
 
-  if (status_.last_receive_us != 0 &&
-      now_us - status_.last_receive_us > 1000000) {
+  const TimeUs receive_reference =
+      status_.last_receive_us != 0 ? status_.last_receive_us : started_at_us_;
+  if (now_us >= receive_reference &&
+      now_us - receive_reference > 1000000) {
     if (status_.state != ModuleState::Offline) {
       status_.state = ModuleState::Offline;
       diagnostics_.push(
@@ -386,7 +455,9 @@ bool CalibrationWizard::next()
     case CalibrationStep::MoveExtremes:
       for (std::size_t i = 0; i < active_axes_; ++i) {
         const auto& item = calibration_[i];
-        if (item.maximum - item.minimum < 100) {
+        if (item.maximum - item.minimum < 100 ||
+            item.minimum >= item.center ||
+            item.center >= item.maximum) {
           return false;
         }
       }
@@ -492,8 +563,12 @@ bool BootManager::enter_recovery(bool recovery_button,
 }
 
 UpdateManager::UpdateManager(IOtaBackend& ota, DiagnosticLog& diagnostics,
-                             std::string target)
-    : ota_(ota), diagnostics_(diagnostics), target_(std::move(target))
+                             std::string target,
+                             std::string current_version)
+    : ota_(ota),
+      diagnostics_(diagnostics),
+      target_(std::move(target)),
+      current_version_(std::move(current_version))
 {
 }
 
@@ -509,6 +584,8 @@ bool UpdateManager::install(const FirmwareManifest& manifest,
     rejection_reason_ = "wrong hardware target";
   } else if (manifest.minimum_model_schema > Model::kSchemaVersion) {
     rejection_reason_ = "model schema too new";
+  } else if (!version_is_newer(manifest.version, current_version_)) {
+    rejection_reason_ = "firmware version is not newer";
   } else if (!manifest.signature_present) {
     rejection_reason_ = "missing firmware signature";
   } else if (manifest.url.rfind("https://", 0) != 0) {

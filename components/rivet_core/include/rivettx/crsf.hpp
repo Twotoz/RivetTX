@@ -113,6 +113,7 @@ struct CrsfParserStats {
   uint32_t crc_errors = 0;
   uint32_t length_errors = 0;
   uint32_t dropped_bytes = 0;
+  uint32_t lua_queue_drops = 0;
   uint32_t management_drops = 0;
 };
 
@@ -125,6 +126,7 @@ class CrsfParser {
   const CrsfParserStats& stats() const;
   TimeUs last_valid_frame_us() const;
   uint8_t last_frame_type() const;
+  void set_lua_frame_queue_enabled(bool enabled);
   bool pop_frame(crsf::Frame& frame);
   bool pop_management_frame(crsf::Frame& frame);
 
@@ -141,9 +143,10 @@ class CrsfParser {
   uint8_t last_frame_type_ = 0;
   TimeUs last_valid_frame_us_ = 0;
   CrsfParserStats stats_{};
-  std::array<crsf::Frame, 4> received_frames_{};
+  std::array<crsf::Frame, 8> received_frames_{};
   std::atomic<uint32_t> received_read_{0};
   std::atomic<uint32_t> received_write_{0};
+  std::atomic<bool> received_enabled_{false};
   std::array<crsf::Frame, 8> management_frames_{};
   std::atomic<uint32_t> management_read_{0};
   std::atomic<uint32_t> management_write_{0};

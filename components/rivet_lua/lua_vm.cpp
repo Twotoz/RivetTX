@@ -25,6 +25,7 @@ namespace rivettx {
 namespace {
 
 constexpr int kHookInterval = 100;
+constexpr uint32_t kLoadInstructionBudget = 100000;
 constexpr int kNoReference = LUA_NOREF;
 
 bool allowed_script_path(const std::string& path)
@@ -178,6 +179,11 @@ void LuaVm::open_safe_libraries()
     luaL_requiref(state_, library.name, library.open, 1);
     lua_pop(state_, 1);
   }
+  constexpr const char* blocked_globals[]{"dofile", "loadfile", "load"};
+  for (const char* name : blocked_globals) {
+    lua_pushnil(state_);
+    lua_setglobal(state_, name);
+  }
 }
 
 bool LuaVm::initialize()
@@ -267,7 +273,13 @@ void LuaVm::register_api()
 
 bool LuaVm::protected_call(int arguments, int results, std::string& error)
 {
-  if (lua_pcall(state_, arguments, results, 0) == LUA_OK) {
+  allocator_state_.denied = false;
+  instruction_budget_ = kLoadInstructionBudget;
+  instructions_ = 0;
+  lua_sethook(state_, instruction_hook, LUA_MASKCOUNT, kHookInterval);
+  const int status = lua_pcall(state_, arguments, results, 0);
+  lua_sethook(state_, nullptr, 0, 0);
+  if (status == LUA_OK) {
     return true;
   }
   const char* message = lua_tostring(state_, -1);
@@ -278,6 +290,7 @@ bool LuaVm::protected_call(int arguments, int results, std::string& error)
 
 bool LuaVm::load_file(const std::string& path, std::string& error)
 {
+  parser_.set_lua_frame_queue_enabled(false);
   if (!allowed_script_path(path)) {
     error = "script path is outside /models/scripts";
     return false;
@@ -372,6 +385,7 @@ ScriptSliceResult LuaVm::run_slice(uint32_t instruction_budget)
 
 void LuaVm::terminate()
 {
+  parser_.set_lua_frame_queue_enabled(false);
   if (state_ != nullptr) {
     lua_close(state_);
     state_ = nullptr;
@@ -526,6 +540,7 @@ int LuaVm::api_crossfire_push(lua_State* state)
 int LuaVm::api_crossfire_pop(lua_State* state)
 {
   LuaVm* runtime = self(state);
+  runtime->parser_.set_lua_frame_queue_enabled(true);
   crsf::Frame frame{};
   if (!runtime->parser_.pop_frame(frame) || frame.size < 4) {
     return 0;

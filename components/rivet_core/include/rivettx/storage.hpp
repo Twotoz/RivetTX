@@ -36,6 +36,7 @@ class IFileStore {
   virtual bool remove(const std::string& path) = 0;
   virtual bool exists(const std::string& path) const = 0;
   virtual bool sync(const std::string& path) = 0;
+  virtual bool sync_directory() = 0;
 };
 
 class PosixFileStore final : public IFileStore {
@@ -50,6 +51,7 @@ class PosixFileStore final : public IFileStore {
   bool remove(const std::string& path) override;
   bool exists(const std::string& path) const override;
   bool sync(const std::string& path) override;
+  bool sync_directory() override;
 
  private:
   std::string full_path(const std::string& path) const;

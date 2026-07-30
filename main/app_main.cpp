@@ -13,8 +13,10 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <sys/stat.h>
+#include <utility>
 #include <vector>
 
 #include "esp_log.h"
@@ -69,6 +71,36 @@ AudioWarningConfig audio_warning_config()
   return config;
 }
 
+class SpecialActionMailbox final : public ISpecialActionHandler {
+ public:
+  void execute(SpecialAction action, int16_t parameter,
+               TimeUs) override
+  {
+    if (count_ < actions_.size()) {
+      actions_[count_++] = {action, parameter};
+    }
+  }
+
+  bool pop(SpecialAction& action, int16_t& parameter)
+  {
+    if (read_ >= count_) {
+      read_ = 0;
+      count_ = 0;
+      return false;
+    }
+    action = actions_[read_].first;
+    parameter = actions_[read_].second;
+    ++read_;
+    return true;
+  }
+
+ private:
+  std::array<std::pair<SpecialAction, int16_t>, kMaxSpecialFunctions>
+      actions_{};
+  std::size_t read_ = 0;
+  std::size_t count_ = 0;
+};
+
 struct Application {
   EspBoard board;
   EspCrsfTransport transport;
@@ -100,8 +132,12 @@ struct Application {
   CsvTelemetrySink telemetry_sink{"/models/telemetry.csv"};
   TelemetryLogger telemetry_logger{telemetry_sink, 100};
   AlarmEngine alarms;
+  SpecialFunctionEngine special_functions;
+  SpecialActionMailbox special_actions;
+  PowerManager power;
   MonoCanvas canvas{128, 64};
-  LuaVm lua{service_telemetry, parser, transport, canvas, &audio};
+  MonoCanvas lua_canvas{128, 64};
+  LuaVm lua{service_telemetry, parser, transport, lua_canvas, &audio};
   ScriptSupervisor scripts{lua, service_diagnostics};
   UiController ui{display, canvas};
   BootManager boot{ota, boot_diagnostics};
@@ -123,23 +159,37 @@ struct Application {
   SafetyState previous_safety_state = SafetyState::Booting;
   BatteryState previous_battery_state = BatteryState::Unknown;
   bool fault_snapshot_saved = false;
+  CrashSnapshot pending_snapshot{};
+  std::atomic<bool> snapshot_pending{false};
+  std::atomic<uint32_t> healthy_control_cycles{0};
+  std::atomic<int8_t> logging_request{-1};
+  std::atomic<bool> screenshot_requested{false};
+  std::atomic<bool> persist_runtime_model{false};
+  Model runtime_model_to_persist = make_default_model();
+  std::mutex runtime_model_mutex;
+  std::atomic<uint32_t> last_user_activity_ms{0};
+  bool calibration_valid = false;
   uint32_t generation = 0;
 };
 
 Application app;
 
-void save_crash_snapshot(uint32_t reason)
+void queue_crash_snapshot(uint32_t reason)
 {
   const auto snapshot =
       make_crash_snapshot(reason, app.latest_frame.sequence,
                           app.safety.status(), app.diagnostics);
-  (void)app.crash_store.write(snapshot);
+  taskENTER_CRITICAL(&app.frame_lock);
+  app.pending_snapshot = snapshot;
+  taskEXIT_CRITICAL(&app.frame_lock);
+  app.snapshot_pending.store(true, std::memory_order_release);
 }
 
 void control_task(void*)
 {
   (void)esp_task_wdt_add(nullptr);
   TickType_t last_wake = xTaskGetTickCount();
+  TimeUs scheduled_release_us = now_us();
   const TickType_t period =
       std::max<TickType_t>(1, pdMS_TO_TICKS(kControlPeriodUs / 1000));
 
@@ -168,9 +218,68 @@ void control_task(void*)
 
     const ChannelFrame proposed =
         app.mixer.evaluate(app.model, controls, app.telemetry, started);
+    app.special_functions.evaluate(
+        app.model, controls, app.mixer.logical_switch_values(),
+        app.special_actions, started);
+    SpecialAction action = SpecialAction::None;
+    int16_t parameter = 0;
+    while (app.special_actions.pop(action, parameter)) {
+      switch (action) {
+        case SpecialAction::Bind:
+          app.module.request_bind(false, started);
+          break;
+        case SpecialAction::SetFailsafe:
+          app.module.capture_failsafe(app.model, proposed);
+          {
+            const std::lock_guard<std::mutex> lock(
+                app.runtime_model_mutex);
+            app.runtime_model_to_persist = app.model;
+          }
+          app.persist_runtime_model.store(true, std::memory_order_release);
+          break;
+        case SpecialAction::ResetTimer:
+          if (parameter >= 0) {
+            app.mixer.reset_timer(static_cast<std::size_t>(parameter));
+          }
+          break;
+        case SpecialAction::StartTelemetryLog:
+          app.logging_request.store(1, std::memory_order_release);
+          break;
+        case SpecialAction::StopTelemetryLog:
+          app.logging_request.store(0, std::memory_order_release);
+          break;
+        case SpecialAction::InstantTrim: {
+          auto& mode =
+              app.model.flight_modes[app.mixer.active_flight_mode()];
+          for (std::size_t axis = 0; axis < kMaxAxes; ++axis) {
+            mode.trims[axis] = static_cast<int16_t>(clamp<int32_t>(
+                -kResolution,
+                static_cast<int32_t>(mode.trims[axis]) -
+                    controls.axes[axis],
+                kResolution));
+          }
+          {
+            const std::lock_guard<std::mutex> lock(
+                app.runtime_model_mutex);
+            app.runtime_model_to_persist = app.model;
+          }
+          app.persist_runtime_model.store(true, std::memory_order_release);
+          break;
+        }
+        case SpecialAction::Screenshot:
+          app.screenshot_requested.store(true, std::memory_order_release);
+          break;
+        case SpecialAction::EnterModulePassthrough:
+          (void)app.module.enter_passthrough(
+              app.safety.maintenance_allowed());
+          break;
+        case SpecialAction::None:
+          break;
+      }
+    }
     const TimeUs mixed_at = now_us();
-    const uint32_t mixer_duration =
-        static_cast<uint32_t>(mixed_at - started);
+    const uint32_t mixer_duration = static_cast<uint32_t>(
+        mixed_at >= scheduled_release_us ? mixed_at - scheduled_release_us : 0);
 
     const uint16_t raw_battery = app.board.sample_battery_mv();
     const BatteryState battery_state = app.battery.update(raw_battery);
@@ -179,12 +288,14 @@ void control_task(void*)
     ChannelFrame frame =
         app.safety.gate(app.model, controls, proposed, mixed_at);
 
-    if (!app.module.send_channels(frame, now_us())) {
-      app.diagnostics.push(
-          {now_us(), LogSeverity::Warning, LogCode::ModuleLost, 0, 0});
-    }
+    (void)app.module.send_channels(frame, now_us());
     app.module.poll(now_us());
     app.elrs.tick(now_us());
+    if (raw.valid &&
+        mixer_duration <= safety_config().maximum_mixer_duration_us &&
+        app.module.status().state == ModuleState::Online) {
+      app.healthy_control_cycles.fetch_add(1, std::memory_order_relaxed);
+    }
 
     if (battery_state != app.previous_battery_state) {
       if (battery_state == BatteryState::Low) {
@@ -211,7 +322,7 @@ void control_task(void*)
       app.previous_safety_state = safety_state;
       if (safety_state == SafetyState::Fault &&
           !app.fault_snapshot_saved) {
-        save_crash_snapshot(
+        queue_crash_snapshot(
             static_cast<uint32_t>(app.safety.status().reason));
         app.fault_snapshot_saved = true;
       } else if (safety_state != SafetyState::Fault) {
@@ -235,6 +346,7 @@ void control_task(void*)
     taskEXIT_CRITICAL(&app.frame_lock);
 
     app.watchdog.kick();
+    scheduled_release_us += kControlPeriodUs;
     vTaskDelayUntil(&last_wake, period);
   }
 }
@@ -382,6 +494,18 @@ void ui_task(void*)
     const uint8_t pressed =
         static_cast<uint8_t>(buttons & ~previous_buttons);
     previous_buttons = buttons;
+    if (pressed != 0) {
+      app.last_user_activity_ms.store(
+          static_cast<uint32_t>(now_us() / 1000),
+          std::memory_order_release);
+    }
+    if (app.persist_runtime_model.exchange(false,
+                                           std::memory_order_acq_rel)) {
+      const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
+      app.edit_model = app.runtime_model_to_persist;
+      model_dirty = true;
+      dirty_since_us = now_us();
+    }
     if ((buttons & 0x0CU) != 0x0CU) {
       if ((pressed & 0x01U) != 0) {
         (void)app.ui.handle({UiEventType::Up});
@@ -437,27 +561,63 @@ void ui_task(void*)
         app.safety.maintenance_allowed() &&
         now_us() - dirty_since_us >= 1000000) {
       std::string error;
-      if (app.model_store.save(app.edit_model, app.generation + 1, error)) {
+      const bool maintenance_started = app.safety.begin_maintenance();
+      if (!maintenance_started) {
+        dirty_since_us = now_us();
+      } else if (app.model_store.save(app.edit_model, app.generation + 1,
+                                      error)) {
         ++app.generation;
         model_dirty = false;
       } else {
         ESP_LOGE(kTag, "model save failed: %s", error.c_str());
         dirty_since_us = now_us();
       }
+      if (maintenance_started) {
+        app.safety.end_maintenance();
+      }
     }
 
     app.ui.set_screen(
         current_screen(screen, frame, timers, telemetry, elrs, finder));
     (void)app.ui.render();
+    if (app.screenshot_requested.exchange(false,
+                                          std::memory_order_acq_rel) &&
+        app.safety.begin_maintenance()) {
+      const auto& buffer = app.canvas.buffer();
+      const std::vector<uint8_t> image(buffer.begin(), buffer.end());
+      (void)app.files.write("screenshot.mono", image);
+      (void)app.files.sync("screenshot.mono");
+      app.safety.end_maintenance();
+    }
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
 void service_task(void*)
 {
-  app.telemetry_logger.start();
+  PowerDecision previous_power_decision = PowerDecision::StayOn;
   while (true) {
     const TimeUs current = now_us();
+    const int8_t logging =
+        app.logging_request.exchange(-1, std::memory_order_acq_rel);
+    if (logging == 1) {
+      app.telemetry_logger.start();
+    } else if (logging == 0) {
+      app.telemetry_logger.stop();
+    }
+    const uint32_t user_activity_ms =
+        app.last_user_activity_ms.exchange(0, std::memory_order_acq_rel);
+    if (user_activity_ms != 0) {
+      app.power.note_activity(
+          static_cast<TimeUs>(user_activity_ms) * 1000);
+    }
+    if (app.snapshot_pending.exchange(false, std::memory_order_acq_rel)) {
+      CrashSnapshot snapshot{};
+      taskENTER_CRITICAL(&app.frame_lock);
+      snapshot = app.pending_snapshot;
+      taskEXIT_CRITICAL(&app.frame_lock);
+      (void)app.crash_store.write(snapshot);
+    }
     std::array<TelemetryEntry, kMaxTelemetrySensors> telemetry{};
     BatteryState battery_state = BatteryState::Unknown;
     ModuleState module_state = ModuleState::Starting;
@@ -495,6 +655,13 @@ void service_task(void*)
                             module_state, safety_state, current,
                             app.audio);
     app.audio.tick(current);
+    const PowerDecision power_decision = app.power.evaluate(
+        battery_state, safety_state == SafetyState::Enabled, current);
+    if (power_decision == PowerDecision::LockAndShutdown &&
+        previous_power_decision != PowerDecision::LockAndShutdown) {
+      app.safety.request_lock();
+    }
+    previous_power_decision = power_decision;
     taskENTER_CRITICAL(&app.frame_lock);
     app.latest_finder = app.finder.status();
     taskEXIT_CRITICAL(&app.frame_lock);
@@ -502,9 +669,12 @@ void service_task(void*)
   }
 }
 
-bool initialize_storage()
+bool initialize_storage(bool explicit_format_requested)
 {
-  if (!mount_model_filesystem()) {
+  if (explicit_format_requested) {
+    ESP_LOGW(kTag, "explicit storage format chord accepted");
+  }
+  if (!mount_model_filesystem(explicit_format_requested)) {
     return false;
   }
   const auto loaded = app.model_store.load(app.model);
@@ -526,7 +696,8 @@ bool initialize_storage()
   app.edit_model = app.model;
 
   std::array<AxisCalibration, kMaxAxes> calibration{};
-  if (app.calibration_store.load(calibration)) {
+  app.calibration_valid = app.calibration_store.load(calibration);
+  if (app.calibration_valid) {
     app.input_processor.set_calibration(calibration);
   }
 
@@ -570,7 +741,6 @@ extern "C" void app_main()
   (void)app.boot_state.initialize();
   const uint32_t boot_attempt = app.boot_state.begin_attempt();
 
-  const bool storage_ok = initialize_storage();
   const bool pins_ok = validate_pin_configuration();
   const bool inputs_ok = pins_ok && app.board.initialize();
   const RawInputs startup_inputs =
@@ -580,16 +750,27 @@ extern "C" void app_main()
   const bool recovery_requested =
       inputs_ok && app.boot.enter_recovery(
                        app.board.recovery_button_pressed(), boot_attempt);
+  const bool storage_format_requested =
+      inputs_ok && startup_inputs.valid &&
+      startup_inputs.switches[0] && startup_inputs.switches[1] &&
+      startup_inputs.switches[3];
+  bool storage_ok = initialize_storage(storage_format_requested);
   const bool display_ok = pins_ok && app.display.initialize();
   if (pins_ok) {
     (void)app.tones.initialize();
   }
   app.audio.notify(AudioAlert::Startup);
+  app.alarms.set_alarm(
+      0, {true, crsf::SensorUplinkLinkQuality, AlarmComparison::Below,
+          CONFIG_RIVETTX_LINK_WARNING_LQ, 5, 10});
   if (calibration_requested && display_ok) {
-    if (!run_startup_calibration()) {
+    if (run_startup_calibration()) {
+      app.calibration_valid = true;
+    } else {
       ESP_LOGW(kTag, "stick calibration cancelled or failed");
     }
   }
+  storage_ok = storage_ok && app.calibration_valid;
   const bool crsf_ok = pins_ok && app.transport.initialize();
 
   const esp_reset_reason_t reset_reason = esp_reset_reason();
@@ -626,6 +807,23 @@ extern "C" void app_main()
   self_test.control_task = control_created == pdPASS &&
                            ui_created == pdPASS &&
                            service_created == pdPASS;
+  ModuleState runtime_module_state = ModuleState::Starting;
+  if (self_test.control_task) {
+    const TimeUs runtime_deadline = now_us() + 3000000;
+    while (now_us() < runtime_deadline) {
+      taskENTER_CRITICAL(&app.frame_lock);
+      runtime_module_state = app.latest_module_state;
+      taskEXIT_CRITICAL(&app.frame_lock);
+      if (app.healthy_control_cycles.load(std::memory_order_relaxed) >= 20 &&
+          runtime_module_state == ModuleState::Online) {
+        break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(20));
+    }
+  }
+  self_test.control_runtime =
+      app.healthy_control_cycles.load(std::memory_order_relaxed) >= 20;
+  self_test.module_link = runtime_module_state == ModuleState::Online;
 
   if (!app.boot.finish_startup(self_test, now_us())) {
     ESP_LOGE(kTag, "startup self-test failed");

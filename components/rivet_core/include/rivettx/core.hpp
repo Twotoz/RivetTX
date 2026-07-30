@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <mutex>
 
 namespace rivettx {
 
@@ -78,11 +79,19 @@ class MixerEngine {
   std::array<LogicalRuntime, kMaxLogicalSwitches> logical_runtime_{};
   std::array<bool, kMaxLogicalSwitches> logical_values_{};
   std::array<TimerState, kMaxTimers> timer_states_{};
+  std::array<bool, kMaxTimers> timer_initialized_{};
+  std::array<bool, kMaxTimers> timer_persistent_{};
+  std::array<int64_t, kMaxTimers> timer_start_ms_{};
   std::array<int32_t, kChannelCount> previous_channels_{};
+  std::array<int16_t, kChannelCount> fade_from_channels_{};
   TimeUs previous_evaluation_us_ = 0;
   TimeUs previous_timer_us_ = 0;
   uint32_t sequence_ = 0;
   uint8_t active_flight_mode_ = 0;
+  uint8_t previous_flight_mode_ = 0;
+  TimeUs flight_mode_transition_us_ = 0;
+  TimeUs flight_mode_fade_duration_us_ = 0;
+  bool flight_mode_initialized_ = false;
 };
 
 enum class SafetyState : uint8_t {
@@ -134,8 +143,10 @@ class SafetyManager {
   void report_mixer_duration(uint32_t duration_us);
   ChannelFrame gate(const Model& model, const ControlInputs& inputs,
                     const ChannelFrame& proposed, TimeUs now_us);
-  const SafetyStatus& status() const;
+  SafetyStatus status() const;
   bool maintenance_allowed() const;
+  bool begin_maintenance();
+  void end_maintenance();
 
  private:
   bool startup_switches_match(const Model& model,
@@ -149,6 +160,8 @@ class SafetyManager {
   bool mixer_deadline_pending_ = false;
   bool enable_requested_ = false;
   bool storage_valid_ = false;
+  bool maintenance_active_ = false;
+  mutable std::mutex mutex_;
 };
 
 class IWatchdog {

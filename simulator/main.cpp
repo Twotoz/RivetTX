@@ -189,7 +189,7 @@ RawInputs make_inputs(ScenarioKind kind, uint32_t cycle, TimeUs now_us)
   const bool recovery =
       ((kind == ScenarioKind::StaleInput && now_us >= 2300000) ||
        (kind == ScenarioKind::MissedDeadline && now_us >= 2200000)) &&
-      now_us < 3000000;
+      now_us < 3200000;
   raw.axes[2] = startup || recovery ? 100 : 2048;
 
   if (kind == ScenarioKind::StaleInput &&
@@ -229,8 +229,15 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
   bool saw_safe_after_enabled = false;
   bool saw_offline = false;
   bool saw_online_after_offline = false;
+  bool enable_reissued = false;
   for (uint32_t cycle = 0; cycle < kCycles; ++cycle) {
     const TimeUs now_us = static_cast<TimeUs>(cycle) * kPeriodUs;
+    if (!enable_reissued && now_us >= 3000000 &&
+        (kind == ScenarioKind::StaleInput ||
+         kind == ScenarioKind::MissedDeadline)) {
+      safety.request_enable();
+      enable_reissued = true;
+    }
     transport.advance(now_us);
     const RawInputs raw = make_inputs(kind, cycle, now_us);
     const uint32_t duration =

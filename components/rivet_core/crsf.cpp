@@ -285,17 +285,29 @@ bool CrsfParser::feed(uint8_t byte, TimeUs now_us)
   ++stats_.valid_frames;
   last_valid_frame_us_ = now_us;
   last_frame_type_ = buffer_[2];
-  const uint32_t write = received_write_.load(std::memory_order_relaxed);
-  const uint32_t read = received_read_.load(std::memory_order_acquire);
-  if (write - read < received_frames_.size()) {
-    crsf::Frame& received =
-        received_frames_[write % received_frames_.size()];
-    received.size = expected_size_;
-    std::copy(buffer_.begin(), buffer_.begin() + expected_size_,
-              received.bytes.begin());
-    received_write_.store(write + 1, std::memory_order_release);
-  } else {
-    ++stats_.dropped_bytes;
+  // High-rate link/GPS/battery telemetry is already represented in the
+  // registry. Only enqueue frames for which a Lua/device script can provide
+  // additional handling, otherwise an idle script permanently saturates the
+  // small receive queue.
+  const bool lua_frame =
+      buffer_[2] != crsf::kFrameGps &&
+      buffer_[2] != crsf::kFrameBattery &&
+      buffer_[2] != crsf::kFrameLinkStatistics &&
+      buffer_[2] != crsf::kFrameRcChannelsPacked;
+  if (lua_frame &&
+      received_enabled_.load(std::memory_order_acquire)) {
+    const uint32_t write = received_write_.load(std::memory_order_relaxed);
+    const uint32_t read = received_read_.load(std::memory_order_acquire);
+    if (write - read < received_frames_.size()) {
+      crsf::Frame& received =
+          received_frames_[write % received_frames_.size()];
+      received.size = expected_size_;
+      std::copy(buffer_.begin(), buffer_.begin() + expected_size_,
+                received.bytes.begin());
+      received_write_.store(write + 1, std::memory_order_release);
+    } else {
+      ++stats_.lua_queue_drops;
+    }
   }
   const bool management_frame =
       buffer_[2] == crsf::kFrameDeviceInfo ||
@@ -410,6 +422,16 @@ TimeUs CrsfParser::last_valid_frame_us() const
 uint8_t CrsfParser::last_frame_type() const
 {
   return last_frame_type_;
+}
+
+void CrsfParser::set_lua_frame_queue_enabled(bool enabled)
+{
+  if (!enabled) {
+    const uint32_t write =
+        received_write_.load(std::memory_order_acquire);
+    received_read_.store(write, std::memory_order_release);
+  }
+  received_enabled_.store(enabled, std::memory_order_release);
 }
 
 bool CrsfParser::pop_frame(crsf::Frame& frame)

@@ -9,6 +9,7 @@
 #include <utility>
 
 #if defined(__unix__) || defined(ESP_PLATFORM)
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -139,7 +140,8 @@ bool read_source(Reader& reader, SourceRef& source)
       return source.index > 0 &&
              source.index <= kMaxTelemetrySensors;
     case SourceKind::Constant:
-      return true;
+      return source.constant >= -kResolution &&
+             source.constant <= kResolution;
   }
   return false;
 }
@@ -181,15 +183,119 @@ bool read_curve(Reader& reader, Curve& curve)
 
 bool model_shape_valid(const Model& model)
 {
-  return model.input_count <= kMaxInputs &&
-         model.mix_count <= kMaxMixes &&
-         model.logical_switch_count <= kMaxLogicalSwitches &&
-         model.flight_mode_count > 0 &&
-         model.flight_mode_count <= kMaxFlightModes &&
-         model.curve_count <= kMaxCurves &&
-         model.special_function_count <= kMaxSpecialFunctions &&
-         model.throttle_axis < kMaxAxes &&
-         model.throttle_channel < kChannelCount;
+  if (std::memchr(model.name.data(), '\0', model.name.size()) == nullptr ||
+      model.input_count > kMaxInputs) {
+    return false;
+  }
+  if (model.mix_count > kMaxMixes ||
+      model.logical_switch_count > kMaxLogicalSwitches ||
+      model.flight_mode_count == 0 ||
+      model.flight_mode_count > kMaxFlightModes ||
+      model.curve_count > kMaxCurves ||
+      model.special_function_count > kMaxSpecialFunctions ||
+      model.throttle_axis >= kMaxAxes ||
+      model.throttle_channel >= kChannelCount) {
+    return false;
+  }
+  const auto switch_valid = [](const SwitchRef& reference) {
+    return reference.index >= -1 &&
+           reference.index <
+               static_cast<int8_t>(kMaxSwitches + kMaxLogicalSwitches);
+  };
+  const auto source_valid = [](const SourceRef& source) {
+    switch (source.kind) {
+      case SourceKind::Axis:
+        return source.index < kMaxAxes;
+      case SourceKind::Input:
+        return source.index < kMaxInputs;
+      case SourceKind::Channel:
+        return source.index < kChannelCount;
+      case SourceKind::Telemetry:
+        return source.index > 0 && source.index <= kMaxTelemetrySensors;
+      case SourceKind::GVar:
+        return source.index < kMaxGVars;
+      case SourceKind::Constant:
+        return source.constant >= -kResolution &&
+               source.constant <= kResolution;
+    }
+    return false;
+  };
+  for (std::size_t i = 0; i < model.input_count; ++i) {
+    const auto& input = model.inputs[i];
+    if (input.source_axis >= kMaxAxes || input.destination >= kMaxInputs ||
+        input.weight_percent < -100 || input.weight_percent > 100 ||
+        input.expo_percent < -100 || input.expo_percent > 100 ||
+        input.curve_index < -1 ||
+        input.curve_index >= static_cast<int8_t>(kMaxCurves) ||
+        !switch_valid(input.condition)) {
+      return false;
+    }
+  }
+  for (std::size_t i = 0; i < model.mix_count; ++i) {
+    const auto& mix = model.mixes[i];
+    if (mix.destination >= kChannelCount || !source_valid(mix.source) ||
+        mix.weight_percent < -100 || mix.weight_percent > 100 ||
+        mix.offset < -kResolution || mix.offset > kResolution ||
+        mix.curve_index < -1 ||
+        mix.curve_index >= static_cast<int8_t>(kMaxCurves) ||
+        !switch_valid(mix.condition) || mix.mode > MixMode::Replace) {
+      return false;
+    }
+  }
+  for (std::size_t i = 0; i < model.logical_switch_count; ++i) {
+    const auto& logical = model.logical_switches[i];
+    if (logical.operation > LogicalSwitchOp::Timer ||
+        !source_valid(logical.lhs) || !source_valid(logical.rhs) ||
+        !switch_valid(logical.first) || !switch_valid(logical.second) ||
+        !switch_valid(logical.and_condition)) {
+      return false;
+    }
+  }
+  for (std::size_t i = 0; i < model.flight_mode_count; ++i) {
+    const auto& mode = model.flight_modes[i];
+    if (!switch_valid(mode.condition) ||
+        (mode.gvar_override_mask &
+         ~static_cast<uint16_t>((1U << kMaxGVars) - 1U)) != 0) {
+      return false;
+    }
+    for (const int16_t trim : mode.trims) {
+      if (trim < -kResolution || trim > kResolution) return false;
+    }
+    for (const int16_t gvar : mode.gvars) {
+      if (gvar < -kResolution || gvar > kResolution) return false;
+    }
+  }
+  for (std::size_t i = 0; i < model.curve_count; ++i) {
+    for (const int16_t point : model.curves[i].points) {
+      if (point < -kResolution || point > kResolution) return false;
+    }
+  }
+  for (const int16_t gvar : model.gvars) {
+    if (gvar < -kResolution || gvar > kResolution) return false;
+  }
+  for (const auto& output : model.outputs) {
+    if (output.minimum < -kResolution || output.maximum > kResolution ||
+        output.minimum > output.maximum ||
+        output.subtrim < -kResolution || output.subtrim > kResolution ||
+        output.failsafe < -kResolution || output.failsafe > kResolution) {
+      return false;
+    }
+  }
+  for (const auto& timer : model.timers) {
+    if (timer.mode > TimerMode::Switch ||
+        !switch_valid(timer.condition) ||
+        timer.start_seconds < -86400 || timer.start_seconds > 86400) {
+      return false;
+    }
+  }
+  for (std::size_t i = 0; i < model.special_function_count; ++i) {
+    const auto& special = model.special_functions[i];
+    if (!switch_valid(special.condition) ||
+        special.action > SpecialAction::EnterModulePassthrough) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::vector<uint8_t> encode_payload(const Model& model)
@@ -262,6 +368,7 @@ std::vector<uint8_t> encode_payload(const Model& model)
     for (const auto gvar : mode.gvars) {
       writer.put(gvar);
     }
+    writer.put(mode.gvar_override_mask);
     writer.put(mode.fade_in_ms);
     writer.put(mode.fade_out_ms);
   }
@@ -305,6 +412,9 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
                         model.name.size()) ||
       !reader.get(model.model_id) || !reader.get(model.throttle_axis) ||
       !reader.get(model.throttle_channel)) {
+    return false;
+  }
+  if (std::memchr(model.name.data(), '\0', model.name.size()) == nullptr) {
     return false;
   }
   if (schema >= 2) {
@@ -396,6 +506,9 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
       if (!reader.get(gvar)) {
         return false;
       }
+    }
+    if (schema >= 3 && !reader.get(mode.gvar_override_mask)) {
+      return false;
     }
     if (!reader.get(mode.fade_in_ms) || !reader.get(mode.fade_out_ms)) {
       return false;
@@ -508,7 +621,13 @@ bool ModelCodec::decode(const std::vector<uint8_t>& encoded, Model& model,
     error = "invalid model payload";
     return false;
   }
-  return migrate(schema, model, error);
+  if (!migrate(schema, model, error) || !model_shape_valid(model)) {
+    if (error.empty()) {
+      error = "invalid model values";
+    }
+    return false;
+  }
+  return true;
 }
 
 bool ModelCodec::migrate(uint16_t source_schema, Model& model,
@@ -517,6 +636,15 @@ bool ModelCodec::migrate(uint16_t source_schema, Model& model,
   if (source_schema == 1) {
     model.required_switch_mask = 0;
     model.required_switch_values = 0;
+  }
+  if (source_schema < 3) {
+    for (auto& mode : model.flight_modes) {
+      for (std::size_t i = 0; i < mode.gvars.size(); ++i) {
+        if (mode.gvars[i] != 0) {
+          mode.gvar_override_mask |= static_cast<uint16_t>(1U << i);
+        }
+      }
+    }
   }
   if (source_schema > Model::kSchemaVersion) {
     error = "migration target unavailable";
@@ -608,6 +736,22 @@ bool PosixFileStore::sync(const std::string& path)
 #endif
 }
 
+bool PosixFileStore::sync_directory()
+{
+#if defined(__unix__) || defined(ESP_PLATFORM)
+  const int descriptor = ::open(root_.empty() ? "." : root_.c_str(),
+                                O_RDONLY);
+  if (descriptor < 0) {
+    return false;
+  }
+  const bool result = ::fsync(descriptor) == 0;
+  (void)::close(descriptor);
+  return result;
+#else
+  return true;
+#endif
+}
+
 TransactionalModelStore::TransactionalModelStore(IFileStore& files,
                                                  std::string base_path)
     : files_(files),
@@ -649,12 +793,23 @@ bool TransactionalModelStore::save(const Model& model, uint32_t generation,
     return false;
   }
 
-  (void)files_.remove(backup_);
-  if (files_.exists(active_) && !files_.rename(active_, backup_)) {
-    error = "failed to preserve previous model";
-    return false;
+  const bool had_active = files_.exists(active_);
+  if (had_active) {
+    if (!files_.remove(backup_) ||
+        !files_.rename(active_, backup_) ||
+        !files_.sync_directory()) {
+      error = "failed to preserve previous model";
+      return false;
+    }
   }
-  if (!files_.rename(temporary_, active_) || !files_.sync(active_)) {
+  if (!files_.rename(temporary_, active_) || !files_.sync(active_) ||
+      !files_.sync_directory()) {
+    // A retry must retain the last known-good backup. Best effort restoration
+    // also keeps normal boot paths simple after an activation failure.
+    if (had_active && !files_.exists(active_) && files_.exists(backup_)) {
+      (void)files_.rename(backup_, active_);
+      (void)files_.sync_directory();
+    }
     error = "failed to activate verified model";
     return false;
   }
@@ -685,6 +840,7 @@ ModelLoadResult TransactionalModelStore::load(Model& model)
       (void)files_.remove(active_);
       (void)files_.rename(temporary_, active_);
       (void)files_.sync(active_);
+      (void)files_.sync_directory();
     }
     return result;
   }
@@ -723,6 +879,13 @@ bool CalibrationStore::save(
 {
   Writer payload;
   for (const auto& item : calibration) {
+    if (item.minimum >= item.center || item.center >= item.maximum ||
+        item.maximum - item.minimum < 100 ||
+        item.deadband >=
+            static_cast<uint16_t>(item.maximum - item.minimum) ||
+        item.filter_percent > 100) {
+      return false;
+    }
     payload.put(item.minimum);
     payload.put(item.center);
     payload.put(item.maximum);
@@ -764,7 +927,11 @@ bool CalibrationStore::load(
         !payload.get(item.maximum) || !payload.get(item.deadband) ||
         !payload.get(item.filter_percent) ||
         !payload.get_bool(item.inverted) ||
-        item.minimum >= item.center || item.center >= item.maximum) {
+        item.minimum >= item.center || item.center >= item.maximum ||
+        item.maximum - item.minimum < 100 ||
+        item.deadband >=
+            static_cast<uint16_t>(item.maximum - item.minimum) ||
+        item.filter_percent > 100) {
       return false;
     }
   }

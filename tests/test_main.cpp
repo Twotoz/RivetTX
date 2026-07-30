@@ -271,6 +271,48 @@ void test_mixer_features()
   model.logical_switches[0].threshold = 100;
   (void)mixer.evaluate(model, inputs, telemetry, 201000);
   CHECK(mixer.logical_switch_values()[0]);
+
+  Model gvar_model = make_default_model();
+  gvar_model.input_count = 0;
+  gvar_model.mix_count = 1;
+  gvar_model.gvars[0] = 500;
+  gvar_model.flight_modes[0].gvars[0] = 0;
+  gvar_model.flight_modes[0].gvar_override_mask = 1;
+  gvar_model.mixes[0].source = {SourceKind::GVar, 0, 0};
+  MixerEngine gvar_mixer;
+  CHECK(gvar_mixer.evaluate(gvar_model, inputs, telemetry, 300000)
+            .channels[0] == 0);
+
+  Model trim_model = make_default_model();
+  trim_model.flight_modes[0].trims[0] = 200;
+  trim_model.mixes[0].carry_trim = false;
+  ControlInputs centered = inputs;
+  centered.axes[0] = 0;
+  MixerEngine trim_mixer;
+  CHECK(trim_mixer.evaluate(trim_model, centered, telemetry, 400000)
+            .channels[0] == 0);
+
+  Model timer_model = make_default_model();
+  timer_model.timers[0].mode = TimerMode::Absolute;
+  timer_model.timers[0].start_seconds = 10;
+  timer_model.timers[0].countdown = true;
+  MixerEngine timer_mixer;
+  (void)timer_mixer.evaluate(timer_model, inputs, telemetry, 1000000);
+  (void)timer_mixer.evaluate(timer_model, inputs, telemetry, 2000000);
+  CHECK(timer_mixer.timer_states()[0].elapsed_ms == 9000);
+  timer_mixer.reset_timer(0);
+  CHECK(timer_mixer.timer_states()[0].elapsed_ms == 10000);
+
+  Model logical_timer_model = make_default_model();
+  logical_timer_model.logical_switch_count = 1;
+  logical_timer_model.logical_switches[0].operation =
+      LogicalSwitchOp::Timer;
+  logical_timer_model.logical_switches[0].delay_ms = 100;
+  logical_timer_model.logical_switches[0].duration_ms = 100;
+  MixerEngine logical_timer_mixer;
+  (void)logical_timer_mixer.evaluate(
+      logical_timer_model, inputs, telemetry, 150000);
+  CHECK(logical_timer_mixer.logical_switch_values()[0]);
 }
 
 void test_safety()
@@ -312,8 +354,13 @@ void test_safety()
 
   raw.sampled_at_us = 17000;
   auto recovered = loop.run(model, raw, 3800, 17000, 17100);
-  CHECK(!recovered.frame.safe);
-  CHECK(recovered.safety.state == SafetyState::Enabled);
+  CHECK(recovered.frame.safe);
+  CHECK(recovered.safety.state == SafetyState::Ready);
+  safety.request_enable();
+  raw.sampled_at_us = 21000;
+  auto reenabled = loop.run(model, raw, 3800, 21000, 21100);
+  CHECK(!reenabled.frame.safe);
+  CHECK(reenabled.safety.state == SafetyState::Enabled);
 
   raw.sampled_at_us = 0;
   auto stale = loop.run(model, raw, 3800, 100000, 100100);
@@ -322,7 +369,7 @@ void test_safety()
 
   safety.report_battery(3000);
   CHECK(safety.status().state == SafetyState::Fault);
-  CHECK(watchdog.count == 6);
+  CHECK(watchdog.count == 7);
 }
 
 void test_crsf()
@@ -353,8 +400,20 @@ void test_crsf()
   CHECK(telemetry.value(crsf::SensorBatteryVoltage, voltage));
   CHECK(voltage == 12300);
   crsf::Frame popped{};
+  CHECK(!parser.pop_frame(popped));
+
+  parser.set_lua_frame_queue_enabled(true);
+  std::array<uint8_t, 4> device_info{
+      crsf::kAddressRadio, 2, crsf::kFrameDeviceInfo, 0};
+  device_info.back() =
+      crsf::crc8_dvb_s2(device_info.data() + 2,
+                        device_info.size() - 3);
+  for (const auto byte : device_info) {
+    (void)parser.feed(byte, 5500);
+  }
   CHECK(parser.pop_frame(popped));
-  CHECK(popped.bytes[2] == crsf::kFrameBattery);
+  CHECK(popped.bytes[2] == crsf::kFrameDeviceInfo);
+  parser.set_lua_frame_queue_enabled(false);
 
   battery.back() ^= 1;
   for (const auto byte : battery) {
@@ -779,6 +838,17 @@ void test_ui()
   CHECK(!make_elrs_screen(ElrsManagerStatus{}, true).fields.empty());
   CHECK(!make_elrs_finder_screen(ElrsFinderStatus{}).fields.empty());
 
+  const OutputLimit unchanged = model.outputs[0];
+  CHECK(!ModelEditor::apply(
+      model, {"outputs", "output.0.minimum", 2000}));
+  CHECK(model.outputs[0].minimum == unchanged.minimum);
+  CHECK(ModelEditor::apply(
+      model, {"outputs", "output.0.minimum", 1000}));
+  CHECK(!ModelEditor::apply(
+      model, {"outputs", "output.0.maximum", 500}));
+  CHECK(model.outputs[0].minimum == 1000);
+  CHECK(model.outputs[0].maximum == unchanged.maximum);
+
   UiScreen actions{"actions", "Actions", {}};
   actions.fields.push_back(
       {"go", "GO", "PRESS", UiFieldKind::Action,
@@ -805,12 +875,15 @@ void test_services()
   CHECK(crash.event_count == 32);
   CHECK(crash.recent_events[31].argument0 == 139);
 
-  BatteryMonitor battery;
+  BatteryMonitor battery({3500, 3200, 100, 100});
   CHECK(battery.update(3600) == BatteryState::Normal);
   for (int i = 0; i < 30; ++i) {
     (void)battery.update(3000);
   }
   CHECK(battery.state() == BatteryState::Critical);
+  CHECK(battery.update(3250) == BatteryState::Critical);
+  CHECK(battery.update(3300) == BatteryState::Low);
+  CHECK(battery.update(3600) == BatteryState::Normal);
 
   TelemetryRegistry telemetry;
   telemetry.update(crsf::SensorUplinkLinkQuality, 20,
@@ -822,6 +895,8 @@ void test_services()
   AlarmEvent alarm{};
   CHECK(alarms.evaluate(telemetry, 1000, alarm));
   CHECK(alarm.active);
+  CHECK(alarms.evaluate(telemetry, 3000001, alarm));
+  CHECK(!alarm.active);
 
   MemoryTelemetrySink sink;
   TelemetryLogger logger(sink, 100);
@@ -868,10 +943,12 @@ void test_module_update_backup_and_calibration()
   FakeOta ota;
   BootManager boot(ota, diagnostics);
   ota.pending = true;
-  CHECK(boot.finish_startup({true, true, true, true, true}, 1000));
+  CHECK(boot.finish_startup(
+      {true, true, true, true, true, true, true}, 1000));
   CHECK(ota.marked);
   ota.marked = false;
-  CHECK(!boot.finish_startup({true, false, true, true, true}, 2000));
+  CHECK(!boot.finish_startup(
+      {true, false, true, true, true, true, true}, 2000));
   CHECK(ota.rollback);
   CHECK(boot.enter_recovery(false, 3));
 
@@ -893,6 +970,9 @@ void test_module_update_backup_and_calibration()
                             "https://example.invalid/s3.bin", 2, true};
   CHECK(s3_updates.install(s3_valid, true, 5000));
   CHECK(s3_ota.updated_url == s3_valid.url);
+  FirmwareManifest downgrade = s3_valid;
+  downgrade.version = "0.0.9";
+  CHECK(!s3_updates.install(downgrade, true, 5100));
 
   MemoryBackup endpoint;
   BackupService backups(endpoint);
@@ -919,6 +999,32 @@ void test_module_update_backup_and_calibration()
   CHECK(calibration.next());
   CHECK(calibration.next());
   CHECK(calibration.step() == CalibrationStep::Complete);
+
+  CalibrationWizard invalid_calibration;
+  invalid_calibration.begin();
+  raw.axes.fill(2048);
+  for (int i = 0; i < 10; ++i) {
+    invalid_calibration.sample(raw);
+  }
+  CHECK(invalid_calibration.next());
+  raw.axes.fill(2500);
+  invalid_calibration.sample(raw);
+  raw.axes.fill(4000);
+  invalid_calibration.sample(raw);
+  CHECK(!invalid_calibration.next());
+
+  FakeTransport missing_transport;
+  TelemetryRegistry missing_telemetry;
+  CrsfParser missing_parser(missing_telemetry);
+  DiagnosticLog missing_diagnostics;
+  ModuleSupervisor missing_module(
+      missing_transport, missing_parser, missing_diagnostics);
+  missing_module.start(1, 1000);
+  missing_module.poll(1001001);
+  CHECK(missing_module.status().state == ModuleState::Offline);
+  const std::size_t lost_events = missing_diagnostics.size();
+  missing_module.poll(2001001);
+  CHECK(missing_diagnostics.size() == lost_events);
 
   SpecialFunctionEngine special_engine;
   FakeSpecialActions actions;
