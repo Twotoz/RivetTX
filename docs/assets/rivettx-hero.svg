@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="320" viewBox="0 0 1120 320" role="img" aria-labelledby="title desc">
   <title id="title">RivetTX</title>
-  <desc id="desc">Compact ESP32-C3 radio transmitter firmware</desc>
+  <desc id="desc">Compact ESP32-C3 and ESP32-S3 radio transmitter firmware</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#07111f"/>
@@ -45,7 +45,7 @@
     <text x="0" y="72" fill="#f5f9fc" font-family="Arial, Helvetica, sans-serif" font-size="74" font-weight="800">RivetTX</text>
     <rect x="2" y="92" width="418" height="5" rx="2.5" fill="url(#accent)"/>
     <text x="2" y="139" fill="#b7c7d8" font-family="Arial, Helvetica, sans-serif" font-size="24">Compact firmware. Deterministic control.</text>
-    <text x="2" y="171" fill="#b7c7d8" font-family="Arial, Helvetica, sans-serif" font-size="24">Built for ESP32-C3 + ExpressLRS.</text>
+    <text x="2" y="171" fill="#b7c7d8" font-family="Arial, Helvetica, sans-serif" font-size="24">Built for ESP32-C3 / S3 + ExpressLRS.</text>
 
     <g transform="translate(2 201)" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700">
       <rect width="126" height="34" rx="17" fill="#132a3f" stroke="#2dd4bf" stroke-opacity=".55"/>

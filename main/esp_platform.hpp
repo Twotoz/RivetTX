@@ -152,6 +152,7 @@ class WifiBackupPortal {
 };
 
 bool mount_model_filesystem();
+bool validate_pin_configuration();
 TimeUs now_us();
 
 }  // namespace rivettx::esp32

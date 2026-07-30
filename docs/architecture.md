@@ -28,9 +28,16 @@
 
 Flash operations and OTA are prohibited while the transmitter is armed.
 
+On the single-core ESP32-C3 all tasks share core 0 and are separated by
+priority. On the dual-core ESP32-S3 the control task is pinned to core 1 while
+UI and service tasks are pinned to core 0. The same fixed-allocation control
+path and safety gates are used on both targets.
+
 ## Hardware profiles
 
-The application sees capabilities rather than concrete peripherals:
+The target layer supplies validated GPIO/ADC mappings and scheduling. Above
+that layer, the application sees capabilities rather than concrete
+peripherals:
 
 ```text
 HardwareProfile
@@ -68,7 +75,7 @@ Saving `model.rvm` performs:
 5. recover `.bak` on the next boot if the active file is corrupt
 
 Migrations happen after decoding and before a model is activated.
-The ESP32 target mounts the `models` partition as wear-levelled FATFS; the
+Both ESP32 targets mount the `models` partition as wear-levelled FATFS; the
 codec and transaction protocol are filesystem-independent.
 
 ## Updates and recovery

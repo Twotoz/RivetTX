@@ -2,13 +2,17 @@ menu "RivetTX hardware"
 
 config RIVETTX_I2C_SDA
     int "OLED I2C SDA GPIO"
-    range 0 21
-    default 4
+    range 0 21 if IDF_TARGET_ESP32C3
+    range 0 48 if IDF_TARGET_ESP32S3
+    default 4 if IDF_TARGET_ESP32C3
+    default 8 if IDF_TARGET_ESP32S3
 
 config RIVETTX_I2C_SCL
     int "OLED I2C SCL GPIO"
-    range 0 21
-    default 5
+    range 0 21 if IDF_TARGET_ESP32C3
+    range 0 48 if IDF_TARGET_ESP32S3
+    default 5 if IDF_TARGET_ESP32C3
+    default 9 if IDF_TARGET_ESP32S3
 
 config RIVETTX_OLED_ADDRESS
     hex "OLED I2C address"
@@ -16,57 +20,78 @@ config RIVETTX_OLED_ADDRESS
 
 config RIVETTX_CRSF_TX
     int "CRSF UART TX GPIO"
-    range 0 21
-    default 6
+    range 0 21 if IDF_TARGET_ESP32C3
+    range 0 48 if IDF_TARGET_ESP32S3
+    default 6 if IDF_TARGET_ESP32C3
+    default 17 if IDF_TARGET_ESP32S3
 
 config RIVETTX_CRSF_RX
     int "CRSF UART RX GPIO"
-    range 0 21
-    default 7
+    range 0 21 if IDF_TARGET_ESP32C3
+    range 0 48 if IDF_TARGET_ESP32S3
+    default 7 if IDF_TARGET_ESP32C3
+    default 18 if IDF_TARGET_ESP32S3
 
 config RIVETTX_AXIS0_GPIO
     int "Axis 0 ADC GPIO"
-    range 0 5
-    default 0
+    range 0 4 if IDF_TARGET_ESP32C3
+    range 1 10 if IDF_TARGET_ESP32S3
+    default 0 if IDF_TARGET_ESP32C3
+    default 1 if IDF_TARGET_ESP32S3
 
 config RIVETTX_AXIS1_GPIO
     int "Axis 1 ADC GPIO"
-    range 0 5
-    default 1
+    range 0 4 if IDF_TARGET_ESP32C3
+    range 1 10 if IDF_TARGET_ESP32S3
+    default 1 if IDF_TARGET_ESP32C3
+    default 2 if IDF_TARGET_ESP32S3
 
 config RIVETTX_AXIS2_GPIO
     int "Axis 2 ADC GPIO"
-    range 0 5
-    default 2
+    range 0 4 if IDF_TARGET_ESP32C3
+    range 1 10 if IDF_TARGET_ESP32S3
+    default 2 if IDF_TARGET_ESP32C3
+    default 3 if IDF_TARGET_ESP32S3
 
 config RIVETTX_AXIS3_GPIO
     int "Axis 3 ADC GPIO"
-    range 0 5
-    default 3
+    range 0 4 if IDF_TARGET_ESP32C3
+    range 1 10 if IDF_TARGET_ESP32S3
+    default 3 if IDF_TARGET_ESP32C3
+    default 4 if IDF_TARGET_ESP32S3
 
 config RIVETTX_BUTTON_UP
     int "Up button GPIO"
-    range 0 21
-    default 8
+    range 0 21 if IDF_TARGET_ESP32C3
+    range 0 48 if IDF_TARGET_ESP32S3
+    default 8 if IDF_TARGET_ESP32C3
+    default 10 if IDF_TARGET_ESP32S3
 
 config RIVETTX_BUTTON_DOWN
     int "Down button GPIO"
-    range 0 21
-    default 9
+    range 0 21 if IDF_TARGET_ESP32C3
+    range 0 48 if IDF_TARGET_ESP32S3
+    default 9 if IDF_TARGET_ESP32C3
+    default 11 if IDF_TARGET_ESP32S3
 
 config RIVETTX_BUTTON_ENTER
     int "Enter button GPIO"
-    range 0 21
-    default 10
+    range 0 21 if IDF_TARGET_ESP32C3
+    range 0 48 if IDF_TARGET_ESP32S3
+    default 10 if IDF_TARGET_ESP32C3
+    default 12 if IDF_TARGET_ESP32S3
 
 config RIVETTX_BUTTON_BACK
     int "Back/recovery button GPIO"
-    range 0 21
-    default 20
+    range 0 21 if IDF_TARGET_ESP32C3
+    range 0 48 if IDF_TARGET_ESP32S3
+    default 20 if IDF_TARGET_ESP32C3
+    default 14 if IDF_TARGET_ESP32S3
 
 config RIVETTX_BATTERY_GPIO
     int "Battery ADC GPIO (-1 disables battery sensing)"
-    range -1 5
+    range -1 4 if IDF_TARGET_ESP32C3
+    range -1 10 if IDF_TARGET_ESP32S3
     default -1
 
 config RIVETTX_BATTERY_DIVIDER_MILLI
@@ -92,7 +117,8 @@ config RIVETTX_BATTERY_CRITICAL_MV
 
 config RIVETTX_BUZZER_GPIO
     int "Passive piezo buzzer GPIO (-1 disables audio)"
-    range -1 21
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
     default -1
 
 config RIVETTX_BUZZER_VOLUME
