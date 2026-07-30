@@ -1102,6 +1102,20 @@ void test_storage()
   CHECK(library.select(second_slot, active, active_generation, error));
   CHECK(library.active_slot() == second_slot);
   CHECK(active.model_id == 2);
+  Model updated_first = make_default_model();
+  std::snprintf(updated_first.name.data(), updated_first.name.size(),
+                "Updated First");
+  CHECK(library.save_slot(0, updated_first, 7, error));
+  Model restored_first{};
+  uint32_t restored_first_generation = 0;
+  CHECK(library.select(0, restored_first, restored_first_generation,
+                       error));
+  CHECK(restored_first_generation == 7);
+  CHECK(std::strcmp(restored_first.name.data(), "Updated First") == 0);
+  CHECK(library.select(second_slot, active, active_generation, error));
+  CHECK(!library.save_slot(kMaximumStoredModels, updated_first, 8,
+                           error));
+  CHECK(error == "model slot out of range");
   CHECK(!library.remove(second_slot, error));
   CHECK(library.remove(0, error));
 

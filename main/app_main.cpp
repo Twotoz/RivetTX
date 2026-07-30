@@ -250,7 +250,13 @@ struct Application {
   std::atomic<bool> screenshot_requested{false};
   std::atomic<bool> persist_runtime_model{false};
   Model runtime_model_to_persist = make_default_model();
+  uint8_t runtime_model_slot_to_persist = 0;
+  uint32_t runtime_model_generation_to_persist = 0;
   Model pending_model_activation = make_default_model();
+  uint8_t pending_model_slot = 0;
+  uint32_t pending_model_generation = 0;
+  uint8_t active_runtime_model_slot = 0;
+  uint32_t active_runtime_model_generation = 0;
   // 0 idle, 1 pending, 2 applied, -1 rejected.
   std::atomic<int8_t> model_activation_state{0};
   std::mutex runtime_model_mutex;
@@ -293,12 +299,18 @@ void control_task(void*)
     }
     if (app.model_activation_state.load(std::memory_order_acquire) == 1) {
       Model candidate{};
+      uint8_t candidate_slot = 0;
+      uint32_t candidate_generation = 0;
       {
         const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
         candidate = app.pending_model_activation;
+        candidate_slot = app.pending_model_slot;
+        candidate_generation = app.pending_model_generation;
       }
       app.safety.request_lock();
       app.model = candidate;
+      app.active_runtime_model_slot = candidate_slot;
+      app.active_runtime_model_generation = candidate_generation;
       app.mixer.reset();
       app.trim_controls.reset();
       app.special_functions.reset();
@@ -332,6 +344,10 @@ void control_task(void*)
       {
         const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
         app.runtime_model_to_persist = app.model;
+        app.runtime_model_slot_to_persist =
+            app.active_runtime_model_slot;
+        app.runtime_model_generation_to_persist =
+            app.active_runtime_model_generation;
       }
       app.persist_runtime_model.store(true, std::memory_order_release);
       app.last_user_activity_ms.store(
@@ -356,6 +372,10 @@ void control_task(void*)
             const std::lock_guard<std::mutex> lock(
                 app.runtime_model_mutex);
             app.runtime_model_to_persist = app.model;
+            app.runtime_model_slot_to_persist =
+                app.active_runtime_model_slot;
+            app.runtime_model_generation_to_persist =
+                app.active_runtime_model_generation;
           }
           app.persist_runtime_model.store(true, std::memory_order_release);
           break;
@@ -384,6 +404,10 @@ void control_task(void*)
             const std::lock_guard<std::mutex> lock(
                 app.runtime_model_mutex);
             app.runtime_model_to_persist = app.model;
+            app.runtime_model_slot_to_persist =
+                app.active_runtime_model_slot;
+            app.runtime_model_generation_to_persist =
+                app.active_runtime_model_generation;
           }
           app.persist_runtime_model.store(true, std::memory_order_release);
           break;
@@ -1001,6 +1025,7 @@ void ui_task(void*)
   bool model_dirty = false;
   bool activation_needed = false;
   bool activation_maintenance = false;
+  bool runtime_update_during_activation = false;
   bool usb_maintenance = false;
   bool screen_rendered = false;
   bool force_screen_rebuild = true;
@@ -1053,31 +1078,63 @@ void ui_task(void*)
     }
     if (app.persist_runtime_model.exchange(false,
                                            std::memory_order_acq_rel)) {
-      const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
-      if (activation_needed) {
+      Model runtime_model{};
+      uint8_t runtime_slot = 0;
+      uint32_t runtime_generation = 0;
+      {
+        const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
+        runtime_model = app.runtime_model_to_persist;
+        runtime_slot = app.runtime_model_slot_to_persist;
+        runtime_generation = app.runtime_model_generation_to_persist;
+      }
+      if (runtime_slot != app.model_library.active_slot()) {
+        std::string error;
+        if (!app.model_library.save_slot(
+                runtime_slot, runtime_model, runtime_generation + 1,
+                error)) {
+          ESP_LOGE(kTag, "previous model runtime save failed: %s",
+                   error.c_str());
+          const std::lock_guard<std::mutex> lock(app.runtime_model_mutex);
+          app.runtime_model_to_persist = runtime_model;
+          app.runtime_model_slot_to_persist = runtime_slot;
+          app.runtime_model_generation_to_persist = runtime_generation;
+          app.persist_runtime_model.store(true,
+                                          std::memory_order_release);
+        } else {
+          app.model_summaries = app.model_library.summaries();
+        }
+      } else if (activation_needed) {
         for (std::size_t mode = 0; mode < kMaxFlightModes; ++mode) {
           app.edit_model.flight_modes[mode].trims =
-              app.runtime_model_to_persist.flight_modes[mode].trims;
+              runtime_model.flight_modes[mode].trims;
         }
         for (std::size_t channel = 0; channel < kChannelCount; ++channel) {
           app.edit_model.outputs[channel].failsafe =
-              app.runtime_model_to_persist.outputs[channel].failsafe;
+              runtime_model.outputs[channel].failsafe;
         }
       } else {
-        app.edit_model = app.runtime_model_to_persist;
+        app.edit_model = runtime_model;
       }
-      model_dirty = true;
-      force_screen_rebuild = true;
-      dirty_since_us = now_us();
+      if (runtime_slot == app.model_library.active_slot()) {
+        runtime_update_during_activation =
+            runtime_update_during_activation || activation_maintenance;
+        model_dirty = true;
+        force_screen_rebuild = true;
+        dirty_since_us = now_us();
+      }
     }
     const int8_t activation_state =
         app.model_activation_state.load(std::memory_order_acquire);
     if (activation_maintenance &&
         (activation_state == 2 || activation_state == -1)) {
       if (activation_state == 2) {
-        model_dirty = false;
+        model_dirty = runtime_update_during_activation;
         activation_needed = false;
         force_screen_rebuild = true;
+        if (runtime_update_during_activation) {
+          dirty_since_us = now_us();
+        }
+        runtime_update_during_activation = false;
       } else {
         ESP_LOGE(kTag, "runtime model activation failed");
         dirty_since_us = now_us();
@@ -1157,6 +1214,8 @@ void ui_task(void*)
               const std::lock_guard<std::mutex> lock(
                   app.runtime_model_mutex);
               app.pending_model_activation = restored;
+              app.pending_model_slot = app.model_library.active_slot();
+              app.pending_model_generation = restored_generation;
             }
             app.model_activation_state.store(
                 1, std::memory_order_release);
@@ -1217,6 +1276,8 @@ void ui_task(void*)
               const std::lock_guard<std::mutex> lock(
                   app.runtime_model_mutex);
               app.pending_model_activation = selected;
+              app.pending_model_slot = slot;
+              app.pending_model_generation = selected_generation;
             }
             app.model_activation_state.store(
                 1, std::memory_order_release);
@@ -1325,6 +1386,8 @@ void ui_task(void*)
             const std::lock_guard<std::mutex> lock(
                 app.runtime_model_mutex);
             app.pending_model_activation = app.edit_model;
+            app.pending_model_slot = app.model_library.active_slot();
+            app.pending_model_generation = app.generation;
           }
           app.model_activation_state.store(1, std::memory_order_release);
           activation_maintenance = true;
@@ -1546,6 +1609,8 @@ bool initialize_storage(bool explicit_format_requested)
              library_error.c_str());
     return false;
   }
+  app.active_runtime_model_slot = app.model_library.active_slot();
+  app.active_runtime_model_generation = app.generation;
   std::vector<uint8_t> active_mirror;
   const auto expected_mirror =
       ModelCodec::encode(app.model, app.generation);

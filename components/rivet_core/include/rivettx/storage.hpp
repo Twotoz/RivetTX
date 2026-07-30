@@ -106,6 +106,8 @@ class ModelLibrary {
                  std::string& error);
   std::array<StoredModelSummary, kMaximumStoredModels> summaries() const;
   uint8_t active_slot() const;
+  bool save_slot(uint8_t slot, const Model& model, uint32_t generation,
+                 std::string& error);
   bool save_active(const Model& model, uint32_t generation,
                    std::string& error);
   bool select(uint8_t slot, Model& model, uint32_t& generation,

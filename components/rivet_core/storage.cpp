@@ -1158,7 +1158,17 @@ uint8_t ModelLibrary::active_slot() const
 bool ModelLibrary::save_active(const Model& model, uint32_t generation,
                                std::string& error)
 {
-  TransactionalModelStore store(files_, slot_path(active_slot_));
+  return save_slot(active_slot_, model, generation, error);
+}
+
+bool ModelLibrary::save_slot(uint8_t slot, const Model& model,
+                             uint32_t generation, std::string& error)
+{
+  if (slot >= kMaximumStoredModels) {
+    error = "model slot out of range";
+    return false;
+  }
+  TransactionalModelStore store(files_, slot_path(slot));
   return store.save(model, generation, error);
 }
 
