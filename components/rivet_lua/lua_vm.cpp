@@ -14,6 +14,11 @@ extern "C" {
 #include "lualib.h"
 }
 
+static_assert(sizeof(lua_Integer) == 4,
+              "RivetTX and Lua must use the same 32-bit integer ABI");
+static_assert(sizeof(lua_Number) == 4,
+              "RivetTX and Lua must use the same 32-bit number ABI");
+
 namespace rivettx {
 
 namespace {
