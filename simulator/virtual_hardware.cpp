@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <initializer_list>
 #include <utility>
 #include <vector>
 
@@ -11,6 +12,21 @@ namespace {
 
 constexpr uint32_t kCrsfBaud = 400000;
 constexpr std::size_t kMaximumQueuedBytes = 4096;
+constexpr uint8_t kVirtualFieldCount = 9;
+constexpr uint8_t kFieldTelemetryRatio = 1;
+constexpr uint8_t kFieldSwitchMode = 2;
+constexpr uint8_t kFieldPowerFolder = 3;
+constexpr uint8_t kFieldMaxPower = 4;
+constexpr uint8_t kFieldDynamicPower = 5;
+constexpr uint8_t kFieldBind = 6;
+constexpr uint8_t kFieldWifiFolder = 7;
+constexpr uint8_t kFieldEnableWifi = 8;
+constexpr uint8_t kFieldVersion = 9;
+constexpr uint8_t kTypeTextSelection = 9;
+constexpr uint8_t kTypeFolder = 11;
+constexpr uint8_t kTypeInfo = 12;
+constexpr uint8_t kTypeCommand = 13;
+constexpr std::size_t kParameterChunkSize = 20;
 
 void write_u16_be(uint8_t* output, uint16_t value)
 {
@@ -31,6 +47,59 @@ void write_u32_be(uint8_t* output, uint32_t value)
   output[1] = static_cast<uint8_t>((value >> 16U) & 0xFFU);
   output[2] = static_cast<uint8_t>((value >> 8U) & 0xFFU);
   output[3] = static_cast<uint8_t>(value & 0xFFU);
+}
+
+void append_text(std::vector<uint8_t>& output, const char* text)
+{
+  while (*text != '\0') {
+    output.push_back(static_cast<uint8_t>(*text++));
+  }
+  output.push_back(0);
+}
+
+std::vector<uint8_t> selection_data(uint8_t parent, const char* name,
+                                    const char* options, uint8_t value,
+                                    uint8_t maximum, const char* unit)
+{
+  std::vector<uint8_t> data{parent, kTypeTextSelection};
+  append_text(data, name);
+  append_text(data, options);
+  data.push_back(value);
+  data.push_back(0);
+  data.push_back(maximum);
+  data.push_back(0);
+  append_text(data, unit);
+  return data;
+}
+
+std::vector<uint8_t> command_data(uint8_t parent, const char* name,
+                                  uint8_t state, const char* information)
+{
+  std::vector<uint8_t> data{parent, kTypeCommand};
+  append_text(data, name);
+  data.push_back(state);
+  data.push_back(200);
+  append_text(data, information);
+  return data;
+}
+
+std::vector<uint8_t> folder_data(uint8_t parent, const char* name,
+                                 std::initializer_list<uint8_t> children)
+{
+  std::vector<uint8_t> data{parent, kTypeFolder};
+  append_text(data, name);
+  data.insert(data.end(), children.begin(), children.end());
+  data.push_back(0xFF);
+  return data;
+}
+
+std::vector<uint8_t> info_data(uint8_t parent, const char* name,
+                               const char* value)
+{
+  std::vector<uint8_t> data{parent, kTypeInfo};
+  append_text(data, name);
+  append_text(data, value);
+  return data;
 }
 
 }  // namespace
@@ -140,6 +209,33 @@ void VirtualElrsModule::handle_radio_frame(const uint8_t* data,
   } else if (type == crsf::kFrameDevicePing) {
     ++stats_.device_pings_received;
     enqueue_device_info();
+  } else if (type == crsf::kFrameParameterRead && size == 8 &&
+             data[3] == crsf::kAddressModule) {
+    ++stats_.parameter_reads_received;
+    enqueue_parameter(data[5], 0, data[6], true);
+  } else if (type == crsf::kFrameParameterWrite && size >= 8 &&
+             data[3] == crsf::kAddressModule) {
+    ++stats_.parameter_writes_received;
+    const uint8_t field_id = data[5];
+    const uint8_t value = data[6];
+    if (field_id == kFieldMaxPower) {
+      power_option_ = std::min<uint8_t>(value, 6);
+    } else if (field_id == kFieldDynamicPower) {
+      dynamic_power_option_ = std::min<uint8_t>(value, 2);
+    } else if (field_id == kFieldSwitchMode) {
+      switch_mode_option_ = std::min<uint8_t>(value, 1);
+    } else if (field_id == kFieldTelemetryRatio) {
+      telemetry_ratio_option_ = std::min<uint8_t>(value, 4);
+    } else if (field_id == kFieldBind && value == 1) {
+      ++stats_.bind_commands_received;
+      enqueue_parameter(field_id, 2);
+    } else if (field_id == kFieldEnableWifi && value == 1) {
+      enqueue_parameter(field_id, 3);
+    } else if (field_id == kFieldEnableWifi && value == 4) {
+      ++stats_.wifi_commands_received;
+      wifi_update_mode_ = true;
+      enqueue_parameter(field_id, 2);
+    }
   }
 }
 
@@ -243,11 +339,94 @@ void VirtualElrsModule::enqueue_gps()
 
 void VirtualElrsModule::enqueue_device_info()
 {
-  const std::array<uint8_t, 8> payload{
-      crsf::kAddressRadio, crsf::kAddressModule,
-      'V', 'E', 'L', 'R', 'S', 0};
+  std::vector<uint8_t> payload{
+      crsf::kAddressRadio, crsf::kAddressModule};
+  append_text(payload, "Virtual ELRS");
+  const std::array<uint8_t, 14> metadata{
+      0x45, 0x4C, 0x52, 0x53,
+      0x00, 0x00, 0x00, 0x01,
+      0x00, 0x04, 0x00, 0x01,
+      kVirtualFieldCount, 0};
+  payload.insert(payload.end(), metadata.begin(), metadata.end());
   enqueue_frame(crsf::kFrameDeviceInfo, payload.data(), payload.size(),
                 false);
+}
+
+void VirtualElrsModule::enqueue_parameter_entry(
+    uint8_t field_id, const std::vector<uint8_t>& data,
+    uint8_t requested_chunk, bool fragmented)
+{
+  const std::size_t chunk_size =
+      fragmented ? kParameterChunkSize
+                 : std::max<std::size_t>(1, data.size());
+  const std::size_t chunk_count =
+      std::max<std::size_t>(1, (data.size() + chunk_size - 1) / chunk_size);
+  if (requested_chunk >= chunk_count) {
+    return;
+  }
+  const std::size_t start = requested_chunk * chunk_size;
+  const std::size_t end = std::min(data.size(), start + chunk_size);
+  std::vector<uint8_t> payload{
+      crsf::kAddressRadio, crsf::kAddressModule, field_id,
+      static_cast<uint8_t>(chunk_count - requested_chunk - 1)};
+  payload.insert(payload.end(), data.begin() + start, data.begin() + end);
+  enqueue_frame(crsf::kFrameParameterEntry, payload.data(), payload.size(),
+                false);
+}
+
+void VirtualElrsModule::enqueue_parameter(uint8_t field_id,
+                                          uint8_t command_state,
+                                          uint8_t requested_chunk,
+                                          bool fragmented)
+{
+  std::vector<uint8_t> data;
+  switch (field_id) {
+    case kFieldTelemetryRatio:
+      data = selection_data(
+          0, "Telem Ratio", "Std;Off;1:16;1:8;1:4",
+          telemetry_ratio_option_, 4, "");
+      break;
+    case kFieldSwitchMode:
+      data = selection_data(
+          0, "Switch Mode", "Wide;Hybrid",
+          switch_mode_option_, 1, "");
+      break;
+    case kFieldPowerFolder:
+      data = folder_data(
+          0, "TX Power", {kFieldMaxPower, kFieldDynamicPower});
+      break;
+    case kFieldMaxPower:
+      data = selection_data(
+          kFieldPowerFolder, "Max Power",
+          "10;25;50;100;250;500;1000", power_option_, 6, "mW");
+      break;
+    case kFieldDynamicPower:
+      data = selection_data(
+          kFieldPowerFolder, "Dynamic", "Off;Dyn;AUX9",
+          dynamic_power_option_, 2, "");
+      break;
+    case kFieldBind:
+      data = command_data(0, "Bind", command_state,
+                          command_state == 2 ? "Binding..." : "");
+      break;
+    case kFieldWifiFolder:
+      data = folder_data(0, "WiFi Connectivity",
+                         {kFieldEnableWifi});
+      break;
+    case kFieldEnableWifi:
+      data = command_data(
+          kFieldWifiFolder, "Enable WiFi", command_state,
+          command_state == 3
+              ? "Enter WiFi Update?"
+              : (command_state == 2 ? "WiFi Running..." : ""));
+      break;
+    case kFieldVersion:
+      data = info_data(0, "Virtual ELRS 4.0.1", "simulator");
+      break;
+    default:
+      return;
+  }
+  enqueue_parameter_entry(field_id, data, requested_chunk, fragmented);
 }
 
 const VirtualElrsStats& VirtualElrsModule::stats() const
@@ -269,6 +448,31 @@ uint8_t VirtualElrsModule::model_id() const
 uint32_t VirtualElrsModule::baud_rate() const
 {
   return baud_rate_;
+}
+
+uint8_t VirtualElrsModule::power_option() const
+{
+  return power_option_;
+}
+
+uint8_t VirtualElrsModule::dynamic_power_option() const
+{
+  return dynamic_power_option_;
+}
+
+uint8_t VirtualElrsModule::switch_mode_option() const
+{
+  return switch_mode_option_;
+}
+
+uint8_t VirtualElrsModule::telemetry_ratio_option() const
+{
+  return telemetry_ratio_option_;
+}
+
+bool VirtualElrsModule::wifi_update_mode() const
+{
+  return wifi_update_mode_;
 }
 
 PbmDisplay::PbmDisplay(DisplayCapabilities capabilities,

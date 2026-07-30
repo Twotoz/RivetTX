@@ -13,6 +13,7 @@ useful radio therefore contains:
 - UP, DOWN, ENTER, and BACK buttons
 - regulator sized for the ESP32-C3 and the peak current of the chosen TX module
 - common ground, local bulk capacitance at the module, and a power switch
+- passive piezo buzzer when audible Finder feedback is wanted
 
 Battery sensing needs a protected resistor divider whose maximum ADC pin
 voltage stays inside the ESP32-C3 limit. USB is strongly recommended for
@@ -35,6 +36,7 @@ The defaults are examples, not a PCB design:
 | UP / DOWN | 8 / 9 |
 | ENTER / BACK | 10 / 20 |
 | battery ADC | disabled |
+| passive piezo buzzer | disabled |
 
 Some GPIOs are boot-strapping pins on common ESP32-C3 boards. Confirm the
 module datasheet and board schematic, then change every assignment with
@@ -59,9 +61,19 @@ module datasheet and board schematic, then change every assignment with
 3. Calibrate and verify that every channel reaches the intended limits.
 4. Scope the CRSF UART and measure the worst control-loop time.
 5. Connect the TX module at minimum RF power and verify telemetry/model ID.
-6. Test bind, loss of telemetry, input disconnect, low battery, brownout,
+6. Verify mW selection, dynamic power, bind, Finder, and the module's Wi-Fi
+   update mode.
+7. With a receiver and flight controller, verify RSSI dBm, link quality, and
+   TX power independently in the Betaflight OSD.
+8. Test loss of telemetry, input disconnect, low battery, brownout,
    watchdog reset, corrupt model storage, and failed OTA.
-7. Perform hardware-in-the-loop soak tests before removing propellers or
+9. Perform hardware-in-the-loop soak tests before removing propellers or
    otherwise making a vehicle capable of motion.
-8. Provision unique signing keys and a unique recovery password before applying
+10. Provision unique signing keys and a unique recovery password before applying
    the production security configuration.
+
+The buzzer must be a passive piezo suitable for GPIO drive or use an
+appropriate transistor driver. Set its GPIO and duty percentage under
+`Component config -> RivetTX hardware`; the default `-1` keeps audio disabled.
+See the [ExpressLRS guide](expresslrs.md) for the module/receiver distinction,
+Finder behavior, Betaflight path, and update workflow.

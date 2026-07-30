@@ -10,10 +10,11 @@ hardware evidence.
 | outputs | 16 channels, reverse, subtrim, min/max, per-channel failsafe | native unit tests |
 | logic | 24 logical switches, edge/sticky/timer functions, three timers, 24 special-function slots | native unit tests |
 | safety | locked boot, throttle/switch checks, stale input, mixer deadline, low battery, watchdog recovery, failsafe gating | native tests plus stale/deadline system scenarios; HIL required |
-| ExpressLRS | CRSF channels/CRC, telemetry parser, discovery, model ID, bind, failsafe capture, baud recovery, pass-through API | virtual module tests with fragmented UART, loss, corruption, disconnect and recovery; real ELRS module pending |
-| UI | responsive compact/medium/large layout, 13 screens, scrolling/editing, touch events, staged model edits | 128×64, 240×135, and 480×320 simulator renders plus native tests |
+| ExpressLRS | CRSF channels/CRC, dynamic parameter discovery, mW/dynamic-power/switch-mode/telemetry-ratio writes, command bind, confirmed Wi-Fi update launch, model ID, telemetry, failsafe capture, offline recovery, pass-through API | virtual module tests with fragmented UART, settings read-back, commands, loss, corruption, disconnect and recovery; real ELRS module pending |
+| Finder | active-antenna RSSI, one-second freshness gate, integer smoothing, dBm/bar display, signal-rate buzzer | native virtual-telemetry and tone tests; RF search test pending |
+| UI | responsive compact/medium/large layout, 15 screens, scrolling/editing, touch events, staged model edits | 128×64, 240×135, and 480×320 simulator renders plus native tests |
 | displays | capability-driven layout and monochrome canvas; SSD1306 128x64 driver | three virtual profiles; SSD1306 hardware pending |
-| Lua | real Lua 5.5, allocator ceiling, instruction/time budget, safe libraries, LCD/model/telemetry/CRSF APIs and common ELRS names | ESP32-C3 target build; real ELRS Lua tool pending |
+| Lua | real Lua 5.5, allocator ceiling, instruction/time budget, safe libraries, LCD/model/telemetry/CRSF APIs, active `RSSI`, telemetry-age query, and bounded tone output | ESP32-C3 target build; real buzzer/script test pending |
 | storage | versioned schema, CRC, migration hook, copy-on-write save, read-back, backup recovery | corruption/recovery tests |
 | diagnostics | bounded event ring, crash snapshot, reset reason and ESP core-dump partition | native tests; reset injection pending |
 | telemetry log | rate-limited CSV logging and flush | native tests; flash endurance pending |

@@ -23,6 +23,7 @@ constexpr uint8_t kFrameDeviceInfo = 0x29;
 constexpr uint8_t kFrameParameterEntry = 0x2B;
 constexpr uint8_t kFrameParameterRead = 0x2C;
 constexpr uint8_t kFrameParameterWrite = 0x2D;
+constexpr uint8_t kFrameElrsStatus = 0x2E;
 constexpr uint8_t kFrameCommand = 0x32;
 constexpr std::size_t kMaximumFrameSize = 64;
 
@@ -46,6 +47,8 @@ enum SensorId : uint16_t {
   SensorGpsHeading,
   SensorGpsAltitude,
   SensorGpsSatellites,
+  SensorActiveAntenna,
+  SensorUplinkRssi,
 };
 
 uint8_t crc8_dvb_s2(const uint8_t* data, std::size_t size);
@@ -60,6 +63,11 @@ Frame make_channels_frame(const ChannelFrame& channels);
 Frame make_model_id_frame(uint8_t model_id);
 Frame make_bind_frame(bool unbind);
 Frame make_device_ping();
+Frame make_parameter_read_frame(uint8_t destination, uint8_t origin,
+                                uint8_t field_id, uint8_t chunk);
+Frame make_parameter_write_frame(uint8_t destination, uint8_t origin,
+                                 uint8_t field_id, const uint8_t* value,
+                                 std::size_t value_size);
 
 }  // namespace crsf
 
@@ -68,6 +76,7 @@ enum class TelemetryUnit : uint8_t {
   Percent,
   Dbm,
   Db,
+  Milliwatt,
   Millivolt,
   Milliamp,
   MilliampHour,
@@ -104,6 +113,7 @@ struct CrsfParserStats {
   uint32_t crc_errors = 0;
   uint32_t length_errors = 0;
   uint32_t dropped_bytes = 0;
+  uint32_t management_drops = 0;
 };
 
 class CrsfParser {
@@ -116,6 +126,7 @@ class CrsfParser {
   TimeUs last_valid_frame_us() const;
   uint8_t last_frame_type() const;
   bool pop_frame(crsf::Frame& frame);
+  bool pop_management_frame(crsf::Frame& frame);
 
  private:
   void process_frame(TimeUs now_us);
@@ -133,6 +144,9 @@ class CrsfParser {
   std::array<crsf::Frame, 4> received_frames_{};
   std::atomic<uint32_t> received_read_{0};
   std::atomic<uint32_t> received_write_{0};
+  std::array<crsf::Frame, 8> management_frames_{};
+  std::atomic<uint32_t> management_read_{0};
+  std::atomic<uint32_t> management_write_{0};
 };
 
 class ICrsfTransport {

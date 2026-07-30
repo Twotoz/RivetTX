@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <vector>
 
 namespace rivettx::sim {
 
@@ -27,6 +28,9 @@ struct VirtualElrsStats {
   uint32_t model_id_frames_received = 0;
   uint32_t bind_commands_received = 0;
   uint32_t device_pings_received = 0;
+  uint32_t parameter_reads_received = 0;
+  uint32_t parameter_writes_received = 0;
+  uint32_t wifi_commands_received = 0;
   uint32_t failed_writes = 0;
   uint32_t telemetry_frames_generated = 0;
   uint32_t telemetry_frames_dropped = 0;
@@ -52,6 +56,11 @@ class VirtualElrsModule final : public ICrsfTransport {
   uint8_t model_id() const;
   uint32_t baud_rate() const;
   bool link_available() const;
+  uint8_t power_option() const;
+  uint8_t dynamic_power_option() const;
+  uint8_t switch_mode_option() const;
+  uint8_t telemetry_ratio_option() const;
+  bool wifi_update_mode() const;
 
  private:
   void handle_radio_frame(const uint8_t* data, std::size_t size);
@@ -61,6 +70,13 @@ class VirtualElrsModule final : public ICrsfTransport {
   void enqueue_battery();
   void enqueue_gps();
   void enqueue_device_info();
+  void enqueue_parameter(uint8_t field_id, uint8_t command_state = 0,
+                         uint8_t requested_chunk = 0,
+                         bool fragmented = false);
+  void enqueue_parameter_entry(uint8_t field_id,
+                               const std::vector<uint8_t>& data,
+                               uint8_t requested_chunk = 0,
+                               bool fragmented = false);
   bool fault_window_active() const;
 
   LinkFaultPlan faults_{};
@@ -73,6 +89,11 @@ class VirtualElrsModule final : public ICrsfTransport {
   TimeUs next_gps_us_ = 500000;
   uint32_t baud_rate_ = 0;
   uint8_t model_id_ = 0;
+  uint8_t power_option_ = 3;
+  uint8_t dynamic_power_option_ = 0;
+  uint8_t switch_mode_option_ = 0;
+  uint8_t telemetry_ratio_option_ = 0;
+  bool wifi_update_mode_ = false;
 };
 
 class PbmDisplay final : public IDisplaySink {

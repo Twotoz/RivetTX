@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rivettx/elrs.hpp"
 #include "rivettx/types.hpp"
 
 #include <cstddef>
@@ -177,6 +178,9 @@ UiScreen make_special_functions_screen(const Model& model);
 UiScreen make_timers_screen(const Model& model,
                             const std::array<TimerState, kMaxTimers>& states);
 UiScreen make_telemetry_screen(const std::vector<UiField>& sensors);
+UiScreen make_elrs_screen(const ElrsManagerStatus& status,
+                          bool maintenance_allowed);
+UiScreen make_elrs_finder_screen(const ElrsFinderStatus& status);
 UiScreen make_system_screen(uint16_t battery_mv, uint32_t free_memory,
                             uint32_t missed_deadlines,
                             const std::string& version);

@@ -2,6 +2,7 @@
 
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
+#include "rivettx/elrs.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
@@ -17,6 +18,7 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_http_server.h"
+#include "esp_timer.h"
 #include "nvs.h"
 
 namespace rivettx::esp32 {
@@ -72,6 +74,21 @@ class Ssd1306Display final : public IDisplaySink {
 class EspWatchdog final : public IWatchdog {
  public:
   void kick() override;
+};
+
+class EspToneOutput final : public IToneOutput {
+ public:
+  bool initialize();
+  bool play_tone(uint16_t frequency_hz,
+                 uint16_t duration_ms) override;
+  void stop_tone() override;
+  bool available() const override;
+
+ private:
+  static void stop_callback(void* context);
+
+  esp_timer_handle_t stop_timer_ = nullptr;
+  bool initialized_ = false;
 };
 
 class EspOtaBackend final : public IOtaBackend {

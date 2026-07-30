@@ -74,6 +74,16 @@ config RIVETTX_BATTERY_DIVIDER_MILLI
     range 1000 10000
     default 2000
 
+config RIVETTX_BUZZER_GPIO
+    int "Passive piezo buzzer GPIO (-1 disables audio)"
+    range -1 21
+    default -1
+
+config RIVETTX_BUZZER_VOLUME
+    int "Passive piezo duty percentage"
+    range 1 50
+    default 25
+
 config RIVETTX_WIFI_BACKUP
     bool "Enable maintenance Wi-Fi backup portal"
     default y
