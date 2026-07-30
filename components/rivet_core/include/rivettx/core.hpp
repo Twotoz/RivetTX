@@ -146,6 +146,7 @@ class SafetyManager {
   SafetyConfig config_{};
   SafetyStatus status_{};
   uint8_t healthy_cycles_ = 0;
+  bool mixer_deadline_pending_ = false;
   bool enable_requested_ = false;
   bool storage_valid_ = false;
 };

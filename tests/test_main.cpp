@@ -298,6 +298,23 @@ void test_safety()
   CHECK(!two.frame.safe);
   CHECK(two.safety.state == SafetyState::Enabled);
 
+  raw.sampled_at_us = 9000;
+  auto deadline = loop.run(model, raw, 3800, 9000, 11000);
+  CHECK(deadline.frame.safe);
+  CHECK(deadline.safety.state == SafetyState::Fault);
+  CHECK(deadline.safety.reason == SafetyReason::MixerDeadline);
+  CHECK(deadline.safety.missed_deadlines == 1);
+
+  raw.sampled_at_us = 13000;
+  auto recovering = loop.run(model, raw, 3800, 13000, 13100);
+  CHECK(recovering.frame.safe);
+  CHECK(recovering.safety.state == SafetyState::Fault);
+
+  raw.sampled_at_us = 17000;
+  auto recovered = loop.run(model, raw, 3800, 17000, 17100);
+  CHECK(!recovered.frame.safe);
+  CHECK(recovered.safety.state == SafetyState::Enabled);
+
   raw.sampled_at_us = 0;
   auto stale = loop.run(model, raw, 3800, 100000, 100100);
   CHECK(stale.frame.safe);
@@ -305,7 +322,7 @@ void test_safety()
 
   safety.report_battery(3000);
   CHECK(safety.status().state == SafetyState::Fault);
-  CHECK(watchdog.count == 3);
+  CHECK(watchdog.count == 6);
 }
 
 void test_crsf()
@@ -700,6 +717,13 @@ void test_storage()
   CHECK(recovered.success);
   CHECK(recovered.recovered);
   CHECK(decoded.model_id == 17);
+
+  Model invalid = model;
+  invalid.input_count = static_cast<uint8_t>(kMaxInputs + 1);
+  CHECK(ModelCodec::encode(invalid, 9).empty());
+  error.clear();
+  CHECK(!store.save(invalid, 9, error));
+  CHECK(error == "invalid model shape");
 
   std::array<AxisCalibration, kMaxAxes> calibration{};
   CalibrationStore calibration_store(files, "calibration.bin");

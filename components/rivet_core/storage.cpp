@@ -179,6 +179,19 @@ bool read_curve(Reader& reader, Curve& curve)
   return true;
 }
 
+bool model_shape_valid(const Model& model)
+{
+  return model.input_count <= kMaxInputs &&
+         model.mix_count <= kMaxMixes &&
+         model.logical_switch_count <= kMaxLogicalSwitches &&
+         model.flight_mode_count > 0 &&
+         model.flight_mode_count <= kMaxFlightModes &&
+         model.curve_count <= kMaxCurves &&
+         model.special_function_count <= kMaxSpecialFunctions &&
+         model.throttle_axis < kMaxAxes &&
+         model.throttle_channel < kChannelCount;
+}
+
 std::vector<uint8_t> encode_payload(const Model& model)
 {
   Writer writer;
@@ -447,6 +460,9 @@ uint32_t crc32(const uint8_t* data, std::size_t size)
 std::vector<uint8_t> ModelCodec::encode(const Model& model,
                                         uint32_t generation)
 {
+  if (!model_shape_valid(model)) {
+    return {};
+  }
   const auto payload = encode_payload(model);
   Writer writer;
   writer.put(kModelMagic);
@@ -615,6 +631,10 @@ bool TransactionalModelStore::save(const Model& model, uint32_t generation,
                                    std::string& error)
 {
   const auto encoded = ModelCodec::encode(model, generation);
+  if (encoded.empty()) {
+    error = "invalid model shape";
+    return false;
+  }
   if (!files_.write(temporary_, encoded) || !files_.sync(temporary_)) {
     error = "failed to write temporary model";
     return false;
