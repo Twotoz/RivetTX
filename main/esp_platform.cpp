@@ -1,0 +1,581 @@
+#include "esp_platform.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstring>
+#include <utility>
+#include <vector>
+
+#include "driver/gpio.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "esp_app_desc.h"
+#include "esp_crt_bundle.h"
+#include "esp_err.h"
+#include "esp_https_ota.h"
+#include "esp_http_server.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "esp_task_wdt.h"
+#include "esp_timer.h"
+#include "esp_vfs_fat.h"
+#include "esp_wifi.h"
+#include "sdkconfig.h"
+#include "wear_levelling.h"
+
+namespace rivettx::esp32 {
+
+namespace {
+
+constexpr char kTag[] = "rivettx-platform";
+wl_handle_t filesystem_wl = WL_INVALID_HANDLE;
+
+void configure_button(int gpio_number)
+{
+  gpio_config_t config{};
+  config.pin_bit_mask = 1ULL << gpio_number;
+  config.mode = GPIO_MODE_INPUT;
+  config.pull_up_en = GPIO_PULLUP_ENABLE;
+  config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  config.intr_type = GPIO_INTR_DISABLE;
+  (void)gpio_config(&config);
+}
+
+}  // namespace
+
+TimeUs now_us()
+{
+  return static_cast<TimeUs>(esp_timer_get_time());
+}
+
+bool EspBoard::configure_adc_gpio(int gpio, AdcInput& input)
+{
+  if (gpio < 0) {
+    return false;
+  }
+  adc_unit_t unit{};
+  adc_channel_t channel{};
+  if (adc_oneshot_io_to_channel(gpio, &unit, &channel) != ESP_OK ||
+      unit != ADC_UNIT_1) {
+    return false;
+  }
+  adc_oneshot_chan_cfg_t channel_config{};
+  channel_config.atten = ADC_ATTEN_DB_12;
+  channel_config.bitwidth = ADC_BITWIDTH_12;
+  if (adc_oneshot_config_channel(adc_, channel, &channel_config) != ESP_OK) {
+    return false;
+  }
+  input.unit = unit;
+  input.channel = channel;
+  input.configured = true;
+  return true;
+}
+
+int EspBoard::read_adc(const AdcInput& input) const
+{
+  if (!input.configured) {
+    return 0;
+  }
+  int value = 0;
+  return adc_oneshot_read(adc_, input.channel, &value) == ESP_OK ? value : 0;
+}
+
+bool EspBoard::initialize()
+{
+  adc_oneshot_unit_init_cfg_t unit_config{};
+  unit_config.unit_id = ADC_UNIT_1;
+  if (adc_oneshot_new_unit(&unit_config, &adc_) != ESP_OK) {
+    return false;
+  }
+
+  const std::array<int, 4> pins{
+      CONFIG_RIVETTX_AXIS0_GPIO, CONFIG_RIVETTX_AXIS1_GPIO,
+      CONFIG_RIVETTX_AXIS2_GPIO, CONFIG_RIVETTX_AXIS3_GPIO};
+  for (std::size_t i = 0; i < pins.size(); ++i) {
+    if (!configure_adc_gpio(pins[i], axes_[i])) {
+      ESP_LOGE(kTag, "ADC axis %u is invalid", static_cast<unsigned>(i));
+      return false;
+    }
+  }
+  if (CONFIG_RIVETTX_BATTERY_GPIO >= 0) {
+    (void)configure_adc_gpio(CONFIG_RIVETTX_BATTERY_GPIO, battery_);
+  }
+  adc_cali_curve_fitting_config_t calibration_config{};
+  calibration_config.unit_id = ADC_UNIT_1;
+  calibration_config.atten = ADC_ATTEN_DB_12;
+  calibration_config.bitwidth = ADC_BITWIDTH_12;
+  if (adc_cali_create_scheme_curve_fitting(
+          &calibration_config, &adc_calibration_) != ESP_OK) {
+    adc_calibration_ = nullptr;
+    ESP_LOGW(kTag, "ADC eFuse calibration unavailable");
+  }
+
+  configure_button(CONFIG_RIVETTX_BUTTON_UP);
+  configure_button(CONFIG_RIVETTX_BUTTON_DOWN);
+  configure_button(CONFIG_RIVETTX_BUTTON_ENTER);
+  configure_button(CONFIG_RIVETTX_BUTTON_BACK);
+  return true;
+}
+
+RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
+{
+  RawInputs inputs{};
+  inputs.valid = true;
+  inputs.sampled_at_us = sample_time_us;
+  for (std::size_t i = 0; i < axes_.size(); ++i) {
+    inputs.axes[i] = static_cast<int16_t>(read_adc(axes_[i]));
+  }
+  inputs.switches[0] = gpio_get_level(
+                           static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_UP)) ==
+                       0;
+  inputs.switches[1] =
+      gpio_get_level(
+          static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_DOWN)) == 0;
+  inputs.switches[2] =
+      gpio_get_level(
+          static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_ENTER)) == 0;
+  inputs.switches[3] =
+      gpio_get_level(
+          static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_BACK)) == 0;
+  return inputs;
+}
+
+uint16_t EspBoard::sample_battery_mv()
+{
+  if (!battery_.configured) {
+    return 0;
+  }
+  const int raw = read_adc(battery_);
+  int calibrated_mv = 0;
+  const uint32_t pin_mv =
+      adc_calibration_ != nullptr &&
+              adc_cali_raw_to_voltage(adc_calibration_, raw,
+                                      &calibrated_mv) == ESP_OK
+          ? static_cast<uint32_t>(std::max(0, calibrated_mv))
+          : static_cast<uint32_t>(raw) * 3300U / 4095U;
+  return static_cast<uint16_t>(std::min<uint32_t>(
+      UINT16_MAX,
+      pin_mv * CONFIG_RIVETTX_BATTERY_DIVIDER_MILLI / 1000U));
+}
+
+bool EspBoard::recovery_button_pressed() const
+{
+  return gpio_get_level(
+             static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_BACK)) == 0;
+}
+
+bool EspCrsfTransport::initialize()
+{
+  uart_config_t config{};
+  config.baud_rate = 400000;
+  config.data_bits = UART_DATA_8_BITS;
+  config.parity = UART_PARITY_DISABLE;
+  config.stop_bits = UART_STOP_BITS_1;
+  config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+  config.source_clk = UART_SCLK_DEFAULT;
+  return uart_driver_install(port_, 512, 512, 0, nullptr, 0) == ESP_OK &&
+         uart_param_config(port_, &config) == ESP_OK &&
+         uart_set_pin(port_, CONFIG_RIVETTX_CRSF_TX,
+                      CONFIG_RIVETTX_CRSF_RX, UART_PIN_NO_CHANGE,
+                      UART_PIN_NO_CHANGE) == ESP_OK;
+}
+
+bool EspCrsfTransport::write(const uint8_t* data, std::size_t size)
+{
+  return uart_write_bytes(port_, data, size) ==
+         static_cast<int>(size);
+}
+
+std::size_t EspCrsfTransport::read(uint8_t* data, std::size_t capacity)
+{
+  const int result =
+      uart_read_bytes(port_, data, capacity, 0);
+  return result > 0 ? static_cast<std::size_t>(result) : 0;
+}
+
+void EspCrsfTransport::set_baud_rate(uint32_t baud)
+{
+  (void)uart_set_baudrate(port_, baud);
+}
+
+void EspCrsfTransport::reset_module()
+{
+  (void)uart_flush(port_);
+}
+
+bool Ssd1306Display::command(const uint8_t* bytes, std::size_t size)
+{
+  std::vector<uint8_t> transfer(size + 1);
+  transfer[0] = 0x00;
+  std::copy(bytes, bytes + size, transfer.begin() + 1);
+  return i2c_master_transmit(device_, transfer.data(), transfer.size(),
+                             100) == ESP_OK;
+}
+
+bool Ssd1306Display::initialize()
+{
+  capabilities_.width = 128;
+  capabilities_.height = 64;
+  capabilities_.color_depth = 1;
+  capabilities_.touch = false;
+  capabilities_.partial_refresh = false;
+  capabilities_.preferred_font_height = 8;
+
+  i2c_master_bus_config_t bus_config{};
+  bus_config.i2c_port = -1;
+  bus_config.sda_io_num =
+      static_cast<gpio_num_t>(CONFIG_RIVETTX_I2C_SDA);
+  bus_config.scl_io_num =
+      static_cast<gpio_num_t>(CONFIG_RIVETTX_I2C_SCL);
+  bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
+  bus_config.glitch_ignore_cnt = 7;
+  bus_config.flags.enable_internal_pullup = true;
+  if (i2c_new_master_bus(&bus_config, &bus_) != ESP_OK) {
+    return false;
+  }
+
+  i2c_device_config_t device_config{};
+  device_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+  device_config.device_address = CONFIG_RIVETTX_OLED_ADDRESS;
+  device_config.scl_speed_hz = 400000;
+  if (i2c_master_bus_add_device(bus_, &device_config, &device_) != ESP_OK) {
+    return false;
+  }
+
+  constexpr std::array<uint8_t, 25> init{
+      0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40, 0x8D,
+      0x14, 0x20, 0x00, 0xA1, 0xC8, 0xDA, 0x12, 0x81, 0xCF,
+      0xD9, 0xF1, 0xDB, 0x40, 0xA4, 0xA6, 0xAF};
+  return command(init.data(), init.size());
+}
+
+const DisplayCapabilities& Ssd1306Display::capabilities() const
+{
+  return capabilities_;
+}
+
+bool Ssd1306Display::flush(const MonoCanvas& canvas)
+{
+  if (canvas.width() != capabilities_.width ||
+      canvas.height() != capabilities_.height) {
+    return false;
+  }
+  constexpr std::array<uint8_t, 6> address{
+      0x21, 0x00, 0x7F, 0x22, 0x00, 0x07};
+  if (!command(address.data(), address.size())) {
+    return false;
+  }
+
+  std::vector<uint8_t> transfer(1 + 128 * 8);
+  transfer[0] = 0x40;
+  for (uint16_t page = 0; page < 8; ++page) {
+    for (uint16_t x = 0; x < 128; ++x) {
+      uint8_t value = 0;
+      for (uint8_t bit = 0; bit < 8; ++bit) {
+        if (canvas.pixel_at(x, static_cast<int16_t>(page * 8 + bit))) {
+          value |= static_cast<uint8_t>(1U << bit);
+        }
+      }
+      transfer[1 + page * 128 + x] = value;
+    }
+  }
+  return i2c_master_transmit(device_, transfer.data(), transfer.size(),
+                             200) == ESP_OK;
+}
+
+void EspWatchdog::kick()
+{
+  (void)esp_task_wdt_reset();
+}
+
+bool EspOtaBackend::running_image_pending_verification() const
+{
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state{};
+  return running != nullptr &&
+         esp_ota_get_state_partition(running, &state) == ESP_OK &&
+         state == ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+bool EspOtaBackend::mark_running_image_valid()
+{
+  return esp_ota_mark_app_valid_cancel_rollback() == ESP_OK;
+}
+
+bool EspOtaBackend::request_rollback()
+{
+  return esp_ota_mark_app_invalid_rollback_and_reboot() == ESP_OK;
+}
+
+bool EspOtaBackend::begin_https_update(const std::string& url)
+{
+  esp_http_client_config_t http_config{};
+  http_config.url = url.c_str();
+  http_config.crt_bundle_attach = esp_crt_bundle_attach;
+  http_config.timeout_ms = 15000;
+  http_config.keep_alive_enable = true;
+  esp_https_ota_config_t ota_config{};
+  ota_config.http_config = &http_config;
+  return esp_https_ota(&ota_config) == ESP_OK;
+}
+
+bool NvsCrashStore::initialize()
+{
+  return nvs_open("rivettx", NVS_READWRITE, &handle_) == ESP_OK;
+}
+
+bool NvsCrashStore::write(const CrashSnapshot& snapshot)
+{
+  return handle_ != 0 &&
+         nvs_set_blob(handle_, "crash", &snapshot, sizeof(snapshot)) ==
+             ESP_OK &&
+         nvs_commit(handle_) == ESP_OK;
+}
+
+bool NvsCrashStore::read(CrashSnapshot& snapshot)
+{
+  std::size_t size = sizeof(snapshot);
+  return handle_ != 0 &&
+         nvs_get_blob(handle_, "crash", &snapshot, &size) == ESP_OK &&
+         size == sizeof(snapshot) && snapshot.magic == 0x52564352U;
+}
+
+void NvsCrashStore::clear()
+{
+  if (handle_ != 0) {
+    (void)nvs_erase_key(handle_, "crash");
+    (void)nvs_commit(handle_);
+  }
+}
+
+bool NvsBootState::initialize()
+{
+  if (nvs_open("rivetboot", NVS_READWRITE, &handle_) != ESP_OK) {
+    return false;
+  }
+  if (nvs_get_u32(handle_, "attempts", &attempts_) != ESP_OK) {
+    attempts_ = 0;
+  }
+  return true;
+}
+
+uint32_t NvsBootState::begin_attempt()
+{
+  if (handle_ == 0) {
+    return attempts_;
+  }
+  ++attempts_;
+  if (nvs_set_u32(handle_, "attempts", attempts_) != ESP_OK ||
+      nvs_commit(handle_) != ESP_OK) {
+    return attempts_;
+  }
+  return attempts_;
+}
+
+bool NvsBootState::mark_success()
+{
+  attempts_ = 0;
+  return handle_ != 0 &&
+         nvs_set_u32(handle_, "attempts", 0) == ESP_OK &&
+         nvs_commit(handle_) == ESP_OK;
+}
+
+uint32_t NvsBootState::failed_attempts() const
+{
+  return attempts_;
+}
+
+CsvTelemetrySink::CsvTelemetrySink(std::string path)
+    : path_(std::move(path))
+{
+}
+
+bool CsvTelemetrySink::append(TimeUs time_us, uint16_t sensor_id,
+                              int32_t value)
+{
+  if (file_ == nullptr) {
+    file_ = std::fopen(path_.c_str(), "a");
+  }
+  if (file_ == nullptr) {
+    return false;
+  }
+  return std::fprintf(static_cast<FILE*>(file_), "%llu,%u,%ld\n",
+                      static_cast<unsigned long long>(time_us),
+                      static_cast<unsigned>(sensor_id),
+                      static_cast<long>(value)) > 0;
+}
+
+bool CsvTelemetrySink::flush()
+{
+  return file_ == nullptr ||
+         std::fflush(static_cast<FILE*>(file_)) == 0;
+}
+
+WifiBackupPortal::WifiBackupPortal(TransactionalModelStore& models,
+                                   SafetyManager& safety)
+    : models_(models), safety_(safety)
+{
+}
+
+esp_err_t WifiBackupPortal::get_backup(httpd_req_t* request)
+{
+  auto* portal = static_cast<WifiBackupPortal*>(request->user_ctx);
+  if (!portal->safety_.maintenance_allowed()) {
+    httpd_resp_send_err(request, HTTPD_403_FORBIDDEN,
+                        "lock transmitter before backup");
+    return ESP_FAIL;
+  }
+  std::vector<uint8_t> data;
+  if (!portal->models_.export_active(data)) {
+    httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "no valid active model");
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(request, "application/octet-stream");
+  httpd_resp_set_hdr(request, "Content-Disposition",
+                     "attachment; filename=active.rvm");
+  return httpd_resp_send(
+      request, reinterpret_cast<const char*>(data.data()), data.size());
+}
+
+esp_err_t WifiBackupPortal::post_restore(httpd_req_t* request)
+{
+  auto* portal = static_cast<WifiBackupPortal*>(request->user_ctx);
+  if (!portal->safety_.maintenance_allowed()) {
+    httpd_resp_send_err(request, HTTPD_403_FORBIDDEN,
+                        "lock transmitter before restore");
+    return ESP_FAIL;
+  }
+  if (request->content_len <= 0 || request->content_len > 128 * 1024) {
+    httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
+                        "invalid model size");
+    return ESP_FAIL;
+  }
+  std::vector<uint8_t> data(static_cast<std::size_t>(request->content_len));
+  std::size_t received = 0;
+  while (received < data.size()) {
+    const int result = httpd_req_recv(
+        request, reinterpret_cast<char*>(data.data() + received),
+        data.size() - received);
+    if (result <= 0) {
+      httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                          "upload interrupted");
+      return ESP_FAIL;
+    }
+    received += static_cast<std::size_t>(result);
+  }
+  std::string error;
+  if (!portal->models_.import_candidate(data, error)) {
+    httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, error.c_str());
+    return ESP_FAIL;
+  }
+  return httpd_resp_sendstr(
+      request, "model verified and restored; reboot to activate");
+}
+
+esp_err_t WifiBackupPortal::get_status(httpd_req_t* request)
+{
+  auto* portal = static_cast<WifiBackupPortal*>(request->user_ctx);
+  const char* state =
+      portal->safety_.maintenance_allowed() ? "maintenance" : "enabled";
+  httpd_resp_set_type(request, "application/json");
+  std::string response =
+      std::string("{\"project\":\"RivetTX\",\"state\":\"") + state +
+      "\",\"schema\":" + std::to_string(Model::kSchemaVersion) + "}";
+  return httpd_resp_sendstr(request, response.c_str());
+}
+
+bool WifiBackupPortal::start()
+{
+#if CONFIG_RIVETTX_WIFI_BACKUP
+  if (server_ != nullptr || !safety_.maintenance_allowed()) {
+    return server_ != nullptr;
+  }
+  if (esp_netif_init() != ESP_OK) {
+    return false;
+  }
+  const esp_err_t loop_result = esp_event_loop_create_default();
+  if (loop_result != ESP_OK && loop_result != ESP_ERR_INVALID_STATE) {
+    return false;
+  }
+  if (esp_netif_create_default_wifi_ap() == nullptr) {
+    return false;
+  }
+  wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+  if (esp_wifi_init(&init) != ESP_OK ||
+      esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK ||
+      esp_wifi_set_mode(WIFI_MODE_AP) != ESP_OK) {
+    return false;
+  }
+  wifi_config_t wifi{};
+  std::strncpy(reinterpret_cast<char*>(wifi.ap.ssid),
+               "RivetTX-Recovery", sizeof(wifi.ap.ssid));
+  std::strncpy(reinterpret_cast<char*>(wifi.ap.password),
+               CONFIG_RIVETTX_WIFI_PASSWORD, sizeof(wifi.ap.password));
+  wifi.ap.ssid_len = 0;
+  wifi.ap.channel = 1;
+  wifi.ap.max_connection = 2;
+  wifi.ap.authmode = std::strlen(CONFIG_RIVETTX_WIFI_PASSWORD) >= 8
+                         ? WIFI_AUTH_WPA2_PSK
+                         : WIFI_AUTH_OPEN;
+  if (esp_wifi_set_config(WIFI_IF_AP, &wifi) != ESP_OK ||
+      esp_wifi_start() != ESP_OK) {
+    return false;
+  }
+
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.max_uri_handlers = 4;
+  if (httpd_start(&server_, &config) != ESP_OK) {
+    return false;
+  }
+  httpd_uri_t backup{};
+  backup.uri = "/backup";
+  backup.method = HTTP_GET;
+  backup.handler = get_backup;
+  backup.user_ctx = this;
+  httpd_uri_t restore{};
+  restore.uri = "/restore";
+  restore.method = HTTP_POST;
+  restore.handler = post_restore;
+  restore.user_ctx = this;
+  httpd_uri_t status{};
+  status.uri = "/status";
+  status.method = HTTP_GET;
+  status.handler = get_status;
+  status.user_ctx = this;
+  return httpd_register_uri_handler(server_, &backup) == ESP_OK &&
+         httpd_register_uri_handler(server_, &restore) == ESP_OK &&
+         httpd_register_uri_handler(server_, &status) == ESP_OK;
+#else
+  return false;
+#endif
+}
+
+void WifiBackupPortal::stop()
+{
+  if (server_ != nullptr) {
+    (void)httpd_stop(server_);
+    server_ = nullptr;
+  }
+#if CONFIG_RIVETTX_WIFI_BACKUP
+  (void)esp_wifi_stop();
+#endif
+}
+
+bool WifiBackupPortal::running() const
+{
+  return server_ != nullptr;
+}
+
+bool mount_model_filesystem()
+{
+  esp_vfs_fat_mount_config_t config{};
+  config.format_if_mount_failed = true;
+  config.max_files = 8;
+  config.allocation_unit_size = 4096;
+  return esp_vfs_fat_spiflash_mount_rw_wl(
+             "/models", "models", &config, &filesystem_wl) == ESP_OK;
+}
+
+}  // namespace rivettx::esp32

@@ -1,0 +1,19 @@
+idf_component_register(
+  SRCS
+    "app_main.cpp"
+    "esp_platform.cpp"
+  INCLUDE_DIRS "."
+  REQUIRES
+    rivet_core
+    rivet_lua
+    esp_adc
+    esp_driver_gpio
+    esp_driver_i2c
+    esp_driver_uart
+    esp_https_ota
+    esp_http_server
+    esp_wifi
+    fatfs
+    nvs_flash
+    wear_levelling
+)
