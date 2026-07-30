@@ -13,7 +13,7 @@ hardware evidence.
 | ExpressLRS | CRSF channels/CRC, telemetry parser, discovery, model ID, bind, failsafe capture, baud recovery, pass-through API | protocol tests; real ELRS module pending |
 | UI | responsive compact/medium/large layout, 13 screens, scrolling/editing, touch events, staged model edits | 128x64 simulator and native tests |
 | displays | capability-driven layout and monochrome canvas; SSD1306 128x64 driver | simulator; SSD1306 hardware pending |
-| Lua | real Lua 5.4, allocator ceiling, instruction/time budget, safe libraries, LCD/model/telemetry/CRSF APIs and common ELRS names | code-level integration; real ELRS Lua tool pending |
+| Lua | real Lua 5.5, allocator ceiling, instruction/time budget, safe libraries, LCD/model/telemetry/CRSF APIs and common ELRS names | code-level integration; real ELRS Lua tool pending |
 | storage | versioned schema, CRC, migration hook, copy-on-write save, read-back, backup recovery | corruption/recovery tests |
 | diagnostics | bounded event ring, crash snapshot, reset reason and ESP core-dump partition | native tests; reset injection pending |
 | telemetry log | rate-limited CSV logging and flush | native tests; flash endurance pending |

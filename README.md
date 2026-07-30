@@ -45,7 +45,7 @@ CRSF-facing Lua surface are implemented specifically for ESP32-C3.
 | **ExpressLRS native** | CRSF channels, telemetry, model ID, bind, failsafe, module recovery, and pass-through services. |
 | **Safe persistence** | Versioned model schema, CRC validation, copy-on-write saves, read-back verification, and recovery. |
 | **Adaptable interface** | Capability-driven layouts for compact, medium, and large displays without screen-specific model logic. |
-| **Contained scripting** | Lua 5.4 with safe libraries, a memory ceiling, instruction/time budgets, and bounded CRSF/LCD APIs. |
+| **Contained scripting** | Lua 5.5 with safe libraries, a memory ceiling, instruction/time budgets, and bounded CRSF/LCD APIs. |
 | **Recoverable platform** | Diagnostic ring, crash snapshot, watchdog, A/B OTA interfaces, rollback, and maintenance backup portal. |
 
 ## Architecture
