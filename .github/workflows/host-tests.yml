@@ -1,4 +1,4 @@
-name: Host Tests
+name: Continuous Integration
 
 on:
   push:
@@ -23,3 +23,17 @@ jobs:
         run: |
           make build/rivettx-sim
           ./build/rivettx-sim
+
+  esp32c3:
+    name: ESP32-C3 firmware
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.2
+          target: esp32c3
+          path: "."
