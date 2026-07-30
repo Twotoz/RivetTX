@@ -13,14 +13,17 @@ hardware evidence.
 | ExpressLRS | CRSF channels/CRC, CH5 arming polarity, dynamic parameter discovery, packet-rate/model-match/mW/dynamic-power/switch-mode/telemetry-ratio writes, command bind, confirmed Wi-Fi update launch, model ID, telemetry, failsafe capture, offline recovery, pass-through API | virtual module tests with fragmented UART, settings read-back, commands, loss, corruption, disconnect and recovery; real ELRS module pending |
 | Finder | active-antenna RSSI, one-second freshness gate, integer smoothing, dBm/bar display, signal-rate buzzer | native virtual-telemetry and tone tests; RF search test pending |
 | audio alerts | fixed-allocation priority sequencer; link weak/critical/lost/recovered, module loss/recovery, TX battery low/critical, safety transitions, telemetry alarms, Finder and Lua | native pattern/pre-emption/policy tests plus audible disconnect simulation; buzzer hardware pending |
-| UI | responsive compact/medium/large layout, 15 screens, scrolling/editing, touch events, staged model edits | 128×64, 240×135, and 480×320 simulator renders plus native tests |
+| UI | responsive compact/medium/large layout; OpenPocket home with two live gimbal plots, link/battery/ELRS/VRX status, prioritized warning banner/list, blocking startup warnings with a concrete corrective action and automatic clearing, persistent EDIT indicator; Home → Menu → Detail navigation; scrolling/editing and touch events | 128×64, 240×135, and 480×320 simulator renders plus native tests; target display endurance pending |
 | displays | capability-driven layout and monochrome canvas; SSD1306 128x64 driver | three virtual profiles; SSD1306 hardware pending |
 | Lua | real Lua 5.5, allocator ceiling, instruction budgets for load/init/runtime, restricted libraries and script paths, LCD/model/telemetry/CRSF APIs, active `RSSI`, telemetry-age query, and bounded tone output | ESP32-C3/S3 target builds; real buzzer/script test pending |
-| storage | versioned schema, CRC, migration hook, copy-on-write save, read-back, directory sync, and backup recovery without automatic formatting | corruption/recovery tests |
+| storage/models | versioned schema, CRC and migration; 32 transactional model slots; active-index recovery; create, copy, select, delete, import/export; verified mirror recovery without automatic formatting | native corruption, migration, library and recovery tests; target power-cut/storage-full campaign pending |
 | diagnostics | bounded event ring, crash snapshot, reset reason and ESP core-dump partition | native tests; reset injection pending |
-| telemetry log | special-function opt-in, rate-limited CSV logging, one-file rotation, and flush | native tests; flash endurance pending |
-| battery/power | calibrated ADC when eFuse data exists, divider scaling, hysteresis, alarms, inactivity/shutdown policy | native policy tests; divider validation pending |
-| backup/recovery | locked-only Wi-Fi export/restore, boot-failure counter, held-button recovery | codec tests; portal hardware pending |
+| telemetry log | special-function opt-in, exclusive locked maintenance transaction, rate-limited CSV, 64 KiB rotation and propagated write/flush failure | native success/failure tests; flash endurance and target timing pending |
+| battery/power | synchronized validated ADC snapshot, calibrated divider scaling, fail-closed sensor faults, hysteresis, voltage-based percentage fallback, alarms and inactivity/shutdown policy | native policy/fault tests; real charger, fuel gauge, latch and divider validation pending |
+| backup/recovery | locked-only Wi-Fi page for active-model export/verified restore, boot-failure counter, held-button recovery | codec/library tests; complete web configurator and portal hardware pending |
+| USB simulator | native ESP32-S3 TinyUSB HID gamepad, four gimbals plus four analog controls and switch buttons, output lock and per-model RF lock; C3 explicitly unsupported | host policy tests and S3 CI build; Windows/Linux/macOS and simulator compatibility pending |
+| VRX/video OSD | non-blocking 6×8 frequency controller and scan state machine, RSSI/video-loss state, fixed 30×16 character compositor | native tests only; no physical VRX or AT7456E-class driver until the OpenPocket hardware profile is frozen |
+| onboarding | automatic missing-calibration entry and bounded first-run state machine for calibration, ARM/AUX, ELRS, optional video, battery and CH5-low preview | native state-machine tests; the post-calibration UI flow remains to be connected |
 | update/boot | ESP-IDF bootloader, A/B OTA, HTTPS, manifest gates, post-boot self-test, rollback, Secure Boot V2 production config | mock OTA tests; signed-device drill pending |
 | development | deterministic virtual hardware simulator, JSON report, PBM outputs, strict-warning tests, ASan/UBSan, dual ESP-IDF target builds with firmware headroom gates | host, ESP32-C3, and ESP32-S3 CI verified |
 
@@ -28,11 +31,15 @@ hardware evidence.
 
 - Lua, UI, filesystem, Wi-Fi, logging, and OTA never execute in the
   flight-critical control task.
-- Model edits are staged and activated only after reboot. This trades instant
-  editing for a simple, auditable model boundary.
+- Model edits and model selection are saved only while outputs are locked.
+  The control task atomically replaces the runtime model, resets mixer state,
+  keeps CH5 low, and releases maintenance only after the hand-off completes.
 - The current physical display driver is monochrome SSD1306. Adding a display
   means implementing a sink/canvas backend and declaring its capabilities; the
   screen data and responsive layout do not depend on 128x64 coordinates.
 - The pass-through and update services have safe core/platform APIs, but a
   production product should choose its authenticated USB or maintenance UI
   workflow after the PCB is fixed.
+- The VRX scanner and analog character compositor are hardware-independent
+  cores, not proof of a working video path. A product claim requires the exact
+  tuner, OSD IC, routing, NTSC/PAL behavior and target-PCB HIL evidence.

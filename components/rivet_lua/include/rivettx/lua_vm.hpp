@@ -14,10 +14,16 @@ struct lua_Debug;
 
 namespace rivettx {
 
+class ILuaCrsfSink {
+ public:
+  virtual ~ILuaCrsfSink() = default;
+  virtual bool submit(const crsf::Frame& frame) = 0;
+};
+
 class LuaVm final : public IScriptVm {
  public:
   LuaVm(TelemetryRegistry& telemetry, CrsfParser& parser,
-        ICrsfTransport& transport, Canvas& canvas,
+        ILuaCrsfSink& crsf_sink, Canvas& canvas,
         IToneOutput* tones = nullptr,
         uint32_t memory_limit_bytes = 96 * 1024);
   ~LuaVm() override;
@@ -65,7 +71,7 @@ class LuaVm final : public IScriptVm {
 
   TelemetryRegistry& telemetry_;
   CrsfParser& parser_;
-  ICrsfTransport& transport_;
+  ILuaCrsfSink& crsf_sink_;
   Canvas& canvas_;
   IToneOutput* tones_ = nullptr;
   AllocatorState allocator_state_{};

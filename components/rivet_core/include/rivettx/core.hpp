@@ -78,6 +78,7 @@ class MixerEngine {
   uint8_t active_flight_mode() const;
   void reset_timer(std::size_t index);
   void reset();
+  void reset_for_model_change();
 
  private:
   struct MixRuntime {
@@ -149,8 +150,11 @@ enum class SafetyReason : uint8_t {
   SwitchMismatch,
   MixerDeadline,
   BatteryCritical,
+  BatterySensor,
   StorageInvalid,
+  CalibrationRequired,
   WatchdogRecovery,
+  WatchdogUnavailable,
   ManualLock,
 };
 
@@ -174,10 +178,13 @@ class SafetyManager {
  public:
   explicit SafetyManager(SafetyConfig config = {});
 
-  void boot_complete(bool storage_valid, bool watchdog_recovery);
+  void boot_complete(bool storage_valid, bool watchdog_recovery,
+                     bool calibration_valid = true);
   void request_enable();
   void request_lock();
   void report_battery(uint16_t millivolts);
+  void report_battery_fault();
+  void report_watchdog_fault();
   void report_mixer_duration(uint32_t duration_us);
   ChannelFrame gate(const Model& model, const ControlInputs& inputs,
                     const ChannelFrame& proposed, TimeUs now_us);
@@ -198,6 +205,8 @@ class SafetyManager {
   bool mixer_deadline_pending_ = false;
   bool enable_requested_ = false;
   bool storage_valid_ = false;
+  bool calibration_valid_ = false;
+  bool watchdog_available_ = true;
   bool maintenance_active_ = false;
   mutable std::mutex mutex_;
 };

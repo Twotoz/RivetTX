@@ -80,10 +80,18 @@ struct SourceRef {
   int16_t constant = 0;
 };
 
+enum class SwitchPosition : uint8_t {
+  Active,
+  Low,
+  Middle,
+  High,
+};
+
 struct SwitchRef {
   // -1 means always active, 0..15 physical, 16..39 logical.
   int8_t index = -1;
   bool inverted = false;
+  SwitchPosition position = SwitchPosition::Active;
 };
 
 struct Curve {
@@ -205,7 +213,7 @@ struct SpecialFunction {
 };
 
 struct Model {
-  static constexpr uint16_t kSchemaVersion = 5;
+  static constexpr uint16_t kSchemaVersion = 6;
 
   std::array<char, 24> name{};
   uint8_t model_id = 0;
@@ -228,6 +236,10 @@ struct Model {
   std::array<OutputLimit, kChannelCount> outputs{};
   std::array<TimerConfig, kMaxTimers> timers{};
   std::array<SpecialFunction, kMaxSpecialFunctions> special_functions{};
+  uint8_t vrx_band = 0;
+  uint8_t vrx_channel = 0;
+  bool video_overlay_enabled = true;
+  bool simulator_rf_lock = true;
 };
 
 struct ChannelFrame {

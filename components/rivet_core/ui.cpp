@@ -78,6 +78,139 @@ std::string number_string(int32_t value)
   return std::to_string(value);
 }
 
+const char* warning_text(UiWarningCode warning)
+{
+  switch (warning) {
+    case UiWarningCode::None:
+      return "READY";
+    case UiWarningCode::StorageInvalid:
+      return "STORAGE ERROR";
+    case UiWarningCode::CalibrationRequired:
+      return "CALIBRATE STICKS";
+    case UiWarningCode::InputInvalid:
+      return "INPUT ERROR";
+    case UiWarningCode::InputStale:
+      return "INPUT LOST";
+    case UiWarningCode::ThrottleHigh:
+      return "THROTTLE HIGH";
+    case UiWarningCode::ArmSwitch:
+      return "ARM SWITCH HIGH";
+    case UiWarningCode::SwitchPosition:
+      return "SWITCH POSITION";
+    case UiWarningCode::MixerDeadline:
+      return "CONTROL DEADLINE";
+    case UiWarningCode::WatchdogRecovery:
+      return "WATCHDOG RESET";
+    case UiWarningCode::WatchdogUnavailable:
+      return "WATCHDOG ERROR";
+    case UiWarningCode::BatteryCritical:
+      return "BATTERY CRITICAL";
+    case UiWarningCode::BatterySensor:
+      return "BATTERY SENSOR";
+    case UiWarningCode::BatteryLow:
+      return "BATTERY LOW";
+    case UiWarningCode::ModuleOffline:
+      return "ELRS OFFLINE";
+    case UiWarningCode::LinkLost:
+      return "LINK LOST";
+    case UiWarningCode::LinkCritical:
+      return "LINK CRITICAL";
+    case UiWarningCode::LinkWeak:
+      return "LINK WEAK";
+    case UiWarningCode::LoggingFailed:
+      return "LOGGING FAILED";
+    case UiWarningCode::ModelUnsaved:
+      return "MODEL UNSAVED";
+    case UiWarningCode::Maintenance:
+      return "MAINTENANCE";
+    case UiWarningCode::VideoNoSignal:
+      return "NO VIDEO";
+  }
+  return "UNKNOWN";
+}
+
+const char* warning_action(UiWarningCode warning)
+{
+  switch (warning) {
+    case UiWarningCode::StorageInvalid:
+      return "OPEN RECOVERY";
+    case UiWarningCode::CalibrationRequired:
+      return "RUN STICK CALIBRATION";
+    case UiWarningCode::InputInvalid:
+      return "CHECK INPUT WIRING";
+    case UiWarningCode::InputStale:
+      return "CHECK GIMBALS";
+    case UiWarningCode::ThrottleHigh:
+      return "LOWER THROTTLE";
+    case UiWarningCode::ArmSwitch:
+      return "TURN ARM SWITCH OFF";
+    case UiWarningCode::SwitchPosition:
+      return "SET SWITCHES TO SAFE";
+    case UiWarningCode::MixerDeadline:
+      return "RESTART AND CHECK LOG";
+    case UiWarningCode::WatchdogRecovery:
+      return "CHECK SYSTEM LOG";
+    case UiWarningCode::WatchdogUnavailable:
+      return "RESTART RADIO";
+    case UiWarningCode::BatteryCritical:
+      return "CHARGE OR REPLACE BAT";
+    case UiWarningCode::BatterySensor:
+      return "CHECK BATTERY SENSOR";
+    case UiWarningCode::BatteryLow:
+      return "CHARGE BATTERY";
+    case UiWarningCode::ModuleOffline:
+      return "CHECK ELRS POWER UART";
+    case UiWarningCode::LinkLost:
+      return "CHECK RX AND ANTENNA";
+    case UiWarningCode::LinkCritical:
+      return "MOVE CLOSER";
+    case UiWarningCode::LinkWeak:
+      return "CHECK ANTENNAS";
+    case UiWarningCode::LoggingFailed:
+      return "CHECK MODEL STORAGE";
+    case UiWarningCode::ModelUnsaved:
+      return "LOCK TO SAVE MODEL";
+    case UiWarningCode::Maintenance:
+      return "FINISH MAINTENANCE";
+    case UiWarningCode::VideoNoSignal:
+      return "CHECK VRX CHANNEL";
+    case UiWarningCode::None:
+      return "NO ACTION";
+  }
+  return "CHECK SYSTEM";
+}
+
+bool warning_blocks_startup(UiWarningCode warning)
+{
+  switch (warning) {
+    case UiWarningCode::StorageInvalid:
+    case UiWarningCode::CalibrationRequired:
+    case UiWarningCode::InputInvalid:
+    case UiWarningCode::InputStale:
+    case UiWarningCode::ThrottleHigh:
+    case UiWarningCode::ArmSwitch:
+    case UiWarningCode::SwitchPosition:
+    case UiWarningCode::MixerDeadline:
+    case UiWarningCode::WatchdogRecovery:
+    case UiWarningCode::WatchdogUnavailable:
+    case UiWarningCode::BatteryCritical:
+    case UiWarningCode::BatterySensor:
+    case UiWarningCode::ModuleOffline:
+      return true;
+    case UiWarningCode::None:
+    case UiWarningCode::BatteryLow:
+    case UiWarningCode::LinkLost:
+    case UiWarningCode::LinkCritical:
+    case UiWarningCode::LinkWeak:
+    case UiWarningCode::LoggingFailed:
+    case UiWarningCode::ModelUnsaved:
+    case UiWarningCode::Maintenance:
+    case UiWarningCode::VideoNoSignal:
+      return false;
+  }
+  return false;
+}
+
 }  // namespace
 
 void Canvas::horizontal_line(int16_t x, int16_t y, int16_t length, bool on)
@@ -298,6 +431,25 @@ void UiController::set_screen(UiScreen screen)
   editing_ = false;
 }
 
+void UiController::update_outputs(const ChannelFrame& channels)
+{
+  if (screen_.id != "outputs") {
+    return;
+  }
+  const auto count =
+      std::min<std::size_t>(screen_.fields.size(), channels.channels.size());
+  for (std::size_t index = 0; index < count; ++index) {
+    screen_.fields[index].value = channels.channels[index];
+  }
+}
+
+void UiController::update_home(const UiHomeStatus& status)
+{
+  if (screen_.kind == UiScreenKind::Home) {
+    screen_.home = status;
+  }
+}
+
 const UiScreen& UiController::screen() const
 {
   return screen_;
@@ -430,6 +582,100 @@ void UiController::draw_header(const LayoutMetrics& metrics)
       true, true);
   canvas_.text(metrics.margin, metrics.margin, screen_.title, true,
                metrics.font_scale);
+  if (editing_) {
+    constexpr char indicator[] = "EDIT";
+    const int16_t width =
+        canvas_.text_width(indicator, metrics.font_scale);
+    canvas_.text(
+        static_cast<int16_t>(canvas_.width() - width - metrics.margin),
+        metrics.margin, indicator, true, metrics.font_scale);
+  }
+}
+
+void UiController::draw_home(const LayoutMetrics& metrics)
+{
+  const auto& status = screen_.home;
+  const bool warning = status.warning_count != 0;
+  const int16_t banner_y = metrics.header_height;
+  canvas_.rectangle(
+      {0, banner_y, static_cast<int16_t>(canvas_.width()), 9}, true,
+      warning);
+  const char* banner =
+      warning ? warning_text(status.warnings[0])
+              : (status.outputs_enabled ? "OUTPUT LIVE" : "OUTPUT SAFE");
+  canvas_.text(2, static_cast<int16_t>(banner_y + 1), banner, warning, 1);
+  if (status.warning_count > 1) {
+    const std::string count = "+" +
+        std::to_string(static_cast<unsigned>(status.warning_count - 1));
+    const int16_t width = canvas_.text_width(count);
+    canvas_.text(static_cast<int16_t>(canvas_.width() - width - 1),
+                 static_cast<int16_t>(banner_y + 1), count, warning, 1);
+  }
+  if (warning && warning_blocks_startup(status.warnings[0])) {
+    canvas_.text(2, static_cast<int16_t>(banner_y + 14), "ACTION:");
+    canvas_.text(2, static_cast<int16_t>(banner_y + 24),
+                 warning_action(status.warnings[0]));
+    canvas_.text(2,
+                 static_cast<int16_t>(
+                     std::max<int16_t>(banner_y + 35,
+                                       canvas_.height() - 8)),
+                 "CLEARS WHEN SAFE");
+    return;
+  }
+
+  const int16_t box_size =
+      static_cast<int16_t>(std::min<uint16_t>(29, canvas_.height() - 31));
+  const int16_t box_y = static_cast<int16_t>(banner_y + 11);
+  const auto draw_gimbal = [&](int16_t x, int16_t horizontal,
+                               int16_t vertical) {
+    canvas_.rectangle({x, box_y, box_size, box_size}, false, true);
+    canvas_.horizontal_line(
+        static_cast<int16_t>(x + 2),
+        static_cast<int16_t>(box_y + box_size / 2),
+        static_cast<int16_t>(box_size - 4), true);
+    canvas_.vertical_line(
+        static_cast<int16_t>(x + box_size / 2),
+        static_cast<int16_t>(box_y + 2),
+        static_cast<int16_t>(box_size - 4), true);
+    const int16_t travel = static_cast<int16_t>((box_size - 5) / 2);
+    const int16_t dot_x = static_cast<int16_t>(
+        x + box_size / 2 +
+        clamp<int32_t>(-kResolution, horizontal, kResolution) * travel /
+            kResolution);
+    const int16_t dot_y = static_cast<int16_t>(
+        box_y + box_size / 2 -
+        clamp<int32_t>(-kResolution, vertical, kResolution) * travel /
+            kResolution);
+    canvas_.rectangle(
+        {static_cast<int16_t>(dot_x - 1),
+         static_cast<int16_t>(dot_y - 1), 3, 3},
+        true, true);
+  };
+  draw_gimbal(2, status.axes[3], status.axes[2]);
+  draw_gimbal(34, status.axes[0], status.axes[1]);
+  canvas_.text(13, static_cast<int16_t>(box_y + box_size + 1), "L");
+  canvas_.text(45, static_cast<int16_t>(box_y + box_size + 1), "R");
+
+  const int16_t info_x = 67;
+  canvas_.text(info_x, box_y,
+               "LQ " + std::to_string(status.link_quality) + "%");
+  canvas_.text(
+      info_x, static_cast<int16_t>(box_y + 9),
+      status.battery_percent_valid
+          ? "BAT " + std::to_string(status.battery_percent) + "%"
+          : "BAT " + std::to_string(status.battery_mv));
+  canvas_.text(info_x, static_cast<int16_t>(box_y + 18),
+               status.module_online ? "ELRS OK" : "ELRS OFF");
+  const char band =
+      static_cast<char>('A' + std::min<uint8_t>(status.vrx_band, 5));
+  canvas_.text(
+      info_x, static_cast<int16_t>(box_y + 27),
+      std::string("VRX ") + band +
+          std::to_string(static_cast<unsigned>(status.vrx_channel + 1)));
+}
+
+void UiController::draw_outputs_graph(const LayoutMetrics&)
+{
 }
 
 void UiController::draw_field(const UiField& field, Rect rect, bool selected,
@@ -487,6 +733,10 @@ bool UiController::render()
   keep_selection_visible(metrics);
   canvas_.clear(false);
   draw_header(metrics);
+  if (screen_.kind == UiScreenKind::Home) {
+    draw_home(metrics);
+    return display_.flush(canvas_);
+  }
 
   std::size_t visible_slot = 0;
   for (std::size_t i = scroll_offset_;
@@ -548,6 +798,71 @@ UiScreen make_main_screen(const Model& model, const ChannelFrame& channels,
         {"ch" + std::to_string(i + 1), "CH" + std::to_string(i + 1), "",
          UiFieldKind::Progress, channels.channels[i], -kResolution,
          kResolution, false, true});
+  }
+  return screen;
+}
+
+UiScreen make_openpocket_home_screen(const Model& model,
+                                     const UiHomeStatus& status)
+{
+  UiScreen screen{};
+  screen.id = "home";
+  screen.title = model.name.data();
+  screen.scrollable = false;
+  screen.kind = UiScreenKind::Home;
+  screen.home = status;
+  return screen;
+}
+
+UiScreen make_main_menu_screen()
+{
+  UiScreen screen{"menu", "OpenPocket", {}};
+  const std::array<std::pair<const char*, const char*>, 20> items{{
+      {"warnings", "WARNINGS"},
+      {"models", "MODELS"},
+      {"model", "MODEL SETUP"},
+      {"inputs", "INPUTS"},
+      {"mixes", "MIXES"},
+      {"outputs", "OUTPUTS"},
+      {"limits", "OUTPUT LIMITS"},
+      {"flight_modes", "FLIGHT MODES"},
+      {"curves", "CURVES"},
+      {"logical", "LOGICAL SWITCHES"},
+      {"special", "SPECIAL FUNCTIONS"},
+      {"timers", "TIMERS"},
+      {"elrs", "EXPRESSLRS"},
+      {"finder", "ELRS FINDER"},
+      {"video", "VIDEO RX OSD"},
+      {"usb", "USB SIMULATOR"},
+      {"web", "WEB CONFIG"},
+      {"telemetry", "TELEMETRY"},
+      {"power", "POWER"},
+      {"system", "RADIO SYSTEM"},
+  }};
+  for (const auto& item : items) {
+    screen.fields.push_back(
+        {item.first, item.second, "ENTER", UiFieldKind::Action,
+         0, 0, 1, false, true});
+  }
+  return screen;
+}
+
+UiScreen make_warnings_screen(const UiHomeStatus& status)
+{
+  UiScreen screen{"warnings", "Warnings", {}};
+  if (status.warning_count == 0) {
+    screen.fields.push_back(
+        {"none", "NO ACTIVE WARNINGS", "OK", UiFieldKind::Label,
+         0, 0, 0, false, true});
+    return screen;
+  }
+  const auto count = std::min<std::size_t>(
+      status.warning_count, status.warnings.size());
+  for (std::size_t index = 0; index < count; ++index) {
+    screen.fields.push_back(
+        {"warning." + std::to_string(index), warning_text(status.warnings[index]),
+         warning_action(status.warnings[index]), UiFieldKind::Label,
+         0, 0, 0, false, true});
   }
   return screen;
 }
@@ -648,7 +963,7 @@ UiScreen make_mixes_screen(const Model& model)
         {"mix." + std::to_string(i) + ".weight",
          "M" + std::to_string(i + 1) + " CH" +
              std::to_string(mix.destination + 1),
-         "", UiFieldKind::Number, mix.weight_percent, -200, 200, true,
+         "", UiFieldKind::Number, mix.weight_percent, -100, 100, true,
          true});
     screen.fields.push_back(
         {"mix." + std::to_string(i) + ".offset",
@@ -668,13 +983,13 @@ UiScreen make_output_limits_screen(const Model& model)
     const std::string label = "CH" + std::to_string(i + 1);
     screen.fields.push_back(
         {prefix + ".minimum", label + " MIN", "", UiFieldKind::Number,
-         output.minimum, -1536, 0, true, true});
+         output.minimum, -kResolution, 0, true, true});
     screen.fields.push_back(
         {prefix + ".maximum", label + " MAX", "", UiFieldKind::Number,
-         output.maximum, 0, 1536, true, true});
+         output.maximum, 0, kResolution, true, true});
     screen.fields.push_back(
         {prefix + ".subtrim", label + " SUB", "", UiFieldKind::Number,
-         output.subtrim, -512, 512, true, true});
+         output.subtrim, -kResolution, kResolution, true, true});
     screen.fields.push_back(
         {prefix + ".reversed", label + " REV", "", UiFieldKind::Boolean,
          output.reversed ? 1 : 0, 0, 1, true, true});
@@ -694,7 +1009,7 @@ UiScreen make_flight_modes_screen(const Model& model)
                std::to_string(axis),
            "FM" + std::to_string(mode) + " TR" + std::to_string(axis + 1),
            "", UiFieldKind::Number, model.flight_modes[mode].trims[axis],
-           -512, 512, true, true});
+           -kResolution, kResolution, true, true});
     }
   }
   return screen;
@@ -766,8 +1081,8 @@ UiScreen make_timers_screen(
     screen.fields.push_back(
         {"timer." + std::to_string(i) + ".start",
          "T" + std::to_string(i + 1) + " START", "",
-         UiFieldKind::Number, model.timers[i].start_seconds, -359999,
-         359999, true, true});
+         UiFieldKind::Number, model.timers[i].start_seconds, -86400,
+         86400, true, true});
     screen.fields.push_back(
         {"timer." + std::to_string(i) + ".elapsed",
          "T" + std::to_string(i + 1) + " ELAPSED",
@@ -997,7 +1312,7 @@ bool apply_model_change(Model& model, const UiChange& change)
 {
   if (change.screen_id == "model") {
     if (change.field_id == "model_id") {
-      if (!in_range(change.value, 0, UINT8_MAX)) return false;
+      if (!in_range(change.value, 0, 63)) return false;
       model.model_id = static_cast<uint8_t>(change.value);
       return true;
     }
@@ -1011,6 +1326,29 @@ bool apply_model_change(Model& model, const UiChange& change)
       model.throttle_channel = static_cast<uint8_t>(change.value - 1);
       return true;
     }
+  }
+
+  if (change.screen_id == "video") {
+    if (change.field_id == "vrx_band" &&
+        in_range(change.value, 0, 5)) {
+      model.vrx_band = static_cast<uint8_t>(change.value);
+      return true;
+    }
+    if (change.field_id == "vrx_channel" &&
+        in_range(change.value, 1, 8)) {
+      model.vrx_channel = static_cast<uint8_t>(change.value - 1);
+      return true;
+    }
+    if (change.field_id == "overlay" &&
+        in_range(change.value, 0, 1)) {
+      model.video_overlay_enabled = change.value != 0;
+      return true;
+    }
+  }
+  if (change.screen_id == "usb" && change.field_id == "rf_lock" &&
+      in_range(change.value, 0, 1)) {
+    model.simulator_rf_lock = change.value != 0;
+    return true;
   }
 
   std::size_t index = 0;

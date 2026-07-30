@@ -39,6 +39,7 @@ enum class LogCode : uint16_t {
   OtaRejected,
   OtaReady,
   TelemetryAlarm,
+  TelemetryLogFailed,
   BatteryLow,
   BatteryCritical,
 };
@@ -100,16 +101,18 @@ class TelemetryLogger {
   explicit TelemetryLogger(ITelemetryLogSink& sink,
                            uint32_t minimum_period_ms = 100);
   void start();
-  void stop();
+  bool stop();
   bool active() const;
-  void sample(const TelemetryRegistry& telemetry, TimeUs now_us);
-  void flush();
+  bool failed() const;
+  bool sample(const TelemetryRegistry& telemetry, TimeUs now_us);
+  bool flush();
 
  private:
   ITelemetryLogSink& sink_;
   uint32_t minimum_period_ms_;
   TimeUs last_sample_us_ = 0;
   bool active_ = false;
+  bool failed_ = false;
 };
 
 enum class BatteryState : uint8_t {
@@ -194,6 +197,7 @@ class ModuleSupervisor {
                    DiagnosticLog& diagnostics);
 
   void start(uint8_t model_id, TimeUs now_us);
+  void set_model_id(uint8_t model_id, TimeUs now_us);
   bool send_channels(const ChannelFrame& frame, TimeUs now_us);
   void poll(TimeUs now_us);
   void request_bind(bool unbind, TimeUs now_us);
@@ -300,7 +304,7 @@ struct SelfTestResult {
   bool passed() const
   {
     return storage && inputs && display && crsf_uart && control_task &&
-           control_runtime && module_link;
+           control_runtime;
   }
 };
 

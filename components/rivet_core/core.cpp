@@ -197,6 +197,15 @@ void MixerEngine::reset()
   flight_mode_initialized_ = false;
 }
 
+void MixerEngine::reset_for_model_change()
+{
+  timer_states_ = {};
+  timer_initialized_ = {};
+  timer_persistent_ = {};
+  timer_start_ms_ = {};
+  reset();
+}
+
 int16_t MixerEngine::apply_expo(int16_t input, int8_t percent) const
 {
   const int32_t x = clamp<int32_t>(-kResolution, input, kResolution);
@@ -235,7 +244,24 @@ bool MixerEngine::switch_value(const SwitchRef& ref,
   bool value = true;
   if (ref.index >= 0) {
     const auto index = static_cast<std::size_t>(ref.index);
-    value = index < controls.switches.size() && controls.switches[index];
+    if (index >= controls.switches.size()) {
+      value = false;
+    } else {
+      switch (ref.position) {
+        case SwitchPosition::Active:
+          value = controls.switches[index];
+          break;
+        case SwitchPosition::Low:
+          value = controls.switch_positions[index] < 0;
+          break;
+        case SwitchPosition::Middle:
+          value = controls.switch_positions[index] == 0;
+          break;
+        case SwitchPosition::High:
+          value = controls.switch_positions[index] > 0;
+          break;
+      }
+    }
   }
   return ref.inverted ? !value : value;
 }
@@ -245,7 +271,7 @@ bool MixerEngine::switch_value_with_logic(
 {
   bool value = true;
   if (ref.index >= 0 && ref.index < static_cast<int8_t>(kMaxSwitches)) {
-    value = controls.switches[static_cast<std::size_t>(ref.index)];
+    return switch_value(ref, controls);
   } else if (ref.index >= static_cast<int8_t>(kMaxSwitches)) {
     const int logical_index = ref.index - static_cast<int8_t>(kMaxSwitches);
     value = logical_index >= 0 &&
@@ -777,13 +803,18 @@ SafetyManager::SafetyManager(SafetyConfig config) : config_(config)
 {
 }
 
-void SafetyManager::boot_complete(bool storage_valid, bool watchdog_recovery)
+void SafetyManager::boot_complete(bool storage_valid, bool watchdog_recovery,
+                                  bool calibration_valid)
 {
   const std::lock_guard<std::mutex> lock(mutex_);
   storage_valid_ = storage_valid;
+  calibration_valid_ = calibration_valid;
   if (!storage_valid) {
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::StorageInvalid;
+  } else if (!calibration_valid) {
+    status_.state = SafetyState::Fault;
+    status_.reason = SafetyReason::CalibrationRequired;
   } else if (watchdog_recovery) {
     status_.state = SafetyState::Locked;
     status_.reason = SafetyReason::WatchdogRecovery;
@@ -820,6 +851,25 @@ void SafetyManager::report_battery(uint16_t millivolts)
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::BatteryCritical;
   }
+}
+
+void SafetyManager::report_battery_fault()
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  enable_requested_ = false;
+  healthy_cycles_ = 0;
+  status_.state = SafetyState::Fault;
+  status_.reason = SafetyReason::BatterySensor;
+}
+
+void SafetyManager::report_watchdog_fault()
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  watchdog_available_ = false;
+  enable_requested_ = false;
+  healthy_cycles_ = 0;
+  status_.state = SafetyState::Fault;
+  status_.reason = SafetyReason::WatchdogUnavailable;
 }
 
 void SafetyManager::report_mixer_duration(uint32_t duration_us)
@@ -876,6 +926,18 @@ ChannelFrame SafetyManager::gate(const Model& model,
   if (!storage_valid_) {
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::StorageInvalid;
+    return safe_frame(model, now_us, proposed.sequence);
+  }
+  if (!calibration_valid_) {
+    status_.state = SafetyState::Fault;
+    status_.reason = SafetyReason::CalibrationRequired;
+    return safe_frame(model, now_us, proposed.sequence);
+  }
+  if (!watchdog_available_) {
+    enable_requested_ = false;
+    healthy_cycles_ = 0;
+    status_.state = SafetyState::Fault;
+    status_.reason = SafetyReason::WatchdogUnavailable;
     return safe_frame(model, now_us, proposed.sequence);
   }
   if (mixer_deadline_pending_) {

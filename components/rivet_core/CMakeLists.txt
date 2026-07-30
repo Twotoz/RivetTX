@@ -4,6 +4,7 @@ idf_component_register(
     "core.cpp"
     "crsf.cpp"
     "elrs.cpp"
+    "product.cpp"
     "services.cpp"
     "storage.cpp"
     "ui.cpp"

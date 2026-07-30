@@ -88,6 +88,56 @@ enum class UiFieldKind : uint8_t {
   Action,
 };
 
+enum class UiScreenKind : uint8_t {
+  List,
+  Home,
+  Outputs,
+};
+
+enum class UiWarningCode : uint8_t {
+  None,
+  StorageInvalid,
+  CalibrationRequired,
+  InputInvalid,
+  InputStale,
+  ThrottleHigh,
+  ArmSwitch,
+  SwitchPosition,
+  MixerDeadline,
+  WatchdogRecovery,
+  WatchdogUnavailable,
+  BatteryCritical,
+  BatterySensor,
+  BatteryLow,
+  ModuleOffline,
+  LinkLost,
+  LinkCritical,
+  LinkWeak,
+  LoggingFailed,
+  ModelUnsaved,
+  Maintenance,
+  VideoNoSignal,
+};
+
+constexpr std::size_t kMaximumUiWarnings = 16;
+
+struct UiHomeStatus {
+  std::array<int16_t, 4> axes{};
+  std::array<int16_t, kChannelCount> channels{};
+  std::array<UiWarningCode, kMaximumUiWarnings> warnings{};
+  uint8_t warning_count = 0;
+  uint16_t battery_mv = 0;
+  uint8_t battery_percent = 0;
+  uint8_t link_quality = 0;
+  uint8_t vrx_band = 0;
+  uint8_t vrx_channel = 0;
+  bool outputs_enabled = false;
+  bool battery_percent_valid = false;
+  bool module_online = false;
+  bool logging = false;
+  bool video_signal = false;
+};
+
 struct UiField {
   std::string id;
   std::string label;
@@ -105,6 +155,8 @@ struct UiScreen {
   std::string title;
   std::vector<UiField> fields;
   bool scrollable = true;
+  UiScreenKind kind = UiScreenKind::List;
+  UiHomeStatus home{};
 };
 
 struct UiChange {
@@ -138,6 +190,8 @@ class UiController {
   UiController(IDisplaySink& display, MonoCanvas& canvas);
 
   void set_screen(UiScreen screen);
+  void update_home(const UiHomeStatus& status);
+  void update_outputs(const ChannelFrame& channels);
   const UiScreen& screen() const;
   bool handle(const UiEvent& event);
   bool render();
@@ -149,6 +203,8 @@ class UiController {
  private:
   void keep_selection_visible(const LayoutMetrics& metrics);
   void draw_header(const LayoutMetrics& metrics);
+  void draw_home(const LayoutMetrics& metrics);
+  void draw_outputs_graph(const LayoutMetrics& metrics);
   void draw_field(const UiField& field, Rect rect, bool selected,
                   const LayoutMetrics& metrics);
 
@@ -165,6 +221,10 @@ class UiController {
 UiScreen make_main_screen(const Model& model, const ChannelFrame& channels,
                           uint16_t battery_mv, uint8_t link_quality,
                           bool safety_enabled);
+UiScreen make_openpocket_home_screen(const Model& model,
+                                     const UiHomeStatus& status);
+UiScreen make_main_menu_screen();
+UiScreen make_warnings_screen(const UiHomeStatus& status);
 UiScreen make_outputs_screen(const ChannelFrame& channels);
 UiScreen make_calibration_screen(uint8_t step, uint8_t progress);
 UiScreen make_model_setup_screen(const Model& model);

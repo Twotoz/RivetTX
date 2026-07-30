@@ -152,14 +152,24 @@ void write_switch(Writer& writer, const SwitchRef& value)
 {
   writer.put(value.index);
   writer.put_bool(value.inverted);
+  writer.put(value.position);
 }
 
-bool read_switch(Reader& reader, SwitchRef& value)
+bool read_switch(Reader& reader, SwitchRef& value, uint16_t schema)
 {
-  return reader.get(value.index) && reader.get_bool(value.inverted) &&
-         value.index >= -1 &&
+  if (!reader.get(value.index) || !reader.get_bool(value.inverted)) {
+    return false;
+  }
+  if (schema >= 6 && !reader.get(value.position)) {
+    return false;
+  }
+  return value.index >= -1 &&
          value.index <
-             static_cast<int8_t>(kMaxSwitches + kMaxLogicalSwitches);
+             static_cast<int8_t>(kMaxSwitches + kMaxLogicalSwitches) &&
+         value.position <= SwitchPosition::High &&
+         ((value.index >= 0 &&
+           value.index < static_cast<int8_t>(kMaxSwitches)) ||
+          value.position == SwitchPosition::Active);
 }
 
 void write_curve(Writer& writer, const Curve& curve)
@@ -196,13 +206,18 @@ bool model_shape_valid(const Model& model)
       model.curve_count > kMaxCurves ||
       model.special_function_count > kMaxSpecialFunctions ||
       model.throttle_axis >= kMaxAxes ||
-      model.throttle_channel >= kChannelCount) {
+      model.throttle_channel >= kChannelCount ||
+      model.vrx_band >= 6 || model.vrx_channel >= 8) {
     return false;
   }
   const auto switch_valid = [](const SwitchRef& reference) {
     return reference.index >= -1 &&
            reference.index <
-               static_cast<int8_t>(kMaxSwitches + kMaxLogicalSwitches);
+               static_cast<int8_t>(kMaxSwitches + kMaxLogicalSwitches) &&
+           reference.position <= SwitchPosition::High &&
+           ((reference.index >= 0 &&
+             reference.index < static_cast<int8_t>(kMaxSwitches)) ||
+            reference.position == SwitchPosition::Active);
   };
   const auto source_valid = [](const SourceRef& source) {
     switch (source.kind) {
@@ -404,6 +419,10 @@ std::vector<uint8_t> encode_payload(const Model& model)
     writer.put(special.action);
     writer.put(special.parameter);
   }
+  writer.put(model.vrx_band);
+  writer.put(model.vrx_channel);
+  writer.put_bool(model.video_overlay_enabled);
+  writer.put_bool(model.simulator_rf_lock);
   return writer.take();
 }
 
@@ -451,7 +470,7 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
         !reader.get(input.weight_percent) ||
         !reader.get(input.expo_percent) ||
         !reader.get(input.curve_index) ||
-        !read_switch(reader, input.condition) ||
+        !read_switch(reader, input.condition, schema) ||
         !reader.get(input.flight_mode_mask) ||
         input.source_axis >= kMaxAxes || input.destination >= kMaxInputs ||
         input.curve_index < -1 ||
@@ -466,7 +485,8 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
         !reader.get(mix.destination) || !read_source(reader, mix.source) ||
         !reader.get(mix.weight_percent) || !reader.get(mix.offset) ||
         !reader.get(mix.curve_index) ||
-        !read_switch(reader, mix.condition) || !reader.get(mix.mode) ||
+        !read_switch(reader, mix.condition, schema) ||
+        !reader.get(mix.mode) ||
         !reader.get(mix.delay_up_ms) ||
         !reader.get(mix.delay_down_ms) ||
         !reader.get(mix.speed_up_per_second) ||
@@ -485,9 +505,9 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
     if (!reader.get(logical.operation) ||
         !read_source(reader, logical.lhs) ||
         !read_source(reader, logical.rhs) ||
-        !read_switch(reader, logical.first) ||
-        !read_switch(reader, logical.second) ||
-        !read_switch(reader, logical.and_condition) ||
+        !read_switch(reader, logical.first, schema) ||
+        !read_switch(reader, logical.second, schema) ||
+        !read_switch(reader, logical.and_condition, schema) ||
         !reader.get(logical.threshold) || !reader.get(logical.delay_ms) ||
         !reader.get(logical.duration_ms) ||
         logical.operation > LogicalSwitchOp::Timer) {
@@ -498,7 +518,7 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
   for (std::size_t i = 0; i < model.flight_mode_count; ++i) {
     auto& mode = model.flight_modes[i];
     if (!reader.get_bool(mode.enabled) ||
-        !read_switch(reader, mode.condition)) {
+        !read_switch(reader, mode.condition, schema)) {
       return false;
     }
     for (auto& trim : mode.trims) {
@@ -539,7 +559,7 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
   }
   for (auto& timer : model.timers) {
     if (!reader.get(timer.mode) ||
-        !read_switch(reader, timer.condition) ||
+        !read_switch(reader, timer.condition, schema) ||
         !reader.get(timer.start_seconds) ||
         !reader.get_bool(timer.countdown) ||
         !reader.get_bool(timer.persistent) ||
@@ -550,11 +570,18 @@ bool decode_payload(const uint8_t* payload, std::size_t size,
   for (std::size_t i = 0; i < model.special_function_count; ++i) {
     auto& special = model.special_functions[i];
     if (!reader.get_bool(special.enabled) ||
-        !read_switch(reader, special.condition) ||
+        !read_switch(reader, special.condition, schema) ||
         !reader.get(special.action) || !reader.get(special.parameter) ||
         special.action > SpecialAction::EnterModulePassthrough) {
       return false;
     }
+  }
+  if (schema >= 6 &&
+      (!reader.get(model.vrx_band) || !reader.get(model.vrx_channel) ||
+       !reader.get_bool(model.video_overlay_enabled) ||
+       !reader.get_bool(model.simulator_rf_lock) ||
+       model.vrx_band >= 6 || model.vrx_channel >= 8)) {
+    return false;
   }
   return reader.exhausted();
 }
@@ -572,6 +599,16 @@ uint32_t crc32(const uint8_t* data, std::size_t size)
     }
   }
   return ~crc;
+}
+
+bool ModelCodec::validate(const Model& model, std::string& error)
+{
+  if (!model_shape_valid(model)) {
+    error = "invalid model shape or values";
+    return false;
+  }
+  error.clear();
+  return true;
 }
 
 std::vector<uint8_t> ModelCodec::encode(const Model& model,
@@ -714,6 +751,12 @@ bool ModelCodec::migrate(uint16_t source_schema, Model& model,
         model.mixes[mix].weight_percent = 100;
       }
     }
+  }
+  if (source_schema < 6) {
+    model.vrx_band = 0;
+    model.vrx_channel = 0;
+    model.video_overlay_enabled = true;
+    model.simulator_rf_lock = true;
   }
   if (source_schema > Model::kSchemaVersion) {
     error = "migration target unavailable";
@@ -905,11 +948,17 @@ ModelLoadResult TransactionalModelStore::load(Model& model)
     result.error.clear();
     if (i != 0) {
       const auto encoded = ModelCodec::encode(model, generation);
-      (void)files_.write(temporary_, encoded);
-      (void)files_.remove(active_);
-      (void)files_.rename(temporary_, active_);
-      (void)files_.sync(active_);
-      (void)files_.sync_directory();
+      const bool restored =
+          files_.write(temporary_, encoded) &&
+          files_.sync(temporary_) &&
+          files_.remove(active_) &&
+          files_.rename(temporary_, active_) &&
+          files_.sync(active_) &&
+          files_.sync_directory();
+      if (!restored) {
+        result.error =
+            "loaded recovery model but failed to restore active file";
+      }
     }
     return result;
   }
@@ -936,6 +985,256 @@ bool TransactionalModelStore::import_candidate(
     return false;
   }
   return save(model, generation + 1, error);
+}
+
+namespace {
+
+constexpr uint32_t kModelIndexMagic = 0x494D5652U;  // RVMI
+constexpr char kModelIndexPath[] = "model-index.bin";
+
+bool decode_model_index(const std::vector<uint8_t>& data, uint8_t& slot)
+{
+  if (data.size() != 13) {
+    return false;
+  }
+  Reader reader(data.data(), data.size());
+  uint32_t magic = 0;
+  uint16_t version = 0;
+  uint16_t reserved = 0;
+  uint32_t expected_crc = 0;
+  uint8_t candidate = 0;
+  if (!reader.get(magic) || !reader.get(version) ||
+      !reader.get(reserved) || !reader.get(expected_crc) ||
+      !reader.get(candidate) || !reader.exhausted() ||
+      magic != kModelIndexMagic || version != 1 ||
+      candidate >= kMaximumStoredModels ||
+      crc32(&candidate, sizeof(candidate)) != expected_crc) {
+    return false;
+  }
+  slot = candidate;
+  return true;
+}
+
+std::vector<uint8_t> encode_model_index(uint8_t slot)
+{
+  Writer writer;
+  writer.put(kModelIndexMagic);
+  writer.put<uint16_t>(1);
+  writer.put<uint16_t>(0);
+  writer.put(crc32(&slot, sizeof(slot)));
+  writer.put(slot);
+  return writer.take();
+}
+
+}  // namespace
+
+ModelLibrary::ModelLibrary(IFileStore& files) : files_(files)
+{
+}
+
+std::string ModelLibrary::slot_path(uint8_t slot) const
+{
+  char name[20]{};
+  (void)std::snprintf(name, sizeof(name), "model-%02u.rvm",
+                      static_cast<unsigned>(slot));
+  return name;
+}
+
+bool ModelLibrary::read_active_index(uint8_t& slot) const
+{
+  const std::array<std::string, 3> candidates{
+      kModelIndexPath, std::string(kModelIndexPath) + ".new",
+      std::string(kModelIndexPath) + ".bak"};
+  for (const auto& path : candidates) {
+    std::vector<uint8_t> data;
+    if (files_.read(path, data) && decode_model_index(data, slot)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ModelLibrary::write_active_index(uint8_t slot, std::string& error)
+{
+  if (slot >= kMaximumStoredModels) {
+    error = "model slot out of range";
+    return false;
+  }
+  const std::string active = kModelIndexPath;
+  const std::string temporary = active + ".new";
+  const std::string backup = active + ".bak";
+  const auto encoded = encode_model_index(slot);
+  if (!files_.write(temporary, encoded) || !files_.sync(temporary)) {
+    error = "failed to write model index";
+    return false;
+  }
+  const bool had_active = files_.exists(active);
+  if (had_active &&
+      (!files_.remove(backup) || !files_.rename(active, backup) ||
+       !files_.sync_directory())) {
+    error = "failed to preserve model index";
+    return false;
+  }
+  if (!files_.rename(temporary, active) || !files_.sync(active) ||
+      !files_.sync_directory()) {
+    if (had_active && !files_.exists(active) && files_.exists(backup)) {
+      (void)files_.rename(backup, active);
+      (void)files_.sync_directory();
+    }
+    error = "failed to activate model index";
+    return false;
+  }
+  active_slot_ = slot;
+  error.clear();
+  return true;
+}
+
+bool ModelLibrary::load_slot(uint8_t slot, Model& model,
+                             uint32_t& generation,
+                             std::string& error) const
+{
+  if (slot >= kMaximumStoredModels) {
+    error = "model slot out of range";
+    return false;
+  }
+  TransactionalModelStore store(files_, slot_path(slot));
+  const auto loaded = store.load(model);
+  if (!loaded.success) {
+    error = loaded.error.empty() ? "model slot is empty" : loaded.error;
+    return false;
+  }
+  generation = loaded.generation;
+  error.clear();
+  return true;
+}
+
+bool ModelLibrary::bootstrap(Model& model, uint32_t& generation,
+                             std::string& error)
+{
+  uint8_t indexed_slot = 0;
+  if (read_active_index(indexed_slot) &&
+      load_slot(indexed_slot, model, generation, error)) {
+    active_slot_ = indexed_slot;
+    return true;
+  }
+  for (std::size_t index = 0; index < kMaximumStoredModels; ++index) {
+    const auto slot = static_cast<uint8_t>(index);
+    if (load_slot(slot, model, generation, error)) {
+      return write_active_index(slot, error);
+    }
+  }
+  TransactionalModelStore first(files_, slot_path(0));
+  if (!first.save(model, generation == 0 ? 1 : generation, error)) {
+    return false;
+  }
+  generation = generation == 0 ? 1 : generation;
+  return write_active_index(0, error);
+}
+
+std::array<StoredModelSummary, kMaximumStoredModels>
+ModelLibrary::summaries() const
+{
+  std::array<StoredModelSummary, kMaximumStoredModels> result{};
+  for (std::size_t index = 0; index < result.size(); ++index) {
+    Model model{};
+    uint32_t generation = 0;
+    std::string error;
+    const auto slot = static_cast<uint8_t>(index);
+    if (load_slot(slot, model, generation, error)) {
+      result[index].present = true;
+      result[index].slot = slot;
+      result[index].model_id = model.model_id;
+      result[index].name = model.name;
+    }
+  }
+  return result;
+}
+
+uint8_t ModelLibrary::active_slot() const
+{
+  return active_slot_;
+}
+
+bool ModelLibrary::save_active(const Model& model, uint32_t generation,
+                               std::string& error)
+{
+  return save_slot(active_slot_, model, generation, error);
+}
+
+bool ModelLibrary::save_slot(uint8_t slot, const Model& model,
+                             uint32_t generation, std::string& error)
+{
+  if (slot >= kMaximumStoredModels) {
+    error = "model slot out of range";
+    return false;
+  }
+  TransactionalModelStore store(files_, slot_path(slot));
+  return store.save(model, generation, error);
+}
+
+bool ModelLibrary::select(uint8_t slot, Model& model,
+                          uint32_t& generation, std::string& error)
+{
+  Model candidate{};
+  uint32_t candidate_generation = 0;
+  if (!load_slot(slot, candidate, candidate_generation, error) ||
+      !write_active_index(slot, error)) {
+    return false;
+  }
+  model = candidate;
+  generation = candidate_generation;
+  return true;
+}
+
+bool ModelLibrary::create(const Model& model, uint32_t generation,
+                          uint8_t& slot, std::string& error)
+{
+  for (std::size_t index = 0; index < kMaximumStoredModels; ++index) {
+    const auto candidate = static_cast<uint8_t>(index);
+    if (!files_.exists(slot_path(candidate))) {
+      TransactionalModelStore store(files_, slot_path(candidate));
+      if (!store.save(model, generation, error)) {
+        return false;
+      }
+      slot = candidate;
+      error.clear();
+      return true;
+    }
+  }
+  error = "model library is full";
+  return false;
+}
+
+bool ModelLibrary::remove(uint8_t slot, std::string& error)
+{
+  if (slot >= kMaximumStoredModels || slot == active_slot_) {
+    error = slot == active_slot_ ? "cannot delete active model"
+                                 : "model slot out of range";
+    return false;
+  }
+  TransactionalModelStore store(files_, slot_path(slot));
+  if (!store.erase()) {
+    error = "failed to delete model";
+    return false;
+  }
+  error.clear();
+  return true;
+}
+
+bool ModelLibrary::export_active(std::vector<uint8_t>& data) const
+{
+  return files_.read(slot_path(active_slot_), data);
+}
+
+bool ModelLibrary::import_active(const std::vector<uint8_t>& data,
+                                 std::string& error)
+{
+  Model model{};
+  uint32_t generation = 0;
+  if (!ModelCodec::decode(data, model, generation, error)) {
+    return false;
+  }
+  return save_active(model, generation + 1, error);
 }
 
 CalibrationStore::CalibrationStore(IFileStore& files, std::string path)

@@ -106,13 +106,16 @@ TelemetryLogger::TelemetryLogger(ITelemetryLogSink& sink,
 void TelemetryLogger::start()
 {
   active_ = true;
+  failed_ = false;
   last_sample_us_ = 0;
 }
 
-void TelemetryLogger::stop()
+bool TelemetryLogger::stop()
 {
   active_ = false;
-  (void)sink_.flush();
+  const bool success = sink_.flush();
+  failed_ = failed_ || !success;
+  return success;
 }
 
 bool TelemetryLogger::active() const
@@ -120,25 +123,40 @@ bool TelemetryLogger::active() const
   return active_;
 }
 
-void TelemetryLogger::sample(const TelemetryRegistry& telemetry, TimeUs now_us)
+bool TelemetryLogger::failed() const
+{
+  return failed_;
+}
+
+bool TelemetryLogger::sample(const TelemetryRegistry& telemetry,
+                             TimeUs now_us)
 {
   if (!active_ ||
       (last_sample_us_ != 0 &&
        now_us - last_sample_us_ <
            static_cast<TimeUs>(minimum_period_ms_) * 1000)) {
-    return;
+    return !failed_;
   }
   for (const auto& entry : telemetry.entries()) {
-    if (entry.discovered) {
-      (void)sink_.append(now_us, entry.id, entry.value);
+    if (entry.discovered &&
+        !sink_.append(now_us, entry.id, entry.value)) {
+      // Give platform sinks a deterministic opportunity to close/reset an
+      // errored stream before a later logging session is started.
+      (void)sink_.flush();
+      failed_ = true;
+      active_ = false;
+      return false;
     }
   }
   last_sample_us_ = now_us;
+  return true;
 }
 
-void TelemetryLogger::flush()
+bool TelemetryLogger::flush()
 {
-  (void)sink_.flush();
+  const bool success = sink_.flush();
+  failed_ = failed_ || !success;
+  return success;
 }
 
 BatteryMonitor::BatteryMonitor(BatteryConfig config) : config_(config)
@@ -297,6 +315,14 @@ void ModuleSupervisor::start(uint8_t model_id, TimeUs now_us)
   next_ping_us_ = now_us;
   transport_.set_baud_rate(400000);
   send_model_id(now_us);
+}
+
+void ModuleSupervisor::set_model_id(uint8_t model_id, TimeUs now_us)
+{
+  model_id_ = model_id;
+  if (status_.state != ModuleState::Passthrough) {
+    send_model_id(now_us);
+  }
 }
 
 bool ModuleSupervisor::send_channels(const ChannelFrame& frame,
@@ -640,7 +666,21 @@ bool SpecialFunctionEngine::switch_value(
   bool value = true;
   if (reference.index >= 0 &&
       reference.index < static_cast<int8_t>(kMaxSwitches)) {
-    value = inputs.switches[static_cast<std::size_t>(reference.index)];
+    const auto index = static_cast<std::size_t>(reference.index);
+    switch (reference.position) {
+      case SwitchPosition::Active:
+        value = inputs.switches[index];
+        break;
+      case SwitchPosition::Low:
+        value = inputs.switch_positions[index] < 0;
+        break;
+      case SwitchPosition::Middle:
+        value = inputs.switch_positions[index] == 0;
+        break;
+      case SwitchPosition::High:
+        value = inputs.switch_positions[index] > 0;
+        break;
+    }
   } else if (reference.index >= static_cast<int8_t>(kMaxSwitches)) {
     const auto index =
         static_cast<std::size_t>(reference.index - kMaxSwitches);

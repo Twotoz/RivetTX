@@ -14,6 +14,7 @@ uint32_t crc32(const uint8_t* data, std::size_t size);
 
 class ModelCodec {
  public:
+  static bool validate(const Model& model, std::string& error);
   static std::vector<uint8_t> encode(const Model& model,
                                      uint32_t generation);
   static bool decode(const std::vector<uint8_t>& encoded, Model& model,
@@ -86,6 +87,47 @@ class TransactionalModelStore {
   std::string active_;
   std::string temporary_;
   std::string backup_;
+};
+
+constexpr std::size_t kMaximumStoredModels = 32;
+
+struct StoredModelSummary {
+  bool present = false;
+  uint8_t slot = 0;
+  uint8_t model_id = 0;
+  std::array<char, 24> name{};
+};
+
+class ModelLibrary {
+ public:
+  explicit ModelLibrary(IFileStore& files);
+
+  bool bootstrap(Model& model, uint32_t& generation,
+                 std::string& error);
+  std::array<StoredModelSummary, kMaximumStoredModels> summaries() const;
+  uint8_t active_slot() const;
+  bool save_slot(uint8_t slot, const Model& model, uint32_t generation,
+                 std::string& error);
+  bool save_active(const Model& model, uint32_t generation,
+                   std::string& error);
+  bool select(uint8_t slot, Model& model, uint32_t& generation,
+              std::string& error);
+  bool create(const Model& model, uint32_t generation, uint8_t& slot,
+              std::string& error);
+  bool remove(uint8_t slot, std::string& error);
+  bool export_active(std::vector<uint8_t>& data) const;
+  bool import_active(const std::vector<uint8_t>& data,
+                     std::string& error);
+
+ private:
+  std::string slot_path(uint8_t slot) const;
+  bool read_active_index(uint8_t& slot) const;
+  bool write_active_index(uint8_t slot, std::string& error);
+  bool load_slot(uint8_t slot, Model& model, uint32_t& generation,
+                 std::string& error) const;
+
+  IFileStore& files_;
+  uint8_t active_slot_ = 0;
 };
 
 class CalibrationStore {

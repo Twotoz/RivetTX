@@ -1,7 +1,17 @@
+set(rivettx_private_requires
+  app_update
+  mbedtls
+)
+
+if(CONFIG_IDF_TARGET_ESP32S3)
+  list(APPEND rivettx_private_requires esp_tinyusb)
+endif()
+
 idf_component_register(
   SRCS
     "app_main.cpp"
     "esp_platform.cpp"
+    "usb_gamepad.cpp"
   INCLUDE_DIRS "."
   REQUIRES
     rivet_core
@@ -19,6 +29,5 @@ idf_component_register(
     nvs_flash
     wear_levelling
   PRIV_REQUIRES
-    app_update
-    mbedtls
+    ${rivettx_private_requires}
 )
