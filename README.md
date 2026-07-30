@@ -90,7 +90,8 @@ failsafe frame before it reaches CRSF.
 - CRC-checked CRSF telemetry for link, battery, and GPS data
 - responsive model, input, mix, output, timer, telemetry, and system screens
 - calibration workflow, telemetry alarms, CSV logs, and crash diagnostics
-- native simulator, 106 host-side checks, and a complete ESP32-C3 target build
+- virtual ELRS hardware scenarios, 124 host-side checks, sanitizer coverage,
+  and a complete ESP32-C3 target build
 
 For exact limits and validation status, see the
 [feature matrix](docs/feature-matrix.md).
@@ -109,7 +110,26 @@ make
 ./build/rivettx-sim
 ```
 
-The simulator writes a monochrome preview to `build/sim-screen.pbm`.
+The simulator runs nominal, packet-loss, corrupt-frame, disconnect/recovery,
+stale-input, and missed-deadline scenarios against the real core. It writes a
+machine-readable result to `build/sim-report.json` and renders compact,
+medium, and large previews:
+
+```text
+build/sim-screen.pbm
+build/sim-screen-medium.pbm
+build/sim-screen-large.pbm
+```
+
+Run one focused case or display profile with:
+
+```bash
+./build/rivettx-sim --scenario disconnect --display compact
+make sanitize
+```
+
+See the [simulation guide](docs/simulation.md) for the exact boundary between
+software evidence and tests that still require real hardware.
 
 ### ESP32-C3 firmware
 
@@ -171,6 +191,7 @@ Model edits are staged, saved while locked, and activated on the next boot.
 |---|---|
 | [Architecture](docs/architecture.md) | safety invariants, task separation, storage, OTA, and Lua boundaries |
 | [Feature matrix](docs/feature-matrix.md) | implemented behavior versus hardware validation still required |
+| [Simulation](docs/simulation.md) | virtual ELRS scenarios, fault injection, outputs, and validation limits |
 | [Hardware guide](docs/hardware.md) | minimum electronics, default GPIOs, controls, and bring-up sequence |
 | [Firmware bundle](docs/firmware-bundle.md) | CI artifact contents, checksum verification, and one-file flashing |
 

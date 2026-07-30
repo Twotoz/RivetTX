@@ -3,9 +3,11 @@
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
+#include "virtual_hardware.hpp"
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -316,6 +318,56 @@ void test_crsf()
   CHECK(parser.stats().crc_errors == 1);
 }
 
+void test_virtual_elrs_module()
+{
+  sim::LinkFaultPlan faults{};
+  faults.corrupt_every_nth_telemetry_frame = 4;
+  faults.maximum_read_chunk = 5;
+  sim::VirtualElrsModule transport(faults);
+  TelemetryRegistry telemetry;
+  CrsfParser parser(telemetry);
+  DiagnosticLog diagnostics;
+  ModuleSupervisor module(transport, parser, diagnostics);
+  module.start(17, 0);
+  module.request_bind(false, 50);
+
+  ChannelFrame channels{};
+  channels.channels[0] = -512;
+  channels.channels[1] = 256;
+  channels.channels[2] = 1024;
+  bool all_channel_writes_succeeded = true;
+  for (uint32_t cycle = 0; cycle < 500; ++cycle) {
+    const TimeUs now_us = static_cast<TimeUs>(cycle) * 4000;
+    channels.sequence = cycle;
+    transport.advance(now_us);
+    all_channel_writes_succeeded =
+        module.send_channels(channels, now_us + 100) &&
+        all_channel_writes_succeeded;
+    module.poll(now_us + 200);
+  }
+
+  int32_t value = 0;
+  CHECK(all_channel_writes_succeeded);
+  CHECK(transport.baud_rate() == 400000);
+  CHECK(transport.model_id() == 17);
+  CHECK(transport.stats().model_id_frames_received == 1);
+  CHECK(transport.stats().bind_commands_received == 1);
+  CHECK(transport.stats().channel_frames_received == 500);
+  CHECK(transport.stats().device_pings_received == 2);
+  CHECK(transport.stats().invalid_radio_frames == 0);
+  CHECK(transport.stats().telemetry_frames_corrupted > 0);
+  CHECK(parser.stats().crc_errors ==
+        transport.stats().telemetry_frames_corrupted);
+  CHECK(module.status().state == ModuleState::Online);
+  CHECK(std::abs(static_cast<int>(transport.channels()[0]) + 512) <= 2);
+  CHECK(telemetry.value(crsf::SensorUplinkLinkQuality, value));
+  CHECK(value == 96);
+  CHECK(telemetry.value(crsf::SensorBatteryVoltage, value));
+  CHECK(value == 3800);
+  CHECK(telemetry.value(crsf::SensorGpsSatellites, value));
+  CHECK(value == 14);
+}
+
 void test_storage()
 {
   const std::string root =
@@ -557,6 +609,7 @@ int main()
   test_mixer_features();
   test_safety();
   test_crsf();
+  test_virtual_elrs_module();
   test_storage();
   test_ui();
   test_services();

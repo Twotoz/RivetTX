@@ -24,6 +24,9 @@ jobs:
           make build/rivettx-sim
           ./build/rivettx-sim
 
+      - name: Run memory and undefined-behaviour checks
+        run: make sanitize
+
   esp32c3:
     name: ESP32-C3 firmware
     runs-on: ubuntu-latest

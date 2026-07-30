@@ -9,10 +9,10 @@ hardware evidence.
 | mixer | inputs, expo, curves, 64 mixes, add/multiply/replace, delay, slow, trims, GVars, five flight modes | native unit tests |
 | outputs | 16 channels, reverse, subtrim, min/max, per-channel failsafe | native unit tests |
 | logic | 24 logical switches, edge/sticky/timer functions, three timers, 24 special-function slots | native unit tests |
-| safety | locked boot, throttle/switch checks, stale input, mixer deadline, low battery, watchdog recovery, failsafe gating | native unit tests; HIL required |
-| ExpressLRS | CRSF channels/CRC, telemetry parser, discovery, model ID, bind, failsafe capture, baud recovery, pass-through API | protocol tests; real ELRS module pending |
-| UI | responsive compact/medium/large layout, 13 screens, scrolling/editing, touch events, staged model edits | 128x64 simulator and native tests |
-| displays | capability-driven layout and monochrome canvas; SSD1306 128x64 driver | simulator; SSD1306 hardware pending |
+| safety | locked boot, throttle/switch checks, stale input, mixer deadline, low battery, watchdog recovery, failsafe gating | native tests plus stale/deadline system scenarios; HIL required |
+| ExpressLRS | CRSF channels/CRC, telemetry parser, discovery, model ID, bind, failsafe capture, baud recovery, pass-through API | virtual module tests with fragmented UART, loss, corruption, disconnect and recovery; real ELRS module pending |
+| UI | responsive compact/medium/large layout, 13 screens, scrolling/editing, touch events, staged model edits | 128×64, 240×135, and 480×320 simulator renders plus native tests |
+| displays | capability-driven layout and monochrome canvas; SSD1306 128x64 driver | three virtual profiles; SSD1306 hardware pending |
 | Lua | real Lua 5.5, allocator ceiling, instruction/time budget, safe libraries, LCD/model/telemetry/CRSF APIs and common ELRS names | ESP32-C3 target build; real ELRS Lua tool pending |
 | storage | versioned schema, CRC, migration hook, copy-on-write save, read-back, backup recovery | corruption/recovery tests |
 | diagnostics | bounded event ring, crash snapshot, reset reason and ESP core-dump partition | native tests; reset injection pending |
@@ -20,7 +20,7 @@ hardware evidence.
 | battery/power | calibrated ADC when eFuse data exists, divider scaling, hysteresis, alarms, inactivity/shutdown policy | native policy tests; divider validation pending |
 | backup/recovery | locked-only Wi-Fi export/restore, boot-failure counter, held-button recovery | codec tests; portal hardware pending |
 | update/boot | ESP-IDF bootloader, A/B OTA, HTTPS, manifest gates, post-boot self-test, rollback, Secure Boot V2 production config | mock OTA tests; signed-device drill pending |
-| development | deterministic host simulator, PBM screen output, strict-warning tests, sanitizer run, ESP-IDF target build with firmware headroom gate | host and ESP32-C3 CI verified |
+| development | deterministic virtual hardware simulator, JSON report, PBM outputs, strict-warning tests, ASan/UBSan, ESP-IDF target build with firmware headroom gate | host and ESP32-C3 CI verified |
 
 ## Deliberate boundaries
 
