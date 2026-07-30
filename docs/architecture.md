@@ -98,3 +98,11 @@ Every invocation has:
 - no raw GPIO, UART, flash, or watchdog access
 
 The native control task keeps operating if a script is killed.
+
+## Audio boundary
+
+Control-path state changes publish fixed-size bits and snapshots to a single
+service-task audio scheduler. Pattern playback is non-blocking and uses no
+dynamic allocation. Critical link, battery, and telemetry-loss patterns
+pre-empt Finder and Lua tones, so competing clients cannot hide a safety
+warning or delay channel generation.

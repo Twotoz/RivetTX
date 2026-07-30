@@ -1,5 +1,6 @@
 idf_component_register(
   SRCS
+    "audio.cpp"
     "core.cpp"
     "crsf.cpp"
     "elrs.cpp"

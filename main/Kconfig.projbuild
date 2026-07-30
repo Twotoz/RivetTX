@@ -74,6 +74,22 @@ config RIVETTX_BATTERY_DIVIDER_MILLI
     range 1000 10000
     default 2000
 
+config RIVETTX_BATTERY_LOW_MV
+    int "Transmitter battery low warning (mV)"
+    range 1100 30000
+    default 3500
+    help
+        Set this for the complete transmitter battery pack. It must be
+        higher than the critical threshold.
+
+config RIVETTX_BATTERY_CRITICAL_MV
+    int "Transmitter battery critical warning (mV)"
+    range 1000 30000
+    default 3200
+    help
+        At or below this voltage RivetTX locks outputs as well as playing
+        the critical battery pattern.
+
 config RIVETTX_BUZZER_GPIO
     int "Passive piezo buzzer GPIO (-1 disables audio)"
     range -1 21
@@ -83,6 +99,19 @@ config RIVETTX_BUZZER_VOLUME
     int "Passive piezo duty percentage"
     range 1 50
     default 25
+
+config RIVETTX_LINK_WARNING_LQ
+    int "ELRS weak-link warning threshold (LQ percent)"
+    range 2 100
+    default 70
+
+config RIVETTX_LINK_CRITICAL_LQ
+    int "ELRS critical-link warning threshold (LQ percent)"
+    range 1 99
+    default 30
+    help
+        Keep this lower than the weak-link threshold. Warnings use
+        hysteresis and repeat faster as the link becomes critical.
 
 config RIVETTX_WIFI_BACKUP
     bool "Enable maintenance Wi-Fi backup portal"

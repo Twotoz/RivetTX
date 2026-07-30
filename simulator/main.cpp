@@ -1,3 +1,4 @@
+#include "rivettx/audio.hpp"
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
@@ -32,6 +33,28 @@ class SimulatorWatchdog final : public IWatchdog {
   uint32_t kicks = 0;
 };
 
+class SimulatorToneOutput final : public IToneOutput {
+ public:
+  bool play_tone(uint16_t, uint16_t) override
+  {
+    ++tones;
+    return true;
+  }
+
+  void stop_tone() override
+  {
+    ++stops;
+  }
+
+  bool available() const override
+  {
+    return true;
+  }
+
+  uint32_t tones = 0;
+  uint32_t stops = 0;
+};
+
 enum class ScenarioKind {
   Nominal,
   PacketLoss,
@@ -58,6 +81,7 @@ struct ScenarioResult {
   bool failsafe_observed = false;
   bool module_offline_observed = false;
   bool module_recovered = false;
+  bool audio_warning_observed = false;
 };
 
 struct Options {
@@ -191,6 +215,9 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
   sim::VirtualElrsModule transport(fault_plan(kind));
   ModuleSupervisor module(transport, parser, diagnostics);
   ElrsDeviceManager management(transport, parser);
+  SimulatorToneOutput tone_output;
+  AudioAlertScheduler audio(tone_output);
+  AudioWarningMonitor warnings;
 
   safety.boot_complete(true, false);
   safety.request_enable();
@@ -222,6 +249,15 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
     (void)module.send_channels(latest, now_us + duration + 50);
     module.poll(now_us + duration + 100);
     management.tick(now_us + duration + 150);
+    warnings.tick(telemetry, BatteryState::Normal, module.status().state,
+                  cycle_result.safety.state, now_us + duration + 200,
+                  audio);
+    audio.tick(now_us + duration + 200);
+    result.audio_warning_observed =
+        result.audio_warning_observed ||
+        audio.current_alert() == AudioAlert::ModuleOffline ||
+        audio.current_alert() == AudioAlert::TelemetryLost ||
+        audio.current_alert() == AudioAlert::LinkCritical;
     if (module.status().state == ModuleState::Offline) {
       saw_offline = true;
     }
@@ -318,6 +354,8 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
             "module-lost diagnostic is missing");
     require(result, has_diagnostic(diagnostics, LogCode::ModuleRecovered),
             "module-recovered diagnostic is missing");
+    require(result, result.audio_warning_observed,
+            "disconnect did not trigger an audible warning");
   } else if (kind == ScenarioKind::StaleInput) {
     require(result, safety.status().stale_frames > 0,
             "stale-input fault was not detected");
@@ -402,7 +440,9 @@ void write_json_report(const std::filesystem::path& path,
            << ",\"module_offline_observed\":"
            << (item.module_offline_observed ? "true" : "false")
            << ",\"module_recovered\":"
-           << (item.module_recovered ? "true" : "false") << "}";
+           << (item.module_recovered ? "true" : "false")
+           << ",\"audio_warning_observed\":"
+           << (item.audio_warning_observed ? "true" : "false") << "}";
     output << (index + 1 == results.size() ? "\n" : ",\n");
   }
   output << "  ]\n}\n";

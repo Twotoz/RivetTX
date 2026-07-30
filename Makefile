@@ -3,6 +3,7 @@ CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror
 CPPFLAGS := -Icomponents/rivet_core/include -Isimulator
 BUILD := build
 CORE := \
+	components/rivet_core/audio.cpp \
 	components/rivet_core/core.cpp \
 	components/rivet_core/crsf.cpp \
 	components/rivet_core/elrs.cpp \

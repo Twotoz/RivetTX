@@ -1,5 +1,6 @@
 #include "esp_platform.hpp"
 
+#include "rivettx/audio.hpp"
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
@@ -23,6 +24,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "sdkconfig.h"
 
 namespace {
 
@@ -33,11 +35,40 @@ constexpr char kTag[] = "rivettx";
 constexpr uint32_t kControlPeriodUs = 4000;
 constexpr uint8_t kScreenCount = 15;
 
+BatteryConfig battery_config()
+{
+  BatteryConfig config{};
+  config.low_mv = CONFIG_RIVETTX_BATTERY_LOW_MV;
+  config.critical_mv = std::min<uint16_t>(
+      CONFIG_RIVETTX_BATTERY_CRITICAL_MV,
+      CONFIG_RIVETTX_BATTERY_LOW_MV - 100);
+  return config;
+}
+
+SafetyConfig safety_config()
+{
+  SafetyConfig config{};
+  config.minimum_battery_mv = battery_config().critical_mv;
+  return config;
+}
+
+AudioWarningConfig audio_warning_config()
+{
+  AudioWarningConfig config{};
+  config.link_weak_percent = CONFIG_RIVETTX_LINK_WARNING_LQ;
+  config.link_critical_percent = std::min<uint8_t>(
+      CONFIG_RIVETTX_LINK_CRITICAL_LQ,
+      CONFIG_RIVETTX_LINK_WARNING_LQ - 1);
+  return config;
+}
+
 struct Application {
   EspBoard board;
   EspCrsfTransport transport;
   Ssd1306Display display;
   EspToneOutput tones;
+  AudioAlertScheduler audio{tones};
+  AudioWarningMonitor audio_warnings{audio_warning_config()};
   EspWatchdog watchdog;
   EspOtaBackend ota;
   NvsCrashStore crash_store;
@@ -50,11 +81,11 @@ struct Application {
   CrsfParser parser{telemetry};
   ModuleSupervisor module{transport, parser, diagnostics};
   ElrsDeviceManager elrs{transport, parser};
-  ElrsFinder finder{tones};
+  ElrsFinder finder{audio};
   InputProcessor input_processor;
   MixerEngine mixer;
-  SafetyManager safety;
-  BatteryMonitor battery;
+  SafetyManager safety{safety_config()};
+  BatteryMonitor battery{battery_config()};
   PosixFileStore files{"/models"};
   TransactionalModelStore model_store{files, "active.rvm"};
   CalibrationStore calibration_store{files, "calibration.bin"};
@@ -63,7 +94,7 @@ struct Application {
   TelemetryLogger telemetry_logger{telemetry_sink, 100};
   AlarmEngine alarms;
   MonoCanvas canvas{128, 64};
-  LuaVm lua{service_telemetry, parser, transport, canvas, &tones};
+  LuaVm lua{service_telemetry, parser, transport, canvas, &audio};
   ScriptSupervisor scripts{lua, service_diagnostics};
   UiController ui{display, canvas};
   BootManager boot{ota, boot_diagnostics};
@@ -74,6 +105,9 @@ struct Application {
   std::array<TelemetryEntry, kMaxTelemetrySensors> latest_telemetry{};
   ElrsManagerStatus latest_elrs{};
   ElrsFinderStatus latest_finder{};
+  BatteryState latest_battery_state = BatteryState::Unknown;
+  ModuleState latest_module_state = ModuleState::Starting;
+  SafetyState latest_safety_state = SafetyState::Booting;
   portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
   uint8_t latest_buttons = 0;
   std::atomic<bool> finder_enabled{false};
@@ -183,6 +217,9 @@ void control_task(void*)
     app.latest_timers = app.mixer.timer_states();
     app.latest_telemetry = app.telemetry.entries();
     app.latest_elrs = app.elrs.status();
+    app.latest_battery_state = battery_state;
+    app.latest_module_state = app.module.status().state;
+    app.latest_safety_state = safety_state;
     app.latest_buttons =
         static_cast<uint8_t>((raw.switches[0] ? 1U : 0U) |
                              (raw.switches[1] ? 2U : 0U) |
@@ -415,8 +452,14 @@ void service_task(void*)
   while (true) {
     const TimeUs current = now_us();
     std::array<TelemetryEntry, kMaxTelemetrySensors> telemetry{};
+    BatteryState battery_state = BatteryState::Unknown;
+    ModuleState module_state = ModuleState::Starting;
+    SafetyState safety_state = SafetyState::Booting;
     taskENTER_CRITICAL(&app.frame_lock);
     telemetry = app.latest_telemetry;
+    battery_state = app.latest_battery_state;
+    module_state = app.latest_module_state;
+    safety_state = app.latest_safety_state;
     taskEXIT_CRITICAL(&app.frame_lock);
     app.service_telemetry.clear();
     for (const auto& sensor : telemetry) {
@@ -433,6 +476,7 @@ void service_task(void*)
       ESP_LOGW(kTag, "telemetry alarm sensor=%u value=%ld active=%d",
                static_cast<unsigned>(alarm.sensor_id),
                static_cast<long>(alarm.value), alarm.active);
+      app.audio_warnings.telemetry_alarm(alarm.active, app.audio);
     }
     if (app.lua.loaded()) {
       (void)app.scripts.tick(current);
@@ -440,6 +484,10 @@ void service_task(void*)
     app.finder.set_active(
         app.finder_enabled.load(std::memory_order_acquire));
     app.finder.tick(app.service_telemetry, current);
+    app.audio_warnings.tick(app.service_telemetry, battery_state,
+                            module_state, safety_state, current,
+                            app.audio);
+    app.audio.tick(current);
     taskENTER_CRITICAL(&app.frame_lock);
     app.latest_finder = app.finder.status();
     taskEXIT_CRITICAL(&app.frame_lock);
@@ -523,6 +571,7 @@ extern "C" void app_main()
                        app.board.recovery_button_pressed(), boot_attempt);
   const bool display_ok = app.display.initialize();
   (void)app.tones.initialize();
+  app.audio.notify(AudioAlert::Startup);
   if (calibration_requested && display_ok) {
     if (!run_startup_calibration()) {
       ESP_LOGW(kTag, "stick calibration cancelled or failed");
