@@ -170,6 +170,7 @@ class LuaCrsfMailbox final : public ILuaCrsfSink {
 struct Application {
   EspBoard board;
   EspCrsfTransport transport;
+  CrsfTransmitGate rf_transport{transport};
   Ssd1306Display display;
   EspToneOutput tones;
   EspUsbGamepad usb_gamepad;
@@ -185,8 +186,8 @@ struct Application {
   TelemetryRegistry telemetry;
   TelemetryRegistry service_telemetry;
   CrsfParser parser{telemetry};
-  ModuleSupervisor module{transport, parser, diagnostics};
-  ElrsDeviceManager elrs{transport, parser};
+  ModuleSupervisor module{rf_transport, parser, diagnostics};
+  ElrsDeviceManager elrs{rf_transport, parser};
   ElrsFinder finder{audio};
   InputProcessor input_processor;
   MixerEngine mixer;
@@ -293,8 +294,11 @@ void control_task(void*)
 
   while (true) {
     const TimeUs started = now_us();
-    if (app.usb_simulator_enabled.load(std::memory_order_acquire) &&
-        app.usb_rf_lock.load(std::memory_order_acquire)) {
+    const bool simulator_rf_locked =
+        app.usb_simulator_enabled.load(std::memory_order_acquire) &&
+        app.usb_rf_lock.load(std::memory_order_acquire);
+    app.rf_transport.set_transmit_enabled(!simulator_rf_locked);
+    if (simulator_rf_locked) {
       app.safety.request_lock();
     }
     if (app.model_activation_state.load(std::memory_order_acquire) == 1) {
@@ -439,7 +443,8 @@ void control_task(void*)
     (void)app.module.send_channels(frame, now_us());
     crsf::Frame lua_frame{};
     if (app.lua_crsf.pop(lua_frame)) {
-      (void)app.transport.write(lua_frame.bytes.data(), lua_frame.size);
+      (void)app.rf_transport.write(
+          lua_frame.bytes.data(), lua_frame.size);
     }
     app.module.poll(now_us());
     app.elrs.tick(now_us());

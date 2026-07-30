@@ -600,6 +600,29 @@ void test_safety()
 
 void test_crsf()
 {
+  FakeTransport physical_transport;
+  CrsfTransmitGate transmit_gate(physical_transport);
+  const std::array<uint8_t, 3> outbound{1, 2, 3};
+  CHECK(transmit_gate.transmit_enabled());
+  CHECK(transmit_gate.write(outbound.data(), outbound.size()));
+  CHECK(physical_transport.writes.size() == 1);
+  transmit_gate.set_transmit_enabled(false);
+  CHECK(!transmit_gate.transmit_enabled());
+  CHECK(!transmit_gate.write(outbound.data(), outbound.size()));
+  CHECK(physical_transport.writes.size() == 1);
+  physical_transport.receive = {4, 5};
+  std::array<uint8_t, 4> inbound{};
+  CHECK(transmit_gate.read(inbound.data(), inbound.size()) == 2);
+  CHECK(inbound[0] == 4);
+  CHECK(inbound[1] == 5);
+  transmit_gate.set_baud_rate(420000);
+  transmit_gate.reset_module();
+  CHECK(physical_transport.baud == 420000);
+  CHECK(physical_transport.resets == 1);
+  transmit_gate.set_transmit_enabled(true);
+  CHECK(transmit_gate.write(outbound.data(), outbound.size()));
+  CHECK(physical_transport.writes.size() == 2);
+
   ChannelFrame channels{};
   channels.channels[0] = -1024;
   channels.channels[1] = 0;

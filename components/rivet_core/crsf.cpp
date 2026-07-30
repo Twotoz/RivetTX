@@ -4,6 +4,42 @@
 #include <cstdlib>
 
 namespace rivettx {
+
+CrsfTransmitGate::CrsfTransmitGate(ICrsfTransport& transport)
+    : transport_(transport)
+{
+}
+
+void CrsfTransmitGate::set_transmit_enabled(bool enabled)
+{
+  transmit_enabled_.store(enabled, std::memory_order_release);
+}
+
+bool CrsfTransmitGate::transmit_enabled() const
+{
+  return transmit_enabled_.load(std::memory_order_acquire);
+}
+
+bool CrsfTransmitGate::write(const uint8_t* data, std::size_t size)
+{
+  return transmit_enabled() && transport_.write(data, size);
+}
+
+std::size_t CrsfTransmitGate::read(uint8_t* data, std::size_t capacity)
+{
+  return transport_.read(data, capacity);
+}
+
+void CrsfTransmitGate::set_baud_rate(uint32_t baud)
+{
+  transport_.set_baud_rate(baud);
+}
+
+void CrsfTransmitGate::reset_module()
+{
+  transport_.reset_module();
+}
+
 namespace crsf {
 
 namespace {

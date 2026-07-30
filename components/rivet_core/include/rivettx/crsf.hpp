@@ -161,4 +161,20 @@ class ICrsfTransport {
   virtual void reset_module() = 0;
 };
 
+class CrsfTransmitGate final : public ICrsfTransport {
+ public:
+  explicit CrsfTransmitGate(ICrsfTransport& transport);
+
+  void set_transmit_enabled(bool enabled);
+  bool transmit_enabled() const;
+  bool write(const uint8_t* data, std::size_t size) override;
+  std::size_t read(uint8_t* data, std::size_t capacity) override;
+  void set_baud_rate(uint32_t baud) override;
+  void reset_module() override;
+
+ private:
+  ICrsfTransport& transport_;
+  std::atomic<bool> transmit_enabled_{true};
+};
+
 }  // namespace rivettx
