@@ -42,7 +42,7 @@ CRSF-facing Lua surface are implemented specifically for ESP32-C3.
 | | |
 |---|---|
 | **Deterministic control** | Fixed-allocation input, mixer, safety, and CRSF path with deadline and stale-input checks. |
-| **ExpressLRS native** | CRSF channels, telemetry, model ID, bind, failsafe, module recovery, and pass-through services. |
+| **ExpressLRS native** | Dynamic module settings, mW power control, bind, Wi-Fi update launch, telemetry, Finder, model ID, failsafe, and recovery. |
 | **Safe persistence** | Versioned model schema, CRC validation, copy-on-write saves, read-back verification, and recovery. |
 | **Adaptable interface** | Capability-driven layouts for compact, medium, and large displays without screen-specific model logic. |
 | **Contained scripting** | Lua 5.5 with safe libraries, a memory ceiling, instruction/time budgets, and bounded CRSF/LCD APIs. |
@@ -87,10 +87,15 @@ failsafe frame before it reaches CRSF.
 - trims, GVars, five flight modes, logical switches, and three timers
 - per-channel reverse, subtrim, limits, and failsafe values
 - throttle/switch startup checks, stale-input detection, and deadline lockout
-- CRC-checked CRSF telemetry for link, battery, and GPS data
+- discovered ExpressLRS power, dynamic-power, switch-mode, telemetry-ratio,
+  bind, and Wi-Fi update controls
+- CRC-checked CRSF telemetry for link, battery, and GPS data, including
+  active-antenna RSSI and correctly decoded TX power in mW
+- built-in ELRS Finder with fresh-data protection, visual meter, and optional
+  Geiger-counter buzzer
 - responsive model, input, mix, output, timer, telemetry, and system screens
 - calibration workflow, telemetry alarms, CSV logs, and crash diagnostics
-- virtual ELRS hardware scenarios, 124 host-side checks, sanitizer coverage,
+- virtual ELRS hardware scenarios, 177 host-side checks, sanitizer coverage,
   and a complete ESP32-C3 target build
 
 For exact limits and validation status, see the
@@ -193,6 +198,7 @@ Model edits are staged, saved while locked, and activated on the next boot.
 | [Feature matrix](docs/feature-matrix.md) | implemented behavior versus hardware validation still required |
 | [Simulation](docs/simulation.md) | virtual ELRS scenarios, fault injection, outputs, and validation limits |
 | [Hardware guide](docs/hardware.md) | minimum electronics, default GPIOs, controls, and bring-up sequence |
+| [ExpressLRS guide](docs/expresslrs.md) | mW settings, bind, Finder, Betaflight OSD telemetry, and TX-module Wi-Fi updates |
 | [Firmware bundle](docs/firmware-bundle.md) | CI artifact contents, checksum verification, and one-file flashing |
 
 ## Project status

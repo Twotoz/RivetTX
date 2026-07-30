@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
@@ -287,6 +288,73 @@ bool Ssd1306Display::flush(const MonoCanvas& canvas)
 void EspWatchdog::kick()
 {
   (void)esp_task_wdt_reset();
+}
+
+void EspToneOutput::stop_callback(void* context)
+{
+  static_cast<EspToneOutput*>(context)->stop_tone();
+}
+
+bool EspToneOutput::initialize()
+{
+  if (CONFIG_RIVETTX_BUZZER_GPIO < 0) {
+    return false;
+  }
+  ledc_timer_config_t timer{};
+  timer.speed_mode = LEDC_LOW_SPEED_MODE;
+  timer.duty_resolution = LEDC_TIMER_10_BIT;
+  timer.timer_num = LEDC_TIMER_0;
+  timer.freq_hz = 1000;
+  timer.clk_cfg = LEDC_AUTO_CLK;
+  ledc_channel_config_t channel{};
+  channel.gpio_num = CONFIG_RIVETTX_BUZZER_GPIO;
+  channel.speed_mode = LEDC_LOW_SPEED_MODE;
+  channel.channel = LEDC_CHANNEL_0;
+  channel.intr_type = LEDC_INTR_DISABLE;
+  channel.timer_sel = LEDC_TIMER_0;
+  channel.duty = 0;
+  channel.hpoint = 0;
+  esp_timer_create_args_t timer_args{};
+  timer_args.callback = stop_callback;
+  timer_args.arg = this;
+  timer_args.name = "rivet-tone";
+  initialized_ =
+      ledc_timer_config(&timer) == ESP_OK &&
+      ledc_channel_config(&channel) == ESP_OK &&
+      esp_timer_create(&timer_args, &stop_timer_) == ESP_OK;
+  return initialized_;
+}
+
+bool EspToneOutput::play_tone(uint16_t frequency_hz,
+                              uint16_t duration_ms)
+{
+  if (!initialized_ || frequency_hz < 100 || duration_ms == 0) {
+    return false;
+  }
+  const uint32_t duty =
+      1023U * CONFIG_RIVETTX_BUZZER_VOLUME / 100U;
+  (void)esp_timer_stop(stop_timer_);
+  if (ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0,
+                    std::min<uint16_t>(frequency_hz, 5000)) == 0 ||
+      ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty) != ESP_OK ||
+      ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0) != ESP_OK) {
+    return false;
+  }
+  return esp_timer_start_once(
+             stop_timer_, static_cast<uint64_t>(duration_ms) * 1000U) ==
+         ESP_OK;
+}
+
+void EspToneOutput::stop_tone()
+{
+  if (initialized_) {
+    (void)ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+  }
+}
+
+bool EspToneOutput::available() const
+{
+  return initialized_;
 }
 
 bool EspOtaBackend::running_image_pending_verification() const

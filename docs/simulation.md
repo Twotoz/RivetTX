@@ -46,7 +46,9 @@ telemetry values, receive-queue bounds, and the final safety/module state.
 
 The UI is rendered at 128×64, 240×135, and 480×320 to verify that screen data
 is independent of a single panel size. The resulting PBM files can be opened
-with common image viewers.
+with common image viewers. Unit tests additionally drive the virtual module's
+discovered power and mode fields, bind and Wi-Fi commands, offline recovery,
+and Finder RSSI/audio behavior.
 
 Run the same tests under AddressSanitizer and UndefinedBehaviorSanitizer with:
 

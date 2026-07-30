@@ -39,7 +39,8 @@ uint16_t sensor_id_for_name(const char* name)
     const char* name;
     uint16_t id;
   };
-  static constexpr std::array<SensorName, 19> names{{
+  static constexpr std::array<SensorName, 20> names{{
+      {"RSSI", crsf::SensorUplinkRssi},
       {"1RSS", crsf::SensorUplinkRssi1},
       {"2RSS", crsf::SensorUplinkRssi2},
       {"RQly", crsf::SensorUplinkLinkQuality},
@@ -98,11 +99,13 @@ void set_function(lua_State* state, const char* name,
 
 LuaVm::LuaVm(TelemetryRegistry& telemetry, CrsfParser& parser,
              ICrsfTransport& transport, Canvas& canvas,
+             IToneOutput* tones,
              uint32_t memory_limit_bytes)
     : telemetry_(telemetry),
       parser_(parser),
       transport_(transport),
-      canvas_(canvas)
+      canvas_(canvas),
+      tones_(tones)
 {
   allocator_state_.maximum = memory_limit_bytes;
 }
@@ -201,6 +204,10 @@ void LuaVm::register_api()
   lua_setglobal(state_, "getTime");
   lua_pushcfunction(state_, api_get_value);
   lua_setglobal(state_, "getValue");
+  lua_pushcfunction(state_, api_get_value_age);
+  lua_setglobal(state_, "getValueAge");
+  lua_pushcfunction(state_, api_play_tone);
+  lua_setglobal(state_, "playTone");
   lua_pushcfunction(state_, api_get_field_info);
   lua_setglobal(state_, "getFieldInfo");
   lua_pushcfunction(state_, api_get_version);
@@ -399,6 +406,41 @@ int LuaVm::api_get_value(lua_State* state)
   } else {
     lua_pushinteger(state, value);
   }
+  return 1;
+}
+
+int LuaVm::api_get_value_age(lua_State* state)
+{
+  LuaVm* runtime = self(state);
+  uint16_t sensor = 0;
+  if (lua_type(state, 1) == LUA_TSTRING) {
+    sensor = sensor_id_for_name(lua_tostring(state, 1));
+  } else {
+    sensor = static_cast<uint16_t>(luaL_checkinteger(state, 1));
+  }
+  const TelemetryEntry* entry = runtime->telemetry_.find(sensor);
+  if (entry == nullptr) {
+    lua_pushnil(state);
+  } else {
+    const TimeUs current =
+        static_cast<TimeUs>(esp_timer_get_time());
+    const TimeUs age =
+        current >= entry->updated_at_us ? current - entry->updated_at_us : 0;
+    lua_pushinteger(state, static_cast<lua_Integer>(age / 1000));
+  }
+  return 1;
+}
+
+int LuaVm::api_play_tone(lua_State* state)
+{
+  LuaVm* runtime = self(state);
+  const uint16_t frequency = static_cast<uint16_t>(
+      clamp<lua_Integer>(100, luaL_checkinteger(state, 1), 5000));
+  const uint16_t duration = static_cast<uint16_t>(
+      clamp<lua_Integer>(1, luaL_checkinteger(state, 2), 5000));
+  lua_pushboolean(
+      state, runtime->tones_ != nullptr &&
+                 runtime->tones_->play_tone(frequency, duration));
   return 1;
 }
 

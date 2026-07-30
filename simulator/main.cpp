@@ -1,5 +1,6 @@
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
+#include "rivettx/elrs.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
@@ -189,10 +190,12 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
   CrsfParser parser(telemetry);
   sim::VirtualElrsModule transport(fault_plan(kind));
   ModuleSupervisor module(transport, parser, diagnostics);
+  ElrsDeviceManager management(transport, parser);
 
   safety.boot_complete(true, false);
   safety.request_enable();
   module.start(model.model_id, 0);
+  management.start(0);
 
   ChannelFrame latest{};
   bool ever_enabled = false;
@@ -218,6 +221,7 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
     }
     (void)module.send_channels(latest, now_us + duration + 50);
     module.poll(now_us + duration + 100);
+    management.tick(now_us + duration + 150);
     if (module.status().state == ModuleState::Offline) {
       saw_offline = true;
     }
@@ -253,6 +257,10 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
   require(result, !latest.safe, "final channel frame is failsafe");
   require(result, module.status().state == ModuleState::Online,
           "ELRS module did not finish Online");
+  require(result, management.status().state == ElrsManagerState::Ready,
+          "ELRS parameter discovery did not finish Ready");
+  require(result, management.status().power.available,
+          "ELRS power options were not discovered");
   require(result, transport.baud_rate() == 400000,
           "CRSF UART baud is not 400000");
   require(result, transport.model_id() == model.model_id,

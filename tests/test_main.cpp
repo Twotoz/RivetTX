@@ -1,5 +1,6 @@
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
+#include "rivettx/elrs.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
@@ -38,6 +39,32 @@ class FakeWatchdog final : public IWatchdog {
     ++count;
   }
   uint32_t count = 0;
+};
+
+class FakeToneOutput final : public IToneOutput {
+ public:
+  bool play_tone(uint16_t frequency_hz,
+                 uint16_t duration_ms) override
+  {
+    last_frequency = frequency_hz;
+    last_duration = duration_ms;
+    ++plays;
+    return enabled;
+  }
+  void stop_tone() override
+  {
+    ++stops;
+  }
+  bool available() const override
+  {
+    return enabled;
+  }
+
+  bool enabled = true;
+  uint16_t last_frequency = 0;
+  uint16_t last_duration = 0;
+  uint32_t plays = 0;
+  uint32_t stops = 0;
 };
 
 class FakeDisplay final : public IDisplaySink {
@@ -366,6 +393,140 @@ void test_virtual_elrs_module()
   CHECK(value == 3800);
   CHECK(telemetry.value(crsf::SensorGpsSatellites, value));
   CHECK(value == 14);
+  CHECK(telemetry.value(crsf::SensorUplinkRssi, value));
+  CHECK(value == -50);
+  CHECK(telemetry.value(crsf::SensorTxPower, value));
+  CHECK(value == 100);
+  const auto* tx_power = telemetry.find(crsf::SensorTxPower);
+  CHECK(tx_power != nullptr);
+  CHECK(tx_power->unit == TelemetryUnit::Milliwatt);
+}
+
+void test_elrs_management_and_finder()
+{
+  sim::VirtualElrsModule transport;
+  TelemetryRegistry telemetry;
+  CrsfParser parser(telemetry);
+  DiagnosticLog diagnostics;
+  ModuleSupervisor module(transport, parser, diagnostics);
+  ElrsDeviceManager management(transport, parser);
+  module.start(11, 0);
+  management.start(0);
+
+  ChannelFrame channels{};
+  TimeUs now_us = 0;
+  auto run_cycles = [&](uint32_t count) {
+    for (uint32_t cycle = 0; cycle < count; ++cycle) {
+      now_us += 4000;
+      transport.advance(now_us);
+      (void)module.send_channels(channels, now_us + 100);
+      module.poll(now_us + 200);
+      management.tick(now_us + 300);
+    }
+  };
+
+  run_cycles(500);
+  const auto& discovered = management.status();
+  CHECK(discovered.state == ElrsManagerState::Ready);
+  CHECK(std::string(discovered.device_name.data()) == "Virtual ELRS");
+  CHECK(discovered.firmware_version == 0x00040001);
+  CHECK(discovered.fields_discovered == 9);
+  CHECK(discovered.power.available);
+  CHECK(discovered.power.option_count == 7);
+  CHECK(std::string(discovered.power.options[3].data()) == "100mW");
+  CHECK(discovered.dynamic_power.available);
+  CHECK(discovered.switch_mode.available);
+  CHECK(discovered.telemetry_ratio.available);
+  CHECK(discovered.bind_available);
+  CHECK(discovered.wifi_update_available);
+  CHECK(parser.stats().management_drops == 0);
+  CHECK(transport.stats().parameter_reads_received >
+        discovered.field_count);
+
+  CHECK(management.request_power(4));
+  run_cycles(500);
+  CHECK(transport.power_option() == 4);
+  CHECK(management.status().state == ElrsManagerState::Ready);
+  CHECK(management.status().power.value == 4);
+
+  CHECK(management.request_dynamic_power(1));
+  run_cycles(500);
+  CHECK(transport.dynamic_power_option() == 1);
+  CHECK(management.request_switch_mode(1));
+  run_cycles(500);
+  CHECK(transport.switch_mode_option() == 1);
+  CHECK(management.request_telemetry_ratio(3));
+  run_cycles(500);
+  CHECK(transport.telemetry_ratio_option() == 3);
+
+  const uint32_t binds_before =
+      transport.stats().bind_commands_received;
+  CHECK(management.request_bind());
+  run_cycles(800);
+  CHECK(transport.stats().bind_commands_received == binds_before + 1);
+  CHECK(management.status().state == ElrsManagerState::Ready);
+
+  CHECK(management.request_wifi_update());
+  run_cycles(100);
+  CHECK(transport.stats().wifi_commands_received == 1);
+  CHECK(transport.wifi_update_mode());
+  CHECK(management.status().state == ElrsManagerState::WifiUpdate);
+
+  FakeToneOutput tones;
+  ElrsFinder finder(tones);
+  finder.set_active(true);
+  telemetry.update(crsf::SensorUplinkRssi, -100, TelemetryUnit::Dbm,
+                   now_us);
+  finder.tick(telemetry, now_us);
+  CHECK(finder.status().signal_fresh);
+  CHECK(finder.status().strength_percent == 25);
+  CHECK(tones.plays == 1);
+  CHECK(tones.last_duration == 30);
+
+  const uint16_t weak_period = finder.status().beep_period_ms;
+  for (int sample = 0; sample < 10; ++sample) {
+    now_us += 200000;
+    telemetry.update(crsf::SensorUplinkRssi, -60, TelemetryUnit::Dbm,
+                     now_us);
+    finder.tick(telemetry, now_us);
+  }
+  CHECK(finder.status().filtered_rssi_dbm > -70);
+  CHECK(finder.status().beep_period_ms < weak_period);
+  CHECK(tones.last_frequency > 600);
+  now_us += 1100000;
+  finder.tick(telemetry, now_us);
+  CHECK(!finder.status().signal_fresh);
+  CHECK(tones.stops > 0);
+
+  sim::LinkFaultPlan disconnected{};
+  disconnected.disconnect_start_us = 0;
+  disconnected.disconnect_end_us = 3000000;
+  sim::VirtualElrsModule recovering_transport(disconnected);
+  TelemetryRegistry recovering_telemetry;
+  CrsfParser recovering_parser(recovering_telemetry);
+  DiagnosticLog recovering_diagnostics;
+  ModuleSupervisor recovering_module(
+      recovering_transport, recovering_parser, recovering_diagnostics);
+  ElrsDeviceManager recovering_management(
+      recovering_transport, recovering_parser);
+  recovering_module.start(1, 0);
+  recovering_management.start(0);
+  TimeUs recovering_now = 0;
+  for (uint32_t cycle = 0; cycle < 600; ++cycle) {
+    recovering_now += 4000;
+    recovering_transport.advance(recovering_now);
+    recovering_module.poll(recovering_now + 100);
+    recovering_management.tick(recovering_now + 200);
+  }
+  CHECK(recovering_management.status().state ==
+        ElrsManagerState::Unavailable);
+  for (uint32_t cycle = 0; cycle < 800; ++cycle) {
+    recovering_now += 4000;
+    recovering_transport.advance(recovering_now);
+    recovering_module.poll(recovering_now + 100);
+    recovering_management.tick(recovering_now + 200);
+  }
+  CHECK(recovering_management.status().state == ElrsManagerState::Ready);
 }
 
 void test_storage()
@@ -452,6 +613,17 @@ void test_ui()
   CHECK(!make_flight_modes_screen(model).fields.empty());
   CHECK(!make_curves_screen(model).fields.empty());
   CHECK(!make_timers_screen(model, {}).fields.empty());
+  CHECK(!make_elrs_screen(ElrsManagerStatus{}, true).fields.empty());
+  CHECK(!make_elrs_finder_screen(ElrsFinderStatus{}).fields.empty());
+
+  UiScreen actions{"actions", "Actions", {}};
+  actions.fields.push_back(
+      {"go", "GO", "PRESS", UiFieldKind::Action,
+       0, 0, 1, false, true});
+  ui.set_screen(std::move(actions));
+  CHECK(ui.handle({UiEventType::Enter, 0, 0, 0}));
+  CHECK(ui.take_change(change));
+  CHECK(change.field_id == "go");
 
 }
 
@@ -610,6 +782,7 @@ int main()
   test_safety();
   test_crsf();
   test_virtual_elrs_module();
+  test_elrs_management_and_finder();
   test_storage();
   test_ui();
   test_services();

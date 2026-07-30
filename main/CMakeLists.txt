@@ -9,10 +9,12 @@ idf_component_register(
     esp_adc
     esp_driver_gpio
     esp_driver_i2c
+    esp_driver_ledc
     esp_driver_uart
     esp_https_ota
     esp_http_server
     esp_wifi
+    esp_timer
     fatfs
     nvs_flash
     wear_levelling

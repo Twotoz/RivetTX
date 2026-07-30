@@ -111,6 +111,47 @@ Frame make_device_ping()
   return frame;
 }
 
+Frame make_parameter_read_frame(uint8_t destination, uint8_t origin,
+                                uint8_t field_id, uint8_t chunk)
+{
+  Frame frame{};
+  frame.bytes[0] = kAddressModule;
+  frame.bytes[1] = 6;
+  frame.bytes[2] = kFrameParameterRead;
+  frame.bytes[3] = destination;
+  frame.bytes[4] = origin;
+  frame.bytes[5] = field_id;
+  frame.bytes[6] = chunk;
+  frame.bytes[7] =
+      crc8_dvb_s2(frame.bytes.data() + 2, 5);
+  frame.size = 8;
+  return frame;
+}
+
+Frame make_parameter_write_frame(uint8_t destination, uint8_t origin,
+                                 uint8_t field_id, const uint8_t* value,
+                                 std::size_t value_size)
+{
+  Frame frame{};
+  if ((value == nullptr && value_size != 0) ||
+      value_size > kMaximumFrameSize - 8) {
+    return frame;
+  }
+  frame.bytes[0] = kAddressModule;
+  frame.bytes[1] = static_cast<uint8_t>(value_size + 5);
+  frame.bytes[2] = kFrameParameterWrite;
+  frame.bytes[3] = destination;
+  frame.bytes[4] = origin;
+  frame.bytes[5] = field_id;
+  if (value_size != 0) {
+    std::copy(value, value + value_size, frame.bytes.begin() + 6);
+  }
+  frame.bytes[6 + value_size] =
+      crc8_dvb_s2(frame.bytes.data() + 2, value_size + 4);
+  frame.size = static_cast<uint8_t>(value_size + 7);
+  return frame;
+}
+
 }  // namespace crsf
 
 bool TelemetryRegistry::value(uint16_t sensor_id, int32_t& result) const
@@ -256,6 +297,27 @@ bool CrsfParser::feed(uint8_t byte, TimeUs now_us)
   } else {
     ++stats_.dropped_bytes;
   }
+  const bool management_frame =
+      buffer_[2] == crsf::kFrameDeviceInfo ||
+      buffer_[2] == crsf::kFrameParameterEntry ||
+      buffer_[2] == crsf::kFrameElrsStatus;
+  if (management_frame) {
+    const uint32_t management_write =
+        management_write_.load(std::memory_order_relaxed);
+    const uint32_t management_read =
+        management_read_.load(std::memory_order_acquire);
+    if (management_write - management_read < management_frames_.size()) {
+      crsf::Frame& received =
+          management_frames_[management_write % management_frames_.size()];
+      received.size = expected_size_;
+      std::copy(buffer_.begin(), buffer_.begin() + expected_size_,
+                received.bytes.begin());
+      management_write_.store(management_write + 1,
+                              std::memory_order_release);
+    } else {
+      ++stats_.management_drops;
+    }
+  }
   process_frame(now_us);
   reset();
   return true;
@@ -269,6 +331,11 @@ void CrsfParser::process_frame(TimeUs now_us)
   const uint8_t* payload = buffer_.data() + 3;
 
   if (type == crsf::kFrameLinkStatistics && payload_size >= 10) {
+    // CRSF LINK_STATISTICS carries an enum, not literal milliwatts. Keep this
+    // table aligned with the CRSF/EdgeTX mapping, including the later 50 mW
+    // value at index 8.
+    static constexpr std::array<int32_t, 9> power_mw{
+        0, 10, 25, 100, 500, 1000, 2000, 250, 50};
     telemetry_.update(crsf::SensorUplinkRssi1, -payload[0],
                       TelemetryUnit::Dbm, now_us);
     telemetry_.update(crsf::SensorUplinkRssi2, -payload[1],
@@ -280,14 +347,22 @@ void CrsfParser::process_frame(TimeUs now_us)
                       now_us);
     telemetry_.update(crsf::SensorRfMode, payload[5], TelemetryUnit::Raw,
                       now_us);
-    telemetry_.update(crsf::SensorTxPower, payload[6], TelemetryUnit::Raw,
-                      now_us);
+    const int32_t transmitted_power =
+        payload[6] < power_mw.size() ? power_mw[payload[6]] : 0;
+    telemetry_.update(crsf::SensorTxPower, transmitted_power,
+                      TelemetryUnit::Milliwatt, now_us);
     telemetry_.update(crsf::SensorDownlinkRssi, -payload[7],
                       TelemetryUnit::Dbm, now_us);
     telemetry_.update(crsf::SensorDownlinkLinkQuality, payload[8],
                       TelemetryUnit::Percent, now_us);
     telemetry_.update(crsf::SensorDownlinkSnr,
                       static_cast<int8_t>(payload[9]), TelemetryUnit::Db,
+                      now_us);
+    const uint8_t active_antenna = payload[4] == 0 ? 0 : 1;
+    telemetry_.update(crsf::SensorActiveAntenna, active_antenna,
+                      TelemetryUnit::Raw, now_us);
+    telemetry_.update(crsf::SensorUplinkRssi,
+                      -payload[active_antenna], TelemetryUnit::Dbm,
                       now_us);
   } else if (type == crsf::kFrameBattery && payload_size >= 8) {
     telemetry_.update(crsf::SensorBatteryVoltage,
@@ -346,6 +421,20 @@ bool CrsfParser::pop_frame(crsf::Frame& frame)
   }
   frame = received_frames_[read % received_frames_.size()];
   received_read_.store(read + 1, std::memory_order_release);
+  return true;
+}
+
+bool CrsfParser::pop_management_frame(crsf::Frame& frame)
+{
+  const uint32_t read =
+      management_read_.load(std::memory_order_relaxed);
+  const uint32_t write =
+      management_write_.load(std::memory_order_acquire);
+  if (read == write) {
+    return false;
+  }
+  frame = management_frames_[read % management_frames_.size()];
+  management_read_.store(read + 1, std::memory_order_release);
   return true;
 }
 

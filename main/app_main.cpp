@@ -2,6 +2,7 @@
 
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
+#include "rivettx/elrs.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <sys/stat.h>
@@ -29,12 +31,13 @@ using namespace rivettx::esp32;
 
 constexpr char kTag[] = "rivettx";
 constexpr uint32_t kControlPeriodUs = 4000;
-constexpr uint8_t kScreenCount = 13;
+constexpr uint8_t kScreenCount = 15;
 
 struct Application {
   EspBoard board;
   EspCrsfTransport transport;
   Ssd1306Display display;
+  EspToneOutput tones;
   EspWatchdog watchdog;
   EspOtaBackend ota;
   NvsCrashStore crash_store;
@@ -46,6 +49,8 @@ struct Application {
   TelemetryRegistry service_telemetry;
   CrsfParser parser{telemetry};
   ModuleSupervisor module{transport, parser, diagnostics};
+  ElrsDeviceManager elrs{transport, parser};
+  ElrsFinder finder{tones};
   InputProcessor input_processor;
   MixerEngine mixer;
   SafetyManager safety;
@@ -58,7 +63,7 @@ struct Application {
   TelemetryLogger telemetry_logger{telemetry_sink, 100};
   AlarmEngine alarms;
   MonoCanvas canvas{128, 64};
-  LuaVm lua{service_telemetry, parser, transport, canvas};
+  LuaVm lua{service_telemetry, parser, transport, canvas, &tones};
   ScriptSupervisor scripts{lua, service_diagnostics};
   UiController ui{display, canvas};
   BootManager boot{ota, boot_diagnostics};
@@ -67,8 +72,11 @@ struct Application {
   ChannelFrame latest_frame{};
   std::array<TimerState, kMaxTimers> latest_timers{};
   std::array<TelemetryEntry, kMaxTelemetrySensors> latest_telemetry{};
+  ElrsManagerStatus latest_elrs{};
+  ElrsFinderStatus latest_finder{};
   portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
   uint8_t latest_buttons = 0;
+  std::atomic<bool> finder_enabled{false};
   TimeUs safety_chord_started_us = 0;
   bool safety_chord_fired = false;
   SafetyState previous_safety_state = SafetyState::Booting;
@@ -135,6 +143,7 @@ void control_task(void*)
           {now_us(), LogSeverity::Warning, LogCode::ModuleLost, 0, 0});
     }
     app.module.poll(now_us());
+    app.elrs.tick(now_us());
 
     if (battery_state != app.previous_battery_state) {
       if (battery_state == BatteryState::Low) {
@@ -173,6 +182,7 @@ void control_task(void*)
     app.latest_frame = frame;
     app.latest_timers = app.mixer.timer_states();
     app.latest_telemetry = app.telemetry.entries();
+    app.latest_elrs = app.elrs.status();
     app.latest_buttons =
         static_cast<uint8_t>((raw.switches[0] ? 1U : 0U) |
                              (raw.switches[1] ? 2U : 0U) |
@@ -188,7 +198,9 @@ void control_task(void*)
 UiScreen current_screen(uint8_t index, const ChannelFrame& frame,
                         const std::array<TimerState, kMaxTimers>& timers,
                         const std::array<TelemetryEntry,
-                                         kMaxTelemetrySensors>& telemetry)
+                                         kMaxTelemetrySensors>& telemetry,
+                        const ElrsManagerStatus& elrs,
+                        const ElrsFinderStatus& finder)
 {
   switch (index) {
     case 0: {
@@ -242,6 +254,10 @@ UiScreen current_screen(uint8_t index, const ChannelFrame& frame,
       }
       return make_telemetry_screen(sensors);
     }
+    case 12:
+      return make_elrs_finder_screen(finder);
+    case 13:
+      return make_elrs_screen(elrs, app.safety.maintenance_allowed());
     default:
       return make_system_screen(
           app.battery.voltage_mv(), esp_get_free_heap_size(),
@@ -307,11 +323,15 @@ void ui_task(void*)
     ChannelFrame frame{};
     std::array<TimerState, kMaxTimers> timers{};
     std::array<TelemetryEntry, kMaxTelemetrySensors> telemetry{};
+    ElrsManagerStatus elrs{};
+    ElrsFinderStatus finder{};
     uint8_t buttons = 0;
     taskENTER_CRITICAL(&app.frame_lock);
     frame = app.latest_frame;
     timers = app.latest_timers;
     telemetry = app.latest_telemetry;
+    elrs = app.latest_elrs;
+    finder = app.latest_finder;
     buttons = app.latest_buttons;
     taskEXIT_CRITICAL(&app.frame_lock);
 
@@ -336,11 +356,34 @@ void ui_task(void*)
         }
       }
     }
+    app.finder_enabled.store(screen == 12, std::memory_order_release);
 
     UiChange change{};
     while (app.ui.take_change(change)) {
-      if (!app.backup_portal.running() &&
-          app.safety.maintenance_allowed() &&
+      const bool maintenance =
+          !app.backup_portal.running() &&
+          app.safety.maintenance_allowed();
+      bool elrs_change = false;
+      if (change.screen_id == "elrs" && maintenance) {
+        if (change.field_id == "power") {
+          elrs_change =
+              app.elrs.request_power(static_cast<uint8_t>(change.value));
+        } else if (change.field_id == "dynamic") {
+          elrs_change = app.elrs.request_dynamic_power(
+              static_cast<uint8_t>(change.value));
+        } else if (change.field_id == "switch_mode") {
+          elrs_change = app.elrs.request_switch_mode(
+              static_cast<uint8_t>(change.value));
+        } else if (change.field_id == "telemetry_ratio") {
+          elrs_change = app.elrs.request_telemetry_ratio(
+              static_cast<uint8_t>(change.value));
+        } else if (change.field_id == "bind") {
+          elrs_change = app.elrs.request_bind();
+        } else if (change.field_id == "wifi_update") {
+          elrs_change = app.elrs.request_wifi_update();
+        }
+      }
+      if (!elrs_change && maintenance &&
           ModelEditor::apply(app.edit_model, change)) {
         model_dirty = true;
         dirty_since_us = now_us();
@@ -359,7 +402,8 @@ void ui_task(void*)
       }
     }
 
-    app.ui.set_screen(current_screen(screen, frame, timers, telemetry));
+    app.ui.set_screen(
+        current_screen(screen, frame, timers, telemetry, elrs, finder));
     (void)app.ui.render();
     vTaskDelay(pdMS_TO_TICKS(100));
   }
@@ -393,6 +437,12 @@ void service_task(void*)
     if (app.lua.loaded()) {
       (void)app.scripts.tick(current);
     }
+    app.finder.set_active(
+        app.finder_enabled.load(std::memory_order_acquire));
+    app.finder.tick(app.service_telemetry, current);
+    taskENTER_CRITICAL(&app.frame_lock);
+    app.latest_finder = app.finder.status();
+    taskEXIT_CRITICAL(&app.frame_lock);
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -472,6 +522,7 @@ extern "C" void app_main()
       inputs_ok && app.boot.enter_recovery(
                        app.board.recovery_button_pressed(), boot_attempt);
   const bool display_ok = app.display.initialize();
+  (void)app.tones.initialize();
   if (calibration_requested && display_ok) {
     if (!run_startup_calibration()) {
       ESP_LOGW(kTag, "stick calibration cancelled or failed");
@@ -488,6 +539,7 @@ extern "C" void app_main()
     app.safety.request_lock();
   }
   app.module.start(app.model.model_id, now_us());
+  app.elrs.start(now_us());
 
   BaseType_t control_created =
       xTaskCreate(control_task, "rivet-control", 6144, nullptr, 20, nullptr);
@@ -522,5 +574,6 @@ extern "C" void app_main()
     }
   }
 
-  ESP_LOGI(kTag, "RivetTX started; press ENTER with throttle low to enable");
+  ESP_LOGI(kTag,
+           "RivetTX started; hold ENTER+BACK with throttle low to enable");
 }

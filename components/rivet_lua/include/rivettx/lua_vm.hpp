@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rivettx/crsf.hpp"
+#include "rivettx/elrs.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/ui.hpp"
 
@@ -17,6 +18,7 @@ class LuaVm final : public IScriptVm {
  public:
   LuaVm(TelemetryRegistry& telemetry, CrsfParser& parser,
         ICrsfTransport& transport, Canvas& canvas,
+        IToneOutput* tones = nullptr,
         uint32_t memory_limit_bytes = 96 * 1024);
   ~LuaVm() override;
 
@@ -40,6 +42,8 @@ class LuaVm final : public IScriptVm {
   static void instruction_hook(lua_State* state, lua_Debug* debug);
   static int api_get_time(lua_State* state);
   static int api_get_value(lua_State* state);
+  static int api_get_value_age(lua_State* state);
+  static int api_play_tone(lua_State* state);
   static int api_get_field_info(lua_State* state);
   static int api_get_version(lua_State* state);
   static int api_load_script(lua_State* state);
@@ -63,6 +67,7 @@ class LuaVm final : public IScriptVm {
   CrsfParser& parser_;
   ICrsfTransport& transport_;
   Canvas& canvas_;
+  IToneOutput* tones_ = nullptr;
   AllocatorState allocator_state_{};
   lua_State* state_ = nullptr;
   int run_reference_ = -2;

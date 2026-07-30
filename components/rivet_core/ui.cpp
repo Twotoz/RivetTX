@@ -286,6 +286,10 @@ void UiController::set_screen(UiScreen screen)
                           : std::min(previous_selection,
                                      screen_.fields.size() - 1);
     scroll_offset_ = std::min(previous_scroll, selected_index_);
+    if (screen_.fields.empty() ||
+        !screen_.fields[selected_index_].editable) {
+      editing_ = false;
+    }
     return;
   }
   screen_ = std::move(screen);
@@ -359,7 +363,10 @@ bool UiController::handle(const UiEvent& event)
       }
       break;
     case UiEventType::Enter:
-      if (field.editable) {
+      if (field.kind == UiFieldKind::Action) {
+        pending_change_ = {screen_.id, field.id, 1};
+        change_pending_ = true;
+      } else if (field.editable) {
         editing_ = !editing_;
       }
       break;
@@ -766,6 +773,148 @@ UiScreen make_timers_screen(
 UiScreen make_telemetry_screen(const std::vector<UiField>& sensors)
 {
   UiScreen screen{"telemetry", "Telemetry", sensors};
+  return screen;
+}
+
+UiScreen make_elrs_screen(const ElrsManagerStatus& status,
+                          bool maintenance_allowed)
+{
+  UiScreen screen{"elrs", "ExpressLRS", {}};
+  const auto state_text = [&]() -> std::string {
+    switch (status.state) {
+      case ElrsManagerState::Discovering:
+        return "DISCOVERING";
+      case ElrsManagerState::Ready:
+        return "READY";
+      case ElrsManagerState::Applying:
+        return "APPLYING";
+      case ElrsManagerState::CommandRunning:
+        return "RUNNING";
+      case ElrsManagerState::WifiUpdate:
+        return "WIFI UPDATE";
+      case ElrsManagerState::Unavailable:
+        return "OFFLINE";
+    }
+    return "UNKNOWN";
+  };
+  const auto selection_text = [](const ElrsSelection& selection) {
+    return selection.value < selection.option_count
+               ? std::string(selection.options[selection.value].data())
+               : std::string("?");
+  };
+  const bool ready = status.state == ElrsManagerState::Ready;
+  screen.fields.push_back(
+      {"state", "MODULE", state_text(), UiFieldKind::Label,
+       0, 0, 0, false, true});
+  if (status.device_name[0] != '\0') {
+    screen.fields.push_back(
+        {"device", "DEVICE", status.device_name.data(),
+         UiFieldKind::Label, 0, 0, 0, false, true});
+  }
+  if (status.firmware_version != 0) {
+    const uint8_t major =
+        static_cast<uint8_t>((status.firmware_version >> 16U) & 0xFFU);
+    const uint8_t minor =
+        static_cast<uint8_t>((status.firmware_version >> 8U) & 0xFFU);
+    const uint8_t patch =
+        static_cast<uint8_t>(status.firmware_version & 0xFFU);
+    screen.fields.push_back(
+        {"firmware", "FIRMWARE",
+         std::to_string(major) + "." + std::to_string(minor) + "." +
+             std::to_string(patch),
+         UiFieldKind::Label, 0, 0, 0, false, true});
+  }
+  if (status.power.available) {
+    screen.fields.push_back(
+        {"power", "MAX POWER", selection_text(status.power),
+         UiFieldKind::Choice, status.power.value, status.power.minimum,
+         status.power.maximum, ready, true});
+  }
+  if (status.dynamic_power.available) {
+    screen.fields.push_back(
+        {"dynamic", "DYNAMIC", selection_text(status.dynamic_power),
+         UiFieldKind::Choice, status.dynamic_power.value,
+         status.dynamic_power.minimum, status.dynamic_power.maximum,
+         ready, true});
+  }
+  if (status.switch_mode.available) {
+    screen.fields.push_back(
+        {"switch_mode", "SWITCH MODE",
+         selection_text(status.switch_mode), UiFieldKind::Choice,
+         status.switch_mode.value, status.switch_mode.minimum,
+         status.switch_mode.maximum, ready, true});
+  }
+  if (status.telemetry_ratio.available) {
+    screen.fields.push_back(
+        {"telemetry_ratio", "TELEM RATIO",
+         selection_text(status.telemetry_ratio), UiFieldKind::Choice,
+         status.telemetry_ratio.value, status.telemetry_ratio.minimum,
+         status.telemetry_ratio.maximum, ready, true});
+  }
+  if (!maintenance_allowed) {
+    screen.fields.push_back(
+        {"lock", "ACTIONS", "LOCK OUTPUTS", UiFieldKind::Label,
+         0, 0, 0, false, true});
+  } else {
+    if (status.bind_available) {
+      screen.fields.push_back(
+          {"bind", "BIND", "PRESS ENTER", UiFieldKind::Action,
+           0, 0, 1, false, ready});
+    }
+    if (status.wifi_update_available) {
+      screen.fields.push_back(
+          {"wifi_update", "UPDATE ELRS", "START WIFI",
+           UiFieldKind::Action, 0, 0, 1, false, ready});
+    }
+  }
+  if (status.message[0] != '\0') {
+    screen.fields.push_back(
+        {"message", "STATUS", status.message.data(), UiFieldKind::Label,
+         0, 0, 0, false, true});
+  }
+  if (status.state == ElrsManagerState::WifiUpdate) {
+    screen.fields.push_back(
+        {"wifi_ap", "WIFI", "ExpressLRS TX", UiFieldKind::Label,
+         0, 0, 0, false, true});
+    screen.fields.push_back(
+        {"wifi_password", "PASSWORD", "expresslrs",
+         UiFieldKind::Label, 0, 0, 0, false, true});
+    screen.fields.push_back(
+        {"wifi_url", "OPEN", "elrs_tx.local", UiFieldKind::Label,
+         0, 0, 0, false, true});
+    screen.fields.push_back(
+        {"wifi_file", "UPLOAD", "firmware.bin", UiFieldKind::Label,
+         0, 0, 0, false, true});
+  }
+  return screen;
+}
+
+UiScreen make_elrs_finder_screen(const ElrsFinderStatus& status)
+{
+  UiScreen screen{"elrs_finder", "ELRS Finder", {}};
+  screen.fields.push_back(
+      {"signal", "SIGNAL",
+       status.signal_fresh ? "LIVE" : "NO TELEMETRY",
+       UiFieldKind::Label, 0, 0, 0, false, true});
+  screen.fields.push_back(
+      {"rssi", "RSSI",
+       status.signal_fresh
+           ? std::to_string(status.filtered_rssi_dbm) + "dBm"
+           : "---",
+       UiFieldKind::Label, status.filtered_rssi_dbm, -140, 0, false,
+       true});
+  screen.fields.push_back(
+      {"strength", "STRENGTH",
+       std::to_string(status.strength_percent) + "%",
+       UiFieldKind::Progress, status.strength_percent, 0, 100, false,
+       true});
+  screen.fields.push_back(
+      {"audio", "GEIGER",
+       status.audio_available ? "ON" : "NO BUZZER",
+       UiFieldKind::Label, 0, 0, 0, false, true});
+  screen.fields.push_back(
+      {"hint", "SEARCH", "ROTATE SLOWLY", UiFieldKind::Label,
+       0, 0, 0, false, true});
   return screen;
 }
 
