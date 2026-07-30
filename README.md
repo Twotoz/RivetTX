@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Twotoz/RivetTX/actions/workflows/host-tests.yml"><img alt="Host tests" src="https://github.com/Twotoz/RivetTX/actions/workflows/host-tests.yml/badge.svg"></a>
+  <a href="https://github.com/Twotoz/RivetTX/actions/workflows/host-tests.yml"><img alt="Continuous integration" src="https://github.com/Twotoz/RivetTX/actions/workflows/host-tests.yml/badge.svg"></a>
   <a href="https://github.com/Twotoz/RivetTX/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/Twotoz/RivetTX?style=flat-square"></a>
   <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=cplusplus">
   <img alt="ESP32-C3" src="https://img.shields.io/badge/target-ESP32--C3-E7352C?style=flat-square&logo=espressif">
@@ -45,7 +45,7 @@ CRSF-facing Lua surface are implemented specifically for ESP32-C3.
 | **ExpressLRS native** | CRSF channels, telemetry, model ID, bind, failsafe, module recovery, and pass-through services. |
 | **Safe persistence** | Versioned model schema, CRC validation, copy-on-write saves, read-back verification, and recovery. |
 | **Adaptable interface** | Capability-driven layouts for compact, medium, and large displays without screen-specific model logic. |
-| **Contained scripting** | Lua 5.4 with safe libraries, a memory ceiling, instruction/time budgets, and bounded CRSF/LCD APIs. |
+| **Contained scripting** | Lua 5.5 with safe libraries, a memory ceiling, instruction/time budgets, and bounded CRSF/LCD APIs. |
 | **Recoverable platform** | Diagnostic ring, crash snapshot, watchdog, A/B OTA interfaces, rollback, and maintenance backup portal. |
 
 ## Architecture
@@ -90,7 +90,7 @@ failsafe frame before it reaches CRSF.
 - CRC-checked CRSF telemetry for link, battery, and GPS data
 - responsive model, input, mix, output, timer, telemetry, and system screens
 - calibration workflow, telemetry alarms, CSV logs, and crash diagnostics
-- native simulator and 106 host-side checks
+- native simulator, 106 host-side checks, and a complete ESP32-C3 target build
 
 For exact limits and validation status, see the
 [feature matrix](docs/feature-matrix.md).
@@ -113,7 +113,7 @@ The simulator writes a monochrome preview to `build/sim-screen.pbm`.
 
 ### ESP32-C3 firmware
 
-Install and activate ESP-IDF 5.5 or newer:
+Install and activate ESP-IDF 5.5.2:
 
 ```bash
 idf.py set-target esp32c3
@@ -171,9 +171,10 @@ Model edits are staged, saved while locked, and activated on the next boot.
 ## Project status
 
 RivetTX currently provides an implemented firmware foundation, native
-simulator, and safety-oriented tests. The ESP32-C3 platform layer and Lua
-integration still require a complete ESP-IDF target build and validation on a
-specific PCB and ExpressLRS module.
+simulator, safety-oriented tests, and a reproducible ESP32-C3 build with
+ESP-IDF 5.5.2. The platform layer, Lua runtime, bootloader, and A/B image now
+compile and link in CI. Validation on a specific PCB, display, power system,
+and ExpressLRS module is still required.
 
 The name **RivetTX** is a working project name, not a trademark clearance.
 

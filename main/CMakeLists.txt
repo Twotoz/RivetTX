@@ -16,4 +16,7 @@ idf_component_register(
     fatfs
     nvs_flash
     wear_levelling
+  PRIV_REQUIRES
+    app_update
+    mbedtls
 )
