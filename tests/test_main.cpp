@@ -860,6 +860,16 @@ void test_module_update_backup_and_calibration()
   CHECK(updates.install(valid, true, 4000));
   CHECK(ota.updated_url == valid.url);
 
+  FakeOta s3_ota;
+  UpdateManager s3_updates(s3_ota, diagnostics, "esp32s3");
+  FirmwareManifest wrong_target{"rivettx", "esp32c3", "1.0",
+                                "https://example.invalid/c3.bin", 2, true};
+  CHECK(!s3_updates.install(wrong_target, true, 4500));
+  FirmwareManifest s3_valid{"rivettx", "esp32s3", "1.0",
+                            "https://example.invalid/s3.bin", 2, true};
+  CHECK(s3_updates.install(s3_valid, true, 5000));
+  CHECK(s3_ota.updated_url == s3_valid.url);
+
   MemoryBackup endpoint;
   BackupService backups(endpoint);
   const std::vector<uint8_t> data{1, 2, 3};

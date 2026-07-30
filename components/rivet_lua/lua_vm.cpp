@@ -7,6 +7,7 @@
 #include <string>
 
 #include "esp_timer.h"
+#include "sdkconfig.h"
 
 extern "C" {
 #include "lauxlib.h"
@@ -466,7 +467,7 @@ int LuaVm::api_get_version(lua_State* state)
   lua_pushinteger(state, 0);
   lua_pushinteger(state, 1);
   lua_pushinteger(state, 0);
-  lua_pushstring(state, "esp32c3");
+  lua_pushstring(state, CONFIG_IDF_TARGET);
   return 5;
 }
 

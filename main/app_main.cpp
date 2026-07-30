@@ -35,6 +35,13 @@ constexpr char kTag[] = "rivettx";
 constexpr uint32_t kControlPeriodUs = 4000;
 constexpr uint8_t kScreenCount = 15;
 
+#if CONFIG_FREERTOS_UNICORE
+constexpr BaseType_t kControlCore = 0;
+#else
+constexpr BaseType_t kControlCore = 1;
+#endif
+constexpr BaseType_t kServiceCore = 0;
+
 BatteryConfig battery_config()
 {
   BatteryConfig config{};
@@ -549,6 +556,9 @@ bool initialize_storage()
 
 extern "C" void app_main()
 {
+  ESP_LOGI(kTag, "booting RivetTX target=%s cores=%d", CONFIG_IDF_TARGET,
+           CONFIG_FREERTOS_NUMBER_OF_CORES);
+
   esp_err_t nvs_result = nvs_flash_init();
   if (nvs_result == ESP_ERR_NVS_NO_FREE_PAGES ||
       nvs_result == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -561,7 +571,8 @@ extern "C" void app_main()
   const uint32_t boot_attempt = app.boot_state.begin_attempt();
 
   const bool storage_ok = initialize_storage();
-  const bool inputs_ok = app.board.initialize();
+  const bool pins_ok = validate_pin_configuration();
+  const bool inputs_ok = pins_ok && app.board.initialize();
   const RawInputs startup_inputs =
       inputs_ok ? app.board.sample_inputs(now_us()) : RawInputs{};
   const bool calibration_requested =
@@ -569,15 +580,17 @@ extern "C" void app_main()
   const bool recovery_requested =
       inputs_ok && app.boot.enter_recovery(
                        app.board.recovery_button_pressed(), boot_attempt);
-  const bool display_ok = app.display.initialize();
-  (void)app.tones.initialize();
+  const bool display_ok = pins_ok && app.display.initialize();
+  if (pins_ok) {
+    (void)app.tones.initialize();
+  }
   app.audio.notify(AudioAlert::Startup);
   if (calibration_requested && display_ok) {
     if (!run_startup_calibration()) {
       ESP_LOGW(kTag, "stick calibration cancelled or failed");
     }
   }
-  const bool crsf_ok = app.transport.initialize();
+  const bool crsf_ok = pins_ok && app.transport.initialize();
 
   const esp_reset_reason_t reset_reason = esp_reset_reason();
   const bool watchdog_recovery =
@@ -587,15 +600,23 @@ extern "C" void app_main()
   if (recovery_requested) {
     app.safety.request_lock();
   }
-  app.module.start(app.model.model_id, now_us());
-  app.elrs.start(now_us());
+  if (crsf_ok) {
+    app.module.start(app.model.model_id, now_us());
+    app.elrs.start(now_us());
+  }
 
-  BaseType_t control_created =
-      xTaskCreate(control_task, "rivet-control", 6144, nullptr, 20, nullptr);
-  BaseType_t ui_created =
-      xTaskCreate(ui_task, "rivet-ui", 6144, nullptr, 5, nullptr);
-  BaseType_t service_created =
-      xTaskCreate(service_task, "rivet-service", 5120, nullptr, 3, nullptr);
+  const BaseType_t control_created =
+      inputs_ok && crsf_ok
+          ? xTaskCreatePinnedToCore(control_task, "rivet-control", 6144,
+                                    nullptr, 20, nullptr, kControlCore)
+          : pdFAIL;
+  const BaseType_t ui_created =
+      display_ok
+          ? xTaskCreatePinnedToCore(ui_task, "rivet-ui", 6144, nullptr, 5,
+                                    nullptr, kServiceCore)
+          : pdFAIL;
+  const BaseType_t service_created = xTaskCreatePinnedToCore(
+      service_task, "rivet-service", 5120, nullptr, 3, nullptr, kServiceCore);
 
   SelfTestResult self_test{};
   self_test.storage = storage_ok;

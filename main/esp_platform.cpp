@@ -25,6 +25,10 @@
 #include "sdkconfig.h"
 #include "wear_levelling.h"
 
+#if !CONFIG_IDF_TARGET_ESP32C3 && !CONFIG_IDF_TARGET_ESP32S3
+#error "RivetTX supports only ESP32-C3 and ESP32-S3"
+#endif
+
 namespace rivettx::esp32 {
 
 namespace {
@@ -32,15 +36,18 @@ namespace {
 constexpr char kTag[] = "rivettx-platform";
 wl_handle_t filesystem_wl = WL_INVALID_HANDLE;
 
-void configure_button(int gpio_number)
+bool configure_button(int gpio_number)
 {
+  if (!GPIO_IS_VALID_GPIO(gpio_number)) {
+    return false;
+  }
   gpio_config_t config{};
   config.pin_bit_mask = 1ULL << gpio_number;
   config.mode = GPIO_MODE_INPUT;
   config.pull_up_en = GPIO_PULLUP_ENABLE;
   config.pull_down_en = GPIO_PULLDOWN_DISABLE;
   config.intr_type = GPIO_INTR_DISABLE;
-  (void)gpio_config(&config);
+  return gpio_config(&config) == ESP_OK;
 }
 
 }  // namespace
@@ -48,6 +55,47 @@ void configure_button(int gpio_number)
 TimeUs now_us()
 {
   return static_cast<TimeUs>(esp_timer_get_time());
+}
+
+bool validate_pin_configuration()
+{
+  const std::array<int, 14> pins{
+      CONFIG_RIVETTX_AXIS0_GPIO,      CONFIG_RIVETTX_AXIS1_GPIO,
+      CONFIG_RIVETTX_AXIS2_GPIO,      CONFIG_RIVETTX_AXIS3_GPIO,
+      CONFIG_RIVETTX_I2C_SDA,         CONFIG_RIVETTX_I2C_SCL,
+      CONFIG_RIVETTX_CRSF_TX,         CONFIG_RIVETTX_CRSF_RX,
+      CONFIG_RIVETTX_BUTTON_UP,       CONFIG_RIVETTX_BUTTON_DOWN,
+      CONFIG_RIVETTX_BUTTON_ENTER,    CONFIG_RIVETTX_BUTTON_BACK,
+      CONFIG_RIVETTX_BATTERY_GPIO,    CONFIG_RIVETTX_BUZZER_GPIO};
+  for (std::size_t index = 0; index < pins.size(); ++index) {
+    const int pin = pins[index];
+    if (pin < 0) {
+      continue;
+    }
+    if (!GPIO_IS_VALID_GPIO(pin)) {
+      ESP_LOGE(kTag, "GPIO %d is invalid for target %s", pin,
+               CONFIG_IDF_TARGET);
+      return false;
+    }
+    for (std::size_t other = index + 1; other < pins.size(); ++other) {
+      if (pins[other] == pin) {
+        ESP_LOGE(kTag, "GPIO %d is assigned more than once", pin);
+        return false;
+      }
+    }
+  }
+
+  const std::array<int, 4> output_pins{
+      CONFIG_RIVETTX_I2C_SDA, CONFIG_RIVETTX_I2C_SCL,
+      CONFIG_RIVETTX_CRSF_TX, CONFIG_RIVETTX_BUZZER_GPIO};
+  for (const int pin : output_pins) {
+    if (pin >= 0 && !GPIO_IS_VALID_OUTPUT_GPIO(pin)) {
+      ESP_LOGE(kTag, "GPIO %d cannot drive an output on target %s", pin,
+               CONFIG_IDF_TARGET);
+      return false;
+    }
+  }
+  return true;
 }
 
 bool EspBoard::configure_adc_gpio(int gpio, AdcInput& input)
@@ -112,11 +160,10 @@ bool EspBoard::initialize()
     ESP_LOGW(kTag, "ADC eFuse calibration unavailable");
   }
 
-  configure_button(CONFIG_RIVETTX_BUTTON_UP);
-  configure_button(CONFIG_RIVETTX_BUTTON_DOWN);
-  configure_button(CONFIG_RIVETTX_BUTTON_ENTER);
-  configure_button(CONFIG_RIVETTX_BUTTON_BACK);
-  return true;
+  return configure_button(CONFIG_RIVETTX_BUTTON_UP) &&
+         configure_button(CONFIG_RIVETTX_BUTTON_DOWN) &&
+         configure_button(CONFIG_RIVETTX_BUTTON_ENTER) &&
+         configure_button(CONFIG_RIVETTX_BUTTON_BACK);
 }
 
 RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)

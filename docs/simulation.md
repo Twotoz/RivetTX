@@ -64,6 +64,6 @@ flash endurance, or the peak-current demands of an ExpressLRS module. It also
 does not replace receiver-side failsafe testing.
 
 Before flight, repeat the disconnect and stale-control tests with an actual
-ESP32-C3, ExpressLRS TX module and receiver while props and mechanisms are
+ESP32-C3 or ESP32-S3, ExpressLRS TX module and receiver while props and mechanisms are
 made safe. The [hardware guide](hardware.md) lists the remaining bring-up
 steps.

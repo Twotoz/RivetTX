@@ -6,17 +6,17 @@ An ExpressLRS **receiver is not sufficient**. RivetTX generates channel data
 and sends it over CRSF to an ExpressLRS **transmitter module**. The minimum
 useful radio therefore contains:
 
-- ESP32-C3 with at least 4 MiB flash
+- ESP32-C3 or ESP32-S3 with at least 4 MiB flash
 - ExpressLRS TX module with a full-duplex 3.3 V CRSF UART
 - two two-axis gimbals or four other analog controls
 - SSD1306-compatible 128x64 I2C OLED
 - UP, DOWN, ENTER, and BACK buttons
-- regulator sized for the ESP32-C3 and the peak current of the chosen TX module
+- regulator sized for the chosen ESP32 and the peak current of the TX module
 - common ground, local bulk capacitance at the module, and a power switch
 - passive piezo buzzer when audible Finder feedback is wanted
 
 Battery sensing needs a protected resistor divider whose maximum ADC pin
-voltage stays inside the ESP32-C3 limit. USB is strongly recommended for
+voltage stays inside the selected ESP32's ADC limit. USB is strongly recommended for
 initial flashing and recovery. An audible alarm, haptic motor, module power
 switch, current sensor, SD card, charger, and controlled power latch are useful
 later but are not required by the first profile.
@@ -24,27 +24,50 @@ later but are not required by the first profile.
 Never power a high-power external module from a development board's 3.3 V pin.
 Use the module manufacturer's voltage and current limits.
 
+## Target choice
+
+Both targets run the same mixer, safety, CRSF, ELRS, UI, Lua, storage, OTA, and
+audio code. Choose the C3 for a compact, inexpensive single-core board. Choose
+the S3 when the extra GPIO, RAM, native USB options, or dual-core isolation are
+useful. On a dual-core S3 build RivetTX pins the 250 Hz control task to core 1
+and UI/service tasks to core 0. The C3 runs all three on its single core with
+their existing priorities.
+
+Changing target regenerates the ESP-IDF configuration:
+
+```bash
+idf.py set-target esp32c3
+# or
+idf.py set-target esp32s3
+```
+
+Do not flash a C3 artifact to an S3 or vice versa. OTA manifests also reject a
+target mismatch.
+
 ## Default development wiring
 
 The defaults are examples, not a PCB design:
 
-| Function | Default GPIO |
-|---|---:|
-| gimbal axes 0-3 | 0, 1, 2, 3 |
-| OLED SDA / SCL | 4 / 5 |
-| CRSF TX / RX | 6 / 7 |
-| UP / DOWN | 8 / 9 |
-| ENTER / BACK | 10 / 20 |
-| battery ADC | disabled |
-| passive piezo buzzer | disabled |
+| Function | ESP32-C3 | ESP32-S3 |
+|---|---:|---:|
+| gimbal axes 0-3 | 0, 1, 2, 3 | 1, 2, 3, 4 |
+| OLED SDA / SCL | 4 / 5 | 8 / 9 |
+| CRSF TX / RX | 6 / 7 | 17 / 18 |
+| UP / DOWN | 8 / 9 | 10 / 11 |
+| ENTER / BACK | 10 / 20 | 12 / 14 |
+| battery ADC | disabled | disabled |
+| passive piezo buzzer | disabled | disabled |
 
 Battery low/critical voltage and ELRS weak/critical LQ thresholds are also
 configured in this menu. The default battery values assume a one-cell
 development supply and must be changed for other pack configurations.
 
-Some GPIOs are boot-strapping pins on common ESP32-C3 boards. Confirm the
-module datasheet and board schematic, then change every assignment with
-`idf.py menuconfig`.
+RivetTX rejects invalid and duplicate GPIO assignments during startup. That
+cannot identify every board-level conflict: boot-strapping pins, USB pins, and
+pins wired to flash or PSRAM depend on the exact module. In particular,
+GPIO33-37 can be unavailable on ESP32-S3 modules that use octal flash or
+octal PSRAM. Confirm the module datasheet and board schematic, then change
+every assignment with `idf.py menuconfig`.
 
 ## Controls
 

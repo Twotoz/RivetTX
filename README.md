@@ -1,18 +1,18 @@
 <p align="center">
-  <img src="docs/assets/rivettx-hero.svg" alt="RivetTX — compact ESP32-C3 transmitter firmware" width="100%">
+  <img src="docs/assets/rivettx-hero.svg" alt="RivetTX — compact ESP32-C3 and ESP32-S3 transmitter firmware" width="100%">
 </p>
 
 <p align="center">
   <a href="https://github.com/Twotoz/RivetTX/actions/workflows/host-tests.yml"><img alt="Continuous integration" src="https://github.com/Twotoz/RivetTX/actions/workflows/host-tests.yml/badge.svg"></a>
   <a href="https://github.com/Twotoz/RivetTX/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/Twotoz/RivetTX?style=flat-square"></a>
   <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=cplusplus">
-  <img alt="ESP32-C3" src="https://img.shields.io/badge/target-ESP32--C3-E7352C?style=flat-square&logo=espressif">
+  <img alt="ESP32-C3 and S3" src="https://img.shields.io/badge/targets-ESP32--C3%20%7C%20S3-E7352C?style=flat-square&logo=espressif">
   <img alt="CRSF" src="https://img.shields.io/badge/radio-CRSF%20%2F%20ExpressLRS-8B5CF6?style=flat-square">
   <img alt="Engineering preview" src="https://img.shields.io/badge/status-engineering%20preview-F59E0B?style=flat-square">
 </p>
 
 <p align="center">
-  <strong>A compact, safety-oriented RC transmitter firmware for ESP32-C3 and ExpressLRS.</strong>
+  <strong>A compact, safety-oriented RC transmitter firmware for ESP32-C3, ESP32-S3, and ExpressLRS.</strong>
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@ design space: one modern MCU family, one native radio link, strict subsystem
 boundaries, and a codebase small enough to audit.
 
 RivetTX is **not a fork of EdgeTX**. Its familiar model concepts and
-CRSF-facing Lua surface are implemented specifically for ESP32-C3.
+CRSF-facing Lua surface share one implementation across ESP32-C3 and ESP32-S3.
 
 | | |
 |---|---|
@@ -97,8 +97,8 @@ failsafe frame before it reaches CRSF.
   TX-battery low/critical, ELRS module loss, safety state, and telemetry alarms
 - responsive model, input, mix, output, timer, telemetry, and system screens
 - calibration workflow, telemetry alarms, CSV logs, and crash diagnostics
-- virtual ELRS hardware scenarios, 199 host-side checks, sanitizer coverage,
-  and a complete ESP32-C3 target build
+- virtual ELRS hardware scenarios, 202 host-side checks, sanitizer coverage,
+  and complete ESP32-C3 and ESP32-S3 target builds
 
 For exact limits and validation status, see the
 [feature matrix](docs/feature-matrix.md).
@@ -138,20 +138,21 @@ make sanitize
 See the [simulation guide](docs/simulation.md) for the exact boundary between
 software evidence and tests that still require real hardware.
 
-### ESP32-C3 firmware
+### ESP32-C3 / ESP32-S3 firmware
 
 Install and activate ESP-IDF 5.5.2:
 
 ```bash
-idf.py set-target esp32c3
+idf.py set-target esp32c3  # or: idf.py set-target esp32s3
 idf.py menuconfig
 idf.py build
 idf.py flash monitor
 ```
 
-Every successful CI run also provides a `rivettx-esp32c3-<commit>` artifact
-with a one-file factory image, separate OTA/application image, exact flash
-arguments, source commit, and SHA-256 checksums. See the
+Every successful CI run provides separate `rivettx-esp32c3-<commit>` and
+`rivettx-esp32s3-<commit>` artifacts with a one-file factory image, separate
+OTA/application image, exact target, flash arguments, source commit, and
+SHA-256 checksums. See the
 [firmware bundle guide](docs/firmware-bundle.md) before flashing it.
 
 Configure the real pinout under:
@@ -166,11 +167,11 @@ recovery procedures have been proven on disposable hardware.
 
 ## Hardware
 
-The first reference profile is intentionally focused:
+The reference profiles are intentionally focused:
 
 | Component | Role |
 |---|---|
-| ESP32-C3, 4 MiB flash | control, UI, storage, and platform services |
+| ESP32-C3 or ESP32-S3, 4 MiB flash | control, UI, storage, and platform services |
 | ExpressLRS **TX module** | RF link over full-duplex 3.3 V CRSF UART |
 | four analog axes | two conventional two-axis gimbals |
 | SSD1306 128×64 OLED | first physical display backend |
@@ -207,10 +208,10 @@ Model edits are staged, saved while locked, and activated on the next boot.
 ## Project status
 
 RivetTX currently provides an implemented firmware foundation, native
-simulator, safety-oriented tests, and a reproducible ESP32-C3 build with
-ESP-IDF 5.5.2. The platform layer, Lua runtime, bootloader, and A/B image now
-compile and link in CI. Validation on a specific PCB, display, power system,
-and ExpressLRS module is still required.
+simulator, safety-oriented tests, and reproducible ESP32-C3 and ESP32-S3
+builds with ESP-IDF 5.5.2. The platform layer, Lua runtime, bootloader, and A/B
+images compile and link in CI. Validation on a specific PCB, display, power
+system, and ExpressLRS module is still required.
 
 The name **RivetTX** is a working project name, not a trademark clearance.
 
