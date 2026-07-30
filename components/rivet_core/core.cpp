@@ -29,7 +29,7 @@ Model make_default_model()
   constexpr char name[] = "Default";
   std::copy(name, name + sizeof(name), model.name.begin());
   model.input_count = 4;
-  model.mix_count = 4;
+  model.mix_count = 8;
   model.flight_mode_count = 1;
   model.flight_modes[0].enabled = true;
   model.flight_modes[0].condition.index = -1;
@@ -44,7 +44,19 @@ Model make_default_model()
     model.mixes[axis].source = {SourceKind::Input, axis, 0};
     model.mixes[axis].weight_percent = 100;
   }
+  for (uint8_t aux = 0; aux < kAuxSwitchCount; ++aux) {
+    const auto mix = static_cast<uint8_t>(4 + aux);
+    model.mixes[mix].enabled = true;
+    model.mixes[mix].destination = mix;
+    model.mixes[mix].source = {
+        SourceKind::Switch,
+        static_cast<uint8_t>(kFirstAuxSwitch + aux), 0};
+    model.mixes[mix].weight_percent = 100;
+  }
+  model.required_switch_mask =
+      static_cast<uint8_t>(1U << kFirstAuxSwitch);
   model.outputs[model.throttle_channel].failsafe = -1024;
+  model.outputs[4].failsafe = -1024;
   return model;
 }
 
@@ -238,6 +250,11 @@ int16_t MixerEngine::source_value(
         return clamp<int16_t>(-kResolution, value, kResolution);
       }
       return 0;
+    case SourceKind::Switch:
+      return source.index < controls.switches.size() &&
+                     controls.switches[source.index]
+                 ? kResolution
+                 : -kResolution;
   }
   return 0;
 }
@@ -686,6 +703,10 @@ ChannelFrame SafetyManager::safe_frame(const Model& model, TimeUs now_us,
   for (std::size_t i = 0; i < result.channels.size(); ++i) {
     result.channels[i] = model.outputs[i].failsafe;
   }
+  // A safety lockout must never preserve throttle or ExpressLRS AUX1/CH5 in
+  // an armed state, even if a captured/custom failsafe value says otherwise.
+  result.channels[model.throttle_channel] = -kResolution;
+  result.channels[4] = -kResolution;
   result.generated_at_us = now_us;
   result.sequence = sequence;
   result.safe = true;
@@ -730,7 +751,8 @@ ChannelFrame SafetyManager::gate(const Model& model,
     status_.reason = SafetyReason::BatteryCritical;
     return safe_frame(model, now_us, proposed.sequence);
   }
-  if (!startup_switches_match(model, inputs)) {
+  if (status_.state != SafetyState::Enabled &&
+      !startup_switches_match(model, inputs)) {
     status_.state = SafetyState::Locked;
     status_.reason = SafetyReason::SwitchMismatch;
     healthy_cycles_ = 0;

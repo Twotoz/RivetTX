@@ -50,6 +50,17 @@ bool configure_button(int gpio_number)
   return gpio_config(&config) == ESP_OK;
 }
 
+bool configure_optional_switch(int gpio_number)
+{
+  return gpio_number < 0 || configure_button(gpio_number);
+}
+
+bool active_low_input(int gpio_number)
+{
+  return gpio_number >= 0 &&
+         gpio_get_level(static_cast<gpio_num_t>(gpio_number)) == 0;
+}
+
 }  // namespace
 
 TimeUs now_us()
@@ -59,13 +70,15 @@ TimeUs now_us()
 
 bool validate_pin_configuration()
 {
-  const std::array<int, 14> pins{
+  const std::array<int, 18> pins{
       CONFIG_RIVETTX_AXIS0_GPIO,      CONFIG_RIVETTX_AXIS1_GPIO,
       CONFIG_RIVETTX_AXIS2_GPIO,      CONFIG_RIVETTX_AXIS3_GPIO,
       CONFIG_RIVETTX_I2C_SDA,         CONFIG_RIVETTX_I2C_SCL,
       CONFIG_RIVETTX_CRSF_TX,         CONFIG_RIVETTX_CRSF_RX,
       CONFIG_RIVETTX_BUTTON_UP,       CONFIG_RIVETTX_BUTTON_DOWN,
       CONFIG_RIVETTX_BUTTON_ENTER,    CONFIG_RIVETTX_BUTTON_BACK,
+      CONFIG_RIVETTX_AUX1_GPIO,       CONFIG_RIVETTX_AUX2_GPIO,
+      CONFIG_RIVETTX_AUX3_GPIO,       CONFIG_RIVETTX_AUX4_GPIO,
       CONFIG_RIVETTX_BATTERY_GPIO,    CONFIG_RIVETTX_BUZZER_GPIO};
   for (std::size_t index = 0; index < pins.size(); ++index) {
     const int pin = pins[index];
@@ -163,7 +176,11 @@ bool EspBoard::initialize()
   return configure_button(CONFIG_RIVETTX_BUTTON_UP) &&
          configure_button(CONFIG_RIVETTX_BUTTON_DOWN) &&
          configure_button(CONFIG_RIVETTX_BUTTON_ENTER) &&
-         configure_button(CONFIG_RIVETTX_BUTTON_BACK);
+         configure_button(CONFIG_RIVETTX_BUTTON_BACK) &&
+         configure_optional_switch(CONFIG_RIVETTX_AUX1_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_AUX2_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_AUX3_GPIO) &&
+         configure_optional_switch(CONFIG_RIVETTX_AUX4_GPIO);
 }
 
 RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
@@ -179,18 +196,14 @@ RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
     }
     inputs.axes[i] = static_cast<int16_t>(value);
   }
-  inputs.switches[0] = gpio_get_level(
-                           static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_UP)) ==
-                       0;
-  inputs.switches[1] =
-      gpio_get_level(
-          static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_DOWN)) == 0;
-  inputs.switches[2] =
-      gpio_get_level(
-          static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_ENTER)) == 0;
-  inputs.switches[3] =
-      gpio_get_level(
-          static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_BACK)) == 0;
+  inputs.switches[0] = active_low_input(CONFIG_RIVETTX_BUTTON_UP);
+  inputs.switches[1] = active_low_input(CONFIG_RIVETTX_BUTTON_DOWN);
+  inputs.switches[2] = active_low_input(CONFIG_RIVETTX_BUTTON_ENTER);
+  inputs.switches[3] = active_low_input(CONFIG_RIVETTX_BUTTON_BACK);
+  inputs.switches[4] = active_low_input(CONFIG_RIVETTX_AUX1_GPIO);
+  inputs.switches[5] = active_low_input(CONFIG_RIVETTX_AUX2_GPIO);
+  inputs.switches[6] = active_low_input(CONFIG_RIVETTX_AUX3_GPIO);
+  inputs.switches[7] = active_low_input(CONFIG_RIVETTX_AUX4_GPIO);
   return inputs;
 }
 

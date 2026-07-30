@@ -235,6 +235,12 @@ void test_inputs_and_mixer()
   CHECK(frame.channels[0] <= -1000);
   CHECK(frame.channels[1] == 0);
   CHECK(frame.channels[2] >= 1000);
+  CHECK(frame.channels[4] == -kResolution);
+
+  raw.switches[kFirstAuxSwitch] = true;
+  const auto switched = processor.process(raw);
+  const auto armed = mixer.evaluate(model, switched, telemetry, 5000);
+  CHECK(armed.channels[4] == kResolution);
 }
 
 void test_mixer_features()
@@ -362,6 +368,35 @@ void test_safety()
   CHECK(!reenabled.frame.safe);
   CHECK(reenabled.safety.state == SafetyState::Enabled);
 
+  raw.switches[kFirstAuxSwitch] = true;
+  raw.sampled_at_us = 25000;
+  auto arm_high = loop.run(model, raw, 3800, 25000, 25100);
+  CHECK(!arm_high.frame.safe);
+  CHECK(arm_high.frame.channels[4] == kResolution);
+  CHECK(arm_high.safety.state == SafetyState::Enabled);
+
+  model.outputs[4].failsafe = kResolution;
+  model.outputs[model.throttle_channel].failsafe = kResolution;
+  safety.request_lock();
+  safety.request_enable();
+  raw.sampled_at_us = 29000;
+  auto unsafe_reenable = loop.run(model, raw, 3800, 29000, 29100);
+  CHECK(unsafe_reenable.frame.safe);
+  CHECK(unsafe_reenable.frame.channels[4] == -kResolution);
+  CHECK(unsafe_reenable.frame.channels[model.throttle_channel] ==
+        -kResolution);
+  CHECK(unsafe_reenable.safety.reason == SafetyReason::SwitchMismatch);
+
+  raw.switches[kFirstAuxSwitch] = false;
+  safety.request_enable();
+  raw.sampled_at_us = 33000;
+  auto reenable_pending = loop.run(model, raw, 3800, 33000, 33100);
+  CHECK(reenable_pending.frame.safe);
+  raw.sampled_at_us = 37000;
+  auto safe_reenable = loop.run(model, raw, 3800, 37000, 37100);
+  CHECK(!safe_reenable.frame.safe);
+  CHECK(safe_reenable.safety.state == SafetyState::Enabled);
+
   raw.sampled_at_us = 0;
   auto stale = loop.run(model, raw, 3800, 100000, 100100);
   CHECK(stale.frame.safe);
@@ -369,7 +404,7 @@ void test_safety()
 
   safety.report_battery(3000);
   CHECK(safety.status().state == SafetyState::Fault);
-  CHECK(watchdog.count == 7);
+  CHECK(watchdog.count == 11);
 }
 
 void test_crsf()
@@ -384,6 +419,24 @@ void test_crsf()
   CHECK(frame.bytes[2] == crsf::kFrameRcChannelsPacked);
   CHECK(frame.bytes[frame.size - 1] ==
         crsf::crc8_dvb_s2(frame.bytes.data() + 2, frame.size - 3));
+
+  std::array<uint16_t, kChannelCount> unpacked{};
+  uint32_t accumulator = 0;
+  uint8_t available_bits = 0;
+  std::size_t input = 3;
+  for (auto& channel : unpacked) {
+    while (available_bits < 11) {
+      accumulator |= static_cast<uint32_t>(frame.bytes[input++])
+                     << available_bits;
+      available_bits = static_cast<uint8_t>(available_bits + 8);
+    }
+    channel = static_cast<uint16_t>(accumulator & 0x7FFU);
+    accumulator >>= 11U;
+    available_bits = static_cast<uint8_t>(available_bits - 11);
+  }
+  CHECK(unpacked[0] == 172);
+  CHECK(unpacked[1] == 992);
+  CHECK(unpacked[2] == 1811);
 
   std::array<uint8_t, 12> battery{
       crsf::kAddressRadio, 10, crsf::kFrameBattery,
@@ -507,13 +560,16 @@ void test_elrs_management_and_finder()
   CHECK(discovered.state == ElrsManagerState::Ready);
   CHECK(std::string(discovered.device_name.data()) == "Virtual ELRS");
   CHECK(discovered.firmware_version == 0x00040001);
-  CHECK(discovered.fields_discovered == 9);
+  CHECK(discovered.fields_discovered == 11);
+  CHECK(discovered.packet_rate.available);
+  CHECK(discovered.packet_rate.value == 3);
   CHECK(discovered.power.available);
   CHECK(discovered.power.option_count == 7);
   CHECK(std::string(discovered.power.options[3].data()) == "100mW");
   CHECK(discovered.dynamic_power.available);
   CHECK(discovered.switch_mode.available);
   CHECK(discovered.telemetry_ratio.available);
+  CHECK(discovered.model_match.available);
   CHECK(discovered.bind_available);
   CHECK(discovered.wifi_update_available);
   CHECK(parser.stats().management_drops == 0);
@@ -535,6 +591,19 @@ void test_elrs_management_and_finder()
   CHECK(management.request_telemetry_ratio(3));
   run_cycles(500);
   CHECK(transport.telemetry_ratio_option() == 3);
+  CHECK(management.request_packet_rate(2));
+  run_cycles(500);
+  CHECK(transport.packet_rate_option() == 2);
+  CHECK(management.status().packet_rate.value == 2);
+  CHECK(management.request_packet_rate(4));
+  run_cycles(10);
+  CHECK(transport.packet_rate_option() == 2);
+  CHECK(std::string(management.status().message.data()) ==
+        "400K UART: max 250Hz");
+  CHECK(management.request_model_match(1));
+  run_cycles(500);
+  CHECK(transport.model_match_option() == 1);
+  CHECK(management.status().model_match.value == 1);
 
   const uint32_t binds_before =
       transport.stats().bind_commands_received;
@@ -767,6 +836,9 @@ void test_storage()
   CHECK(result.generation == 7);
   CHECK(decoded.model_id == 17);
   CHECK(decoded.outputs[3].subtrim == 42);
+  CHECK(decoded.mix_count == 8);
+  CHECK(decoded.mixes[4].source.kind == SourceKind::Switch);
+  CHECK(decoded.mixes[4].source.index == kFirstAuxSwitch);
 
   model.model_id = 18;
   CHECK(store.save(model, 8, error));
@@ -783,6 +855,26 @@ void test_storage()
   error.clear();
   CHECK(!store.save(invalid, 9, error));
   CHECK(error == "invalid model shape");
+
+  Model legacy_default = make_default_model();
+  legacy_default.mix_count = 4;
+  legacy_default.required_switch_mask = 0;
+  legacy_default.outputs[4].failsafe = 0;
+  auto legacy_encoded = ModelCodec::encode(legacy_default, 10);
+  CHECK(legacy_encoded.size() > 6);
+  legacy_encoded[4] = 3;
+  legacy_encoded[5] = 0;
+  Model migrated{};
+  uint32_t migrated_generation = 0;
+  error.clear();
+  CHECK(ModelCodec::decode(legacy_encoded, migrated, migrated_generation,
+                           error));
+  CHECK(migrated_generation == 10);
+  CHECK(migrated.mix_count == 8);
+  CHECK(migrated.mixes[4].source.kind == SourceKind::Switch);
+  CHECK(migrated.outputs[4].failsafe == -kResolution);
+  CHECK((migrated.required_switch_mask &
+         static_cast<uint8_t>(1U << kFirstAuxSwitch)) != 0);
 
   std::array<AxisCalibration, kMaxAxes> calibration{};
   CalibrationStore calibration_store(files, "calibration.bin");

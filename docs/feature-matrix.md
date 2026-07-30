@@ -5,12 +5,12 @@ hardware evidence.
 
 | Area | Implemented | Verification |
 |---|---|---|
-| inputs | ADC sampling, calibration, deadband, filtering, inversion | native unit tests; ESP ADC needs board test |
+| inputs | ADC sampling, calibration, deadband, filtering, inversion; four optional active-low maintained AUX switches | native unit tests; ESP ADC/GPIO needs board test |
 | mixer | inputs, expo, curves, 64 mixes, add/multiply/replace, delay, slow, trims, GVars, five flight modes | native unit tests |
 | outputs | 16 channels, reverse, subtrim, min/max, per-channel failsafe | native unit tests |
 | logic | 24 logical switches, edge/sticky/timer functions, three timers, 24 special-function slots | native unit tests |
 | safety | locked boot, throttle/switch checks, stale input, mixer deadline, low battery, watchdog recovery, failsafe gating | native tests plus stale/deadline system scenarios; HIL required |
-| ExpressLRS | CRSF channels/CRC, dynamic parameter discovery, mW/dynamic-power/switch-mode/telemetry-ratio writes, command bind, confirmed Wi-Fi update launch, model ID, telemetry, failsafe capture, offline recovery, pass-through API | virtual module tests with fragmented UART, settings read-back, commands, loss, corruption, disconnect and recovery; real ELRS module pending |
+| ExpressLRS | CRSF channels/CRC, CH5 arming polarity, dynamic parameter discovery, packet-rate/model-match/mW/dynamic-power/switch-mode/telemetry-ratio writes, command bind, confirmed Wi-Fi update launch, model ID, telemetry, failsafe capture, offline recovery, pass-through API | virtual module tests with fragmented UART, settings read-back, commands, loss, corruption, disconnect and recovery; real ELRS module pending |
 | Finder | active-antenna RSSI, one-second freshness gate, integer smoothing, dBm/bar display, signal-rate buzzer | native virtual-telemetry and tone tests; RF search test pending |
 | audio alerts | fixed-allocation priority sequencer; link weak/critical/lost/recovered, module loss/recovery, TX battery low/critical, safety transitions, telemetry alarms, Finder and Lua | native pattern/pre-emption/policy tests plus audible disconnect simulation; buzzer hardware pending |
 | UI | responsive compact/medium/large layout, 15 screens, scrolling/editing, touch events, staged model edits | 128×64, 240×135, and 480×320 simulator renders plus native tests |

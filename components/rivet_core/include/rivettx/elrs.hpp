@@ -9,7 +9,7 @@
 
 namespace rivettx {
 
-constexpr std::size_t kMaximumElrsOptions = 10;
+constexpr std::size_t kMaximumElrsOptions = 16;
 constexpr std::size_t kMaximumElrsOptionLength = 18;
 
 enum class ElrsManagerState : uint8_t {
@@ -38,10 +38,12 @@ struct ElrsManagerStatus {
   uint32_t firmware_version = 0;
   uint8_t fields_discovered = 0;
   uint8_t field_count = 0;
+  ElrsSelection packet_rate{};
   ElrsSelection power{};
   ElrsSelection dynamic_power{};
   ElrsSelection switch_mode{};
   ElrsSelection telemetry_ratio{};
+  ElrsSelection model_match{};
   bool bind_available = false;
   bool wifi_update_available = false;
   std::array<char, 33> message{};
@@ -53,10 +55,12 @@ class ElrsDeviceManager {
 
   void start(TimeUs now_us);
   void tick(TimeUs now_us);
+  bool request_packet_rate(uint8_t option);
   bool request_power(uint8_t option);
   bool request_dynamic_power(uint8_t option);
   bool request_switch_mode(uint8_t option);
   bool request_telemetry_ratio(uint8_t option);
+  bool request_model_match(uint8_t option);
   bool request_bind();
   bool request_wifi_update();
   const ElrsManagerStatus& status() const;
@@ -64,10 +68,12 @@ class ElrsDeviceManager {
  private:
   enum class PendingAction : uint8_t {
     None,
+    SetPacketRate,
     SetPower,
     SetDynamicPower,
     SetSwitchMode,
     SetTelemetryRatio,
+    SetModelMatch,
     Bind,
     WifiUpdate,
   };
@@ -97,10 +103,12 @@ class ElrsDeviceManager {
   uint8_t current_chunk_ = 0;
   uint8_t read_retries_ = 0;
   uint8_t device_ping_retries_ = 0;
+  uint8_t packet_rate_field_id_ = 0;
   uint8_t power_field_id_ = 0;
   uint8_t dynamic_power_field_id_ = 0;
   uint8_t switch_mode_field_id_ = 0;
   uint8_t telemetry_ratio_field_id_ = 0;
+  uint8_t model_match_field_id_ = 0;
   uint8_t bind_field_id_ = 0;
   uint8_t wifi_field_id_ = 0;
   PendingAction active_command_ = PendingAction::None;

@@ -9,6 +9,7 @@ useful radio therefore contains:
 - ESP32-C3 or ESP32-S3 with at least 4 MiB flash
 - ExpressLRS TX module with a full-duplex 3.3 V CRSF UART
 - two two-axis gimbals or four other analog controls
+- one dedicated maintained ARM switch and up to three maintained AUX switches
 - SSD1306-compatible 128x64 I2C OLED
 - UP, DOWN, ENTER, and BACK buttons
 - regulator sized for the chosen ESP32 and the peak current of the TX module
@@ -55,6 +56,7 @@ The defaults are examples, not a PCB design:
 | CRSF TX / RX | 6 / 7 | 17 / 18 |
 | UP / DOWN | 8 / 9 | 10 / 11 |
 | ENTER / BACK | 10 / 20 | 12 / 14 |
+| AUX1-4 switches | disabled | disabled |
 | battery ADC | disabled | disabled |
 | passive piezo buzzer | disabled | disabled |
 
@@ -68,6 +70,12 @@ pins wired to flash or PSRAM depend on the exact module. In particular,
 GPIO33-37 can be unavailable on ESP32-S3 modules that use octal flash or
 octal PSRAM. Confirm the module datasheet and board schematic, then change
 every assignment with `idf.py menuconfig`.
+
+The four optional AUX inputs are active low and use internal pull-ups. Wire
+each maintained switch between its configured GPIO and ground. AUX1 maps to
+CH5 and is the dedicated Betaflight/ExpressLRS arming switch; AUX2-AUX4 map to
+CH6-CH8. Disabled inputs remain low. See the
+[Betaflight setup guide](betaflight.md) before assigning GPIOs or modes.
 
 ## Controls
 
@@ -88,7 +96,8 @@ every assignment with `idf.py menuconfig`.
 
 1. Build and flash development settings with the RF module disconnected.
 2. Verify all ADC directions and button levels in a serial log.
-3. Calibrate and verify that every channel reaches the intended limits.
+3. Calibrate and verify CH1-CH4 reach the intended limits and CH5-CH8 follow
+   only their dedicated maintained switches.
 4. Scope the CRSF UART and measure the worst control-loop time.
 5. Connect the TX module at minimum RF power and verify telemetry/model ID.
 6. Verify mW selection, dynamic power, bind, Finder, and the module's Wi-Fi

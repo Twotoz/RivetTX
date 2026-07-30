@@ -88,6 +88,41 @@ config RIVETTX_BUTTON_BACK
     default 20 if IDF_TARGET_ESP32C3
     default 14 if IDF_TARGET_ESP32S3
 
+config RIVETTX_AUX1_GPIO
+    int "AUX1 / Betaflight ARM switch GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    help
+        Connect a maintained two-position switch between this GPIO and
+        ground. The input uses the internal pull-up, is active low, and the
+        default model sends it on CH5/AUX1. Leave disabled until the board
+        has a dedicated arming switch.
+
+config RIVETTX_AUX2_GPIO
+    int "AUX2 / Betaflight PREARM switch GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    help
+        Active-low maintained switch sent on CH6/AUX2 by the default model.
+
+config RIVETTX_AUX3_GPIO
+    int "AUX3 / Betaflight mode switch GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    help
+        Active-low maintained switch sent on CH7/AUX3 by the default model.
+
+config RIVETTX_AUX4_GPIO
+    int "AUX4 / Betaflight beeper switch GPIO (-1 disables)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    help
+        Active-low maintained switch sent on CH8/AUX4 by the default model.
+
 config RIVETTX_BATTERY_GPIO
     int "Battery ADC GPIO (-1 disables battery sensing)"
     range -1 4 if IDF_TARGET_ESP32C3

@@ -87,8 +87,9 @@ failsafe frame before it reaches CRSF.
 - trims, GVars, five flight modes, logical switches, and three timers
 - per-channel reverse, subtrim, limits, and failsafe values
 - throttle/switch startup checks, stale-input detection, and deadline lockout
-- discovered ExpressLRS power, dynamic-power, switch-mode, telemetry-ratio,
-  bind, and Wi-Fi update controls
+- dedicated CH5-CH8/AUX switch inputs with safe CH5 arming behavior
+- discovered ExpressLRS packet-rate, model-match, power, dynamic-power,
+  switch-mode, telemetry-ratio, bind, and Wi-Fi update controls
 - CRC-checked CRSF telemetry for link, battery, and GPS data, including
   active-antenna RSSI and correctly decoded TX power in mW
 - built-in ELRS Finder with fresh-data protection, visual meter, and optional
@@ -174,6 +175,7 @@ The reference profiles are intentionally focused:
 | ESP32-C3 or ESP32-S3, 4 MiB flash | control, UI, storage, and platform services |
 | ExpressLRS **TX module** | RF link over full-duplex 3.3 V CRSF UART |
 | four analog axes | two conventional two-axis gimbals |
+| four maintained switches | ARM/AUX1, PREARM/AUX2, mode/AUX3, and AUX4 |
 | SSD1306 128×64 OLED | first physical display backend |
 | four buttons | UP, DOWN, ENTER, and BACK/recovery |
 | suitable regulator | must tolerate the chosen TX module's peak current |
@@ -202,6 +204,7 @@ Model edits are staged, saved while locked, and activated on the next boot.
 | [Simulation](docs/simulation.md) | virtual ELRS scenarios, fault injection, outputs, and validation limits |
 | [Hardware guide](docs/hardware.md) | minimum electronics, default GPIOs, controls, and bring-up sequence |
 | [ExpressLRS guide](docs/expresslrs.md) | mW settings, bind, Finder, Betaflight OSD telemetry, and TX-module Wi-Fi updates |
+| [Betaflight setup](docs/betaflight.md) | AETR/CH5-CH8 mapping, ELRS configuration, FC setup, and mandatory bench tests |
 | [Audio alerts](docs/audio-alerts.md) | prioritized buzzer patterns, link thresholds, TX-battery warnings, and configuration |
 | [Firmware bundle](docs/firmware-bundle.md) | CI artifact contents, checksum verification, and one-file flashing |
 

@@ -124,7 +124,7 @@ void write_source(Writer& writer, const SourceRef& source)
 bool read_source(Reader& reader, SourceRef& source)
 {
   if (!reader.get(source.kind) || !reader.get(source.index) ||
-      !reader.get(source.constant) || source.kind > SourceKind::GVar) {
+      !reader.get(source.constant) || source.kind > SourceKind::Switch) {
     return false;
   }
   switch (source.kind) {
@@ -136,6 +136,8 @@ bool read_source(Reader& reader, SourceRef& source)
       return source.index < kChannelCount;
     case SourceKind::GVar:
       return source.index < kMaxGVars;
+    case SourceKind::Switch:
+      return source.index < kMaxSwitches;
     case SourceKind::Telemetry:
       return source.index > 0 &&
              source.index <= kMaxTelemetrySensors;
@@ -214,6 +216,8 @@ bool model_shape_valid(const Model& model)
         return source.index > 0 && source.index <= kMaxTelemetrySensors;
       case SourceKind::GVar:
         return source.index < kMaxGVars;
+      case SourceKind::Switch:
+        return source.index < kMaxSwitches;
       case SourceKind::Constant:
         return source.constant >= -kResolution &&
                source.constant <= kResolution;
@@ -644,6 +648,35 @@ bool ModelCodec::migrate(uint16_t source_schema, Model& model,
           mode.gvar_override_mask |= static_cast<uint16_t>(1U << i);
         }
       }
+    }
+  }
+  if (source_schema < 4 &&
+      std::strcmp(model.name.data(), "Default") == 0 &&
+      model.input_count == 4 && model.mix_count == 4) {
+    bool legacy_default = true;
+    for (uint8_t axis = 0; axis < 4; ++axis) {
+      const auto& input = model.inputs[axis];
+      const auto& mix = model.mixes[axis];
+      legacy_default =
+          legacy_default && input.enabled && input.source_axis == axis &&
+          input.destination == axis && mix.enabled &&
+          mix.destination == axis && mix.source.kind == SourceKind::Input &&
+          mix.source.index == axis;
+    }
+    if (legacy_default) {
+      model.mix_count = 8;
+      for (uint8_t aux = 0; aux < kAuxSwitchCount; ++aux) {
+        const auto mix = static_cast<uint8_t>(4 + aux);
+        model.mixes[mix].enabled = true;
+        model.mixes[mix].destination = mix;
+        model.mixes[mix].source = {
+            SourceKind::Switch,
+            static_cast<uint8_t>(kFirstAuxSwitch + aux), 0};
+        model.mixes[mix].weight_percent = 100;
+      }
+      model.required_switch_mask |=
+          static_cast<uint8_t>(1U << kFirstAuxSwitch);
+      model.outputs[4].failsafe = -kResolution;
     }
   }
   if (source_schema > Model::kSchemaVersion) {

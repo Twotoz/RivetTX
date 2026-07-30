@@ -533,7 +533,10 @@ void ui_task(void*)
           app.safety.maintenance_allowed();
       bool elrs_change = false;
       if (change.screen_id == "elrs" && maintenance) {
-        if (change.field_id == "power") {
+        if (change.field_id == "packet_rate") {
+          elrs_change = app.elrs.request_packet_rate(
+              static_cast<uint8_t>(change.value));
+        } else if (change.field_id == "power") {
           elrs_change =
               app.elrs.request_power(static_cast<uint8_t>(change.value));
         } else if (change.field_id == "dynamic") {
@@ -544,6 +547,9 @@ void ui_task(void*)
               static_cast<uint8_t>(change.value));
         } else if (change.field_id == "telemetry_ratio") {
           elrs_change = app.elrs.request_telemetry_ratio(
+              static_cast<uint8_t>(change.value));
+        } else if (change.field_id == "model_match") {
+          elrs_change = app.elrs.request_model_match(
               static_cast<uint8_t>(change.value));
         } else if (change.field_id == "bind") {
           elrs_change = app.elrs.request_bind();

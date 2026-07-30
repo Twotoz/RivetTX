@@ -10,6 +10,9 @@ constexpr std::size_t kMaxAxes = 8;
 constexpr std::size_t kMaxInputs = 16;
 constexpr std::size_t kChannelCount = 16;
 constexpr std::size_t kMaxSwitches = 16;
+constexpr std::size_t kNavigationButtonCount = 4;
+constexpr std::size_t kFirstAuxSwitch = kNavigationButtonCount;
+constexpr std::size_t kAuxSwitchCount = 4;
 constexpr std::size_t kMaxLogicalSwitches = 24;
 constexpr std::size_t kMaxMixes = 64;
 constexpr std::size_t kMaxCurves = 16;
@@ -59,6 +62,7 @@ enum class SourceKind : uint8_t {
   Constant,
   Telemetry,
   GVar,
+  Switch,
 };
 
 struct SourceRef {
@@ -192,7 +196,7 @@ struct SpecialFunction {
 };
 
 struct Model {
-  static constexpr uint16_t kSchemaVersion = 3;
+  static constexpr uint16_t kSchemaVersion = 4;
 
   std::array<char, 24> name{};
   uint8_t model_id = 0;
