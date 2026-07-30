@@ -15,10 +15,10 @@ hardware evidence.
 | audio alerts | fixed-allocation priority sequencer; link weak/critical/lost/recovered, module loss/recovery, TX battery low/critical, safety transitions, telemetry alarms, Finder and Lua | native pattern/pre-emption/policy tests plus audible disconnect simulation; buzzer hardware pending |
 | UI | responsive compact/medium/large layout, 15 screens, scrolling/editing, touch events, staged model edits | 128×64, 240×135, and 480×320 simulator renders plus native tests |
 | displays | capability-driven layout and monochrome canvas; SSD1306 128x64 driver | three virtual profiles; SSD1306 hardware pending |
-| Lua | real Lua 5.5, allocator ceiling, instruction/time budget, safe libraries, LCD/model/telemetry/CRSF APIs, active `RSSI`, telemetry-age query, and bounded tone output | ESP32-C3/S3 target builds; real buzzer/script test pending |
-| storage | versioned schema, CRC, migration hook, copy-on-write save, read-back, backup recovery | corruption/recovery tests |
+| Lua | real Lua 5.5, allocator ceiling, instruction budgets for load/init/runtime, restricted libraries and script paths, LCD/model/telemetry/CRSF APIs, active `RSSI`, telemetry-age query, and bounded tone output | ESP32-C3/S3 target builds; real buzzer/script test pending |
+| storage | versioned schema, CRC, migration hook, copy-on-write save, read-back, directory sync, and backup recovery without automatic formatting | corruption/recovery tests |
 | diagnostics | bounded event ring, crash snapshot, reset reason and ESP core-dump partition | native tests; reset injection pending |
-| telemetry log | rate-limited CSV logging and flush | native tests; flash endurance pending |
+| telemetry log | special-function opt-in, rate-limited CSV logging, one-file rotation, and flush | native tests; flash endurance pending |
 | battery/power | calibrated ADC when eFuse data exists, divider scaling, hysteresis, alarms, inactivity/shutdown policy | native policy tests; divider validation pending |
 | backup/recovery | locked-only Wi-Fi export/restore, boot-failure counter, held-button recovery | codec tests; portal hardware pending |
 | update/boot | ESP-IDF bootloader, A/B OTA, HTTPS, manifest gates, post-boot self-test, rollback, Secure Boot V2 production config | mock OTA tests; signed-device drill pending |

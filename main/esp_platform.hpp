@@ -38,7 +38,7 @@ class EspBoard {
   };
 
   bool configure_adc_gpio(int gpio, AdcInput& input);
-  int read_adc(const AdcInput& input) const;
+  bool read_adc(const AdcInput& input, int& value) const;
 
   adc_oneshot_unit_handle_t adc_ = nullptr;
   adc_cali_handle_t adc_calibration_ = nullptr;
@@ -124,12 +124,14 @@ class NvsBootState {
 
 class CsvTelemetrySink final : public ITelemetryLogSink {
  public:
-  explicit CsvTelemetrySink(std::string path);
+  explicit CsvTelemetrySink(std::string path,
+                            std::size_t maximum_bytes = 1024 * 1024);
   bool append(TimeUs time_us, uint16_t sensor_id, int32_t value) override;
   bool flush() override;
 
  private:
   std::string path_;
+  std::size_t maximum_bytes_;
   void* file_ = nullptr;
 };
 

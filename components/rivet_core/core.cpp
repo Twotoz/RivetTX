@@ -117,15 +117,26 @@ MixerEngine::MixerEngine()
 
 void MixerEngine::reset()
 {
+  std::array<TimerState, kMaxTimers> persistent_states{};
+  for (std::size_t i = 0; i < timer_states_.size(); ++i) {
+    if (timer_persistent_[i]) {
+      persistent_states[i] = timer_states_[i];
+    }
+  }
   mix_runtime_ = {};
   logical_runtime_ = {};
   logical_values_ = {};
-  timer_states_ = {};
+  timer_states_ = persistent_states;
+  timer_initialized_ = timer_persistent_;
   previous_channels_ = {};
   previous_evaluation_us_ = 0;
   previous_timer_us_ = 0;
   sequence_ = 0;
   active_flight_mode_ = 0;
+  previous_flight_mode_ = 0;
+  flight_mode_transition_us_ = 0;
+  flight_mode_fade_duration_us_ = 0;
+  flight_mode_initialized_ = false;
 }
 
 int16_t MixerEngine::apply_expo(int16_t input, int8_t percent) const
@@ -218,9 +229,12 @@ int16_t MixerEngine::source_value(
     case SourceKind::GVar:
       if (source.index < kMaxGVars) {
         const auto& mode = model.flight_modes[flight_mode];
+        const uint16_t bit =
+            static_cast<uint16_t>(1U << source.index);
         const int16_t value =
-            mode.gvars[source.index] != 0 ? mode.gvars[source.index]
-                                          : model.gvars[source.index];
+            (mode.gvar_override_mask & bit) != 0
+                ? mode.gvars[source.index]
+                : model.gvars[source.index];
         return clamp<int16_t>(-kResolution, value, kResolution);
       }
       return 0;
@@ -316,7 +330,9 @@ void MixerEngine::evaluate_logical_switches(
         runtime.changed_at_us = now_us;
       }
       const auto required_delay =
-          raw ? static_cast<TimeUs>(config.delay_ms) * 1000 : 0;
+          raw && config.operation != LogicalSwitchOp::Timer
+              ? static_cast<TimeUs>(config.delay_ms) * 1000
+              : 0;
       if (now_us - runtime.changed_at_us >= required_delay) {
         runtime.value = raw;
         runtime.changed_at_us = 0;
@@ -345,6 +361,13 @@ void MixerEngine::update_timers(const Model& model,
   for (std::size_t i = 0; i < kMaxTimers; ++i) {
     const auto& config = model.timers[i];
     auto& state = timer_states_[i];
+    if (!timer_initialized_[i]) {
+      timer_start_ms_[i] =
+          static_cast<int64_t>(config.start_seconds) * 1000;
+      state.elapsed_ms = timer_start_ms_[i];
+      timer_initialized_[i] = true;
+    }
+    timer_persistent_[i] = config.persistent;
     switch (config.mode) {
       case TimerMode::Off:
         state.running = false;
@@ -361,7 +384,7 @@ void MixerEngine::update_timers(const Model& model,
         break;
     }
     if (state.running) {
-      state.elapsed_ms += delta_ms;
+      state.elapsed_ms += config.countdown ? -delta_ms : delta_ms;
     }
   }
 }
@@ -383,6 +406,23 @@ ChannelFrame MixerEngine::evaluate(const Model& model,
       active_flight_mode_ = static_cast<uint8_t>(i);
       break;
     }
+  }
+  if (!flight_mode_initialized_) {
+    previous_flight_mode_ = active_flight_mode_;
+    flight_mode_initialized_ = true;
+  } else if (active_flight_mode_ != previous_flight_mode_) {
+    for (std::size_t i = 0; i < fade_from_channels_.size(); ++i) {
+      fade_from_channels_[i] = static_cast<int16_t>(
+          clamp<int32_t>(-kResolution, previous_channels_[i], kResolution));
+    }
+    const auto& previous_mode = model.flight_modes[previous_flight_mode_];
+    const auto& next_mode = model.flight_modes[active_flight_mode_];
+    flight_mode_fade_duration_us_ =
+        static_cast<TimeUs>(std::max(previous_mode.fade_out_ms,
+                                    next_mode.fade_in_ms)) *
+        1000;
+    flight_mode_transition_us_ = now_us;
+    previous_flight_mode_ = active_flight_mode_;
   }
 
   const auto input_count =
@@ -445,6 +485,18 @@ ChannelFrame MixerEngine::evaluate(const Model& model,
 
     int32_t target = source_value(mix.source, model, controls, virtual_inputs,
                                   channels, telemetry, active_flight_mode_);
+    if (!mix.carry_trim && mix.source.kind == SourceKind::Input) {
+      for (std::size_t input_index = 0; input_index < input_count;
+           ++input_index) {
+        const auto& input = model.inputs[input_index];
+        if (input.enabled && input.destination == mix.source.index &&
+            input.source_axis < kMaxAxes) {
+          target -= model.flight_modes[active_flight_mode_]
+                        .trims[input.source_axis];
+          break;
+        }
+      }
+    }
     if (mix.curve_index >= 0 &&
         mix.curve_index < static_cast<int8_t>(kMaxCurves)) {
       target = apply_curve(
@@ -494,7 +546,25 @@ ChannelFrame MixerEngine::evaluate(const Model& model,
     value += output.subtrim;
     value = clamp<int32_t>(output.minimum, value, output.maximum);
     frame.channels[i] = static_cast<int16_t>(value);
-    previous_channels_[i] = value;
+  }
+  if (flight_mode_fade_duration_us_ != 0 &&
+      now_us >= flight_mode_transition_us_) {
+    const TimeUs elapsed = now_us - flight_mode_transition_us_;
+    if (elapsed < flight_mode_fade_duration_us_) {
+      for (std::size_t i = 0; i < frame.channels.size(); ++i) {
+        const int64_t from = fade_from_channels_[i];
+        const int64_t difference =
+            static_cast<int64_t>(frame.channels[i]) - from;
+        frame.channels[i] = static_cast<int16_t>(
+            from + difference * static_cast<int64_t>(elapsed) /
+                       static_cast<int64_t>(flight_mode_fade_duration_us_));
+      }
+    } else {
+      flight_mode_fade_duration_us_ = 0;
+    }
+  }
+  for (std::size_t i = 0; i < frame.channels.size(); ++i) {
+    previous_channels_[i] = frame.channels[i];
   }
   frame.generated_at_us = now_us;
   frame.sequence = ++sequence_;
@@ -523,7 +593,8 @@ uint8_t MixerEngine::active_flight_mode() const
 void MixerEngine::reset_timer(std::size_t index)
 {
   if (index < timer_states_.size()) {
-    timer_states_[index] = {};
+    timer_states_[index].elapsed_ms = timer_start_ms_[index];
+    timer_states_[index].running = false;
   }
 }
 
@@ -533,6 +604,7 @@ SafetyManager::SafetyManager(SafetyConfig config) : config_(config)
 
 void SafetyManager::boot_complete(bool storage_valid, bool watchdog_recovery)
 {
+  const std::lock_guard<std::mutex> lock(mutex_);
   storage_valid_ = storage_valid;
   if (!storage_valid) {
     status_.state = SafetyState::Fault;
@@ -548,11 +620,15 @@ void SafetyManager::boot_complete(bool storage_valid, bool watchdog_recovery)
 
 void SafetyManager::request_enable()
 {
-  enable_requested_ = true;
+  const std::lock_guard<std::mutex> lock(mutex_);
+  if (!maintenance_active_) {
+    enable_requested_ = true;
+  }
 }
 
 void SafetyManager::request_lock()
 {
+  const std::lock_guard<std::mutex> lock(mutex_);
   enable_requested_ = false;
   healthy_cycles_ = 0;
   status_.state = SafetyState::Locked;
@@ -561,8 +637,11 @@ void SafetyManager::request_lock()
 
 void SafetyManager::report_battery(uint16_t millivolts)
 {
+  const std::lock_guard<std::mutex> lock(mutex_);
   status_.battery_mv = millivolts;
   if (millivolts != 0 && millivolts < config_.minimum_battery_mv) {
+    enable_requested_ = false;
+    healthy_cycles_ = 0;
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::BatteryCritical;
   }
@@ -570,10 +649,12 @@ void SafetyManager::report_battery(uint16_t millivolts)
 
 void SafetyManager::report_mixer_duration(uint32_t duration_us)
 {
+  const std::lock_guard<std::mutex> lock(mutex_);
   if (duration_us > config_.maximum_mixer_duration_us) {
     ++status_.missed_deadlines;
     healthy_cycles_ = 0;
     mixer_deadline_pending_ = true;
+    enable_requested_ = false;
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::MixerDeadline;
   }
@@ -612,6 +693,7 @@ ChannelFrame SafetyManager::gate(const Model& model,
                                  const ControlInputs& inputs,
                                  const ChannelFrame& proposed, TimeUs now_us)
 {
+  const std::lock_guard<std::mutex> lock(mutex_);
   if (!storage_valid_) {
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::StorageInvalid;
@@ -622,6 +704,7 @@ ChannelFrame SafetyManager::gate(const Model& model,
     return safe_frame(model, now_us, proposed.sequence);
   }
   if (!inputs.valid) {
+    enable_requested_ = false;
     status_.state = SafetyState::Locked;
     status_.reason = SafetyReason::InputsInvalid;
     healthy_cycles_ = 0;
@@ -629,6 +712,7 @@ ChannelFrame SafetyManager::gate(const Model& model,
   }
   if (now_us < inputs.sampled_at_us ||
       now_us - inputs.sampled_at_us > config_.maximum_input_age_us) {
+    enable_requested_ = false;
     ++status_.stale_frames;
     status_.state = SafetyState::Locked;
     status_.reason = SafetyReason::InputsStale;
@@ -637,6 +721,8 @@ ChannelFrame SafetyManager::gate(const Model& model,
   }
   if (status_.battery_mv != 0 &&
       status_.battery_mv < config_.minimum_battery_mv) {
+    enable_requested_ = false;
+    healthy_cycles_ = 0;
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::BatteryCritical;
     return safe_frame(model, now_us, proposed.sequence);
@@ -668,14 +754,33 @@ ChannelFrame SafetyManager::gate(const Model& model,
              : safe_frame(model, now_us, proposed.sequence);
 }
 
-const SafetyStatus& SafetyManager::status() const
+SafetyStatus SafetyManager::status() const
 {
+  const std::lock_guard<std::mutex> lock(mutex_);
   return status_;
 }
 
 bool SafetyManager::maintenance_allowed() const
 {
+  const std::lock_guard<std::mutex> lock(mutex_);
   return status_.state != SafetyState::Enabled;
+}
+
+bool SafetyManager::begin_maintenance()
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  if (maintenance_active_ || status_.state == SafetyState::Enabled) {
+    return false;
+  }
+  maintenance_active_ = true;
+  enable_requested_ = false;
+  return true;
+}
+
+void SafetyManager::end_maintenance()
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  maintenance_active_ = false;
 }
 
 ControlLoop::ControlLoop(InputProcessor& inputs, MixerEngine& mixer,

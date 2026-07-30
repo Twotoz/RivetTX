@@ -967,20 +967,26 @@ bool parse_indexed_field(const std::string& value, const std::string& prefix,
   return static_cast<bool>(std::getline(stream, property, '.'));
 }
 
-}  // namespace
+bool in_range(int32_t value, int32_t minimum, int32_t maximum)
+{
+  return value >= minimum && value <= maximum;
+}
 
-bool ModelEditor::apply(Model& model, const UiChange& change)
+bool apply_model_change(Model& model, const UiChange& change)
 {
   if (change.screen_id == "model") {
     if (change.field_id == "model_id") {
+      if (!in_range(change.value, 0, UINT8_MAX)) return false;
       model.model_id = static_cast<uint8_t>(change.value);
       return true;
     }
     if (change.field_id == "throttle_axis") {
+      if (!in_range(change.value, 0, kMaxAxes - 1)) return false;
       model.throttle_axis = static_cast<uint8_t>(change.value);
       return true;
     }
     if (change.field_id == "throttle_channel") {
+      if (!in_range(change.value, 1, kChannelCount)) return false;
       model.throttle_channel = static_cast<uint8_t>(change.value - 1);
       return true;
     }
@@ -991,11 +997,13 @@ bool ModelEditor::apply(Model& model, const UiChange& change)
   if (parse_indexed_field(change.field_id, "input", index, property) &&
       index < model.input_count) {
     if (property == "weight") {
+      if (!in_range(change.value, -100, 100)) return false;
       model.inputs[index].weight_percent =
           static_cast<int16_t>(change.value);
       return true;
     }
     if (property == "expo") {
+      if (!in_range(change.value, -100, 100)) return false;
       model.inputs[index].expo_percent = static_cast<int8_t>(change.value);
       return true;
     }
@@ -1003,11 +1011,13 @@ bool ModelEditor::apply(Model& model, const UiChange& change)
   if (parse_indexed_field(change.field_id, "mix", index, property) &&
       index < model.mix_count) {
     if (property == "weight") {
+      if (!in_range(change.value, -100, 100)) return false;
       model.mixes[index].weight_percent =
           static_cast<int16_t>(change.value);
       return true;
     }
     if (property == "offset") {
+      if (!in_range(change.value, -kResolution, kResolution)) return false;
       model.mixes[index].offset = static_cast<int16_t>(change.value);
       return true;
     }
@@ -1015,37 +1025,54 @@ bool ModelEditor::apply(Model& model, const UiChange& change)
   if (parse_indexed_field(change.field_id, "output", index, property) &&
       index < model.outputs.size()) {
     auto& output = model.outputs[index];
-    if (property == "minimum") output.minimum = change.value;
-    else if (property == "maximum") output.maximum = change.value;
-    else if (property == "subtrim") output.subtrim = change.value;
-    else if (property == "reversed") output.reversed = change.value != 0;
+    if (property == "minimum" &&
+        in_range(change.value, -kResolution, kResolution)) {
+      output.minimum = static_cast<int16_t>(change.value);
+    } else if (property == "maximum" &&
+               in_range(change.value, -kResolution, kResolution)) {
+      output.maximum = static_cast<int16_t>(change.value);
+    } else if (property == "subtrim" &&
+               in_range(change.value, -kResolution, kResolution)) {
+      output.subtrim = static_cast<int16_t>(change.value);
+    } else if (property == "reversed" &&
+               in_range(change.value, 0, 1)) {
+      output.reversed = change.value != 0;
+    }
     else return false;
     return output.minimum <= output.maximum;
   }
   if (parse_indexed_field(change.field_id, "logical", index, property) &&
       index < model.logical_switch_count) {
     if (property == "threshold") {
-      model.logical_switches[index].threshold = change.value;
+      if (!in_range(change.value, -kResolution, kResolution)) return false;
+      model.logical_switches[index].threshold =
+          static_cast<int16_t>(change.value);
       return true;
     }
     if (property == "delay") {
-      model.logical_switches[index].delay_ms = change.value;
+      if (!in_range(change.value, 0, UINT16_MAX)) return false;
+      model.logical_switches[index].delay_ms =
+          static_cast<uint16_t>(change.value);
       return true;
     }
   }
   if (parse_indexed_field(change.field_id, "special", index, property) &&
       index < model.special_function_count) {
     if (property == "enabled") {
+      if (!in_range(change.value, 0, 1)) return false;
       model.special_functions[index].enabled = change.value != 0;
       return true;
     }
     if (property == "parameter") {
-      model.special_functions[index].parameter = change.value;
+      if (!in_range(change.value, INT16_MIN, INT16_MAX)) return false;
+      model.special_functions[index].parameter =
+          static_cast<int16_t>(change.value);
       return true;
     }
   }
   if (parse_indexed_field(change.field_id, "timer", index, property) &&
       index < kMaxTimers && property == "start") {
+    if (!in_range(change.value, -86400, 86400)) return false;
     model.timers[index].start_seconds = change.value;
     return true;
   }
@@ -1067,16 +1094,31 @@ bool ModelEditor::apply(Model& model, const UiChange& change)
         static_cast<std::size_t>(std::strtoul(second.c_str(), nullptr, 10));
     if (group == "flight" && middle == "trim" &&
         a < model.flight_mode_count && b < kMaxAxes) {
-      model.flight_modes[a].trims[b] = change.value;
+      if (!in_range(change.value, -kResolution, kResolution)) return false;
+      model.flight_modes[a].trims[b] =
+          static_cast<int16_t>(change.value);
       return true;
     }
     if (group == "curve" && middle == "point" &&
         a < model.curve_count && b < kCurvePoints) {
-      model.curves[a].points[b] = change.value;
+      if (!in_range(change.value, -kResolution, kResolution)) return false;
+      model.curves[a].points[b] = static_cast<int16_t>(change.value);
       return true;
     }
   }
   return false;
+}
+
+}  // namespace
+
+bool ModelEditor::apply(Model& model, const UiChange& change)
+{
+  Model candidate = model;
+  if (!apply_model_change(candidate, change)) {
+    return false;
+  }
+  model = candidate;
+  return true;
 }
 
 }  // namespace rivettx

@@ -383,6 +383,22 @@ void ElrsDeviceManager::tick(TimeUs now_us)
   while (parser_.pop_management_frame(frame)) {
     consume_frame(frame, now_us);
   }
+  const TimeUs last_frame = parser_.last_valid_frame_us();
+  if (last_frame != 0 && now_us >= last_frame &&
+      now_us - last_frame > kOfflineRetryUs &&
+      status_.state != ElrsManagerState::Unavailable &&
+      status_.state != ElrsManagerState::Discovering) {
+    status_.state = ElrsManagerState::Unavailable;
+    status_.fields_discovered = 0;
+    status_.power.available = false;
+    status_.dynamic_power.available = false;
+    status_.switch_mode.available = false;
+    status_.telemetry_ratio.available = false;
+    status_.bind_available = false;
+    status_.wifi_update_available = false;
+    response_deadline_us_ = now_us;
+    set_message("ELRS module offline");
+  }
   if (rediscover_at_us_ != 0 && now_us >= rediscover_at_us_) {
     reset_discovery(now_us);
     return;

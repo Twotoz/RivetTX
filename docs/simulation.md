@@ -37,8 +37,8 @@ Supported scenario names are `nominal`, `packet-loss`, `corruption`,
 | packet loss | every second telemetry frame is removed | accepted frames stay valid and the link continues |
 | corruption | every third telemetry frame gets a bad CRC | every altered frame is rejected by the parser |
 | disconnect | UART unavailable for 1.6 seconds | offline detection, diagnostic events, reconnect, and model-ID restore |
-| stale input | ADC sample timestamp is too old | immediate failsafe followed by throttle-safe recovery |
-| missed deadline | one mixer cycle exceeds its budget | deadline count, failsafe, and throttle-safe recovery |
+| stale input | ADC sample timestamp is too old | immediate failsafe followed by throttle-safe recovery and an explicit new enable request |
+| missed deadline | one control release/completion interval exceeds its budget | deadline count, failsafe, throttle-safe recovery, and an explicit new enable request |
 
 Every scenario runs 1,000 control cycles at a simulated 4 ms period. It also
 checks watchdog service, outbound CRSF CRCs, channel packing/unpacking,

@@ -152,6 +152,7 @@ struct FlightMode {
   SwitchRef condition{};
   std::array<int16_t, kMaxAxes> trims{};
   std::array<int16_t, kMaxGVars> gvars{};
+  uint16_t gvar_override_mask = 0;
   uint16_t fade_in_ms = 0;
   uint16_t fade_out_ms = 0;
 };
@@ -191,7 +192,7 @@ struct SpecialFunction {
 };
 
 struct Model {
-  static constexpr uint16_t kSchemaVersion = 2;
+  static constexpr uint16_t kSchemaVersion = 3;
 
   std::array<char, 24> name{};
   uint8_t model_id = 0;

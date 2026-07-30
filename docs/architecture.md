@@ -72,7 +72,8 @@ Saving `model.rvm` performs:
 2. read back and validate
 3. move valid current file to `model.rvm.bak`
 4. atomically rename `.new` to the active file
-5. recover `.bak` on the next boot if the active file is corrupt
+5. synchronize directory metadata and recover `.bak` on the next boot if the
+   active file is corrupt; a mount error never formats storage automatically
 
 Migrations happen after decoding and before a model is activated.
 Both ESP32 targets mount the `models` partition as wear-levelled FATFS; the
