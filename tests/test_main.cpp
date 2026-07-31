@@ -1365,6 +1365,25 @@ void test_services()
   SafetyManager sensor_absent;
   sensor_absent.report_battery(0, false);
   CHECK(sensor_absent.status().state == SafetyState::Booting);
+  InputProcessor no_battery_inputs;
+  MixerEngine no_battery_mixer;
+  SafetyManager no_battery_safety;
+  no_battery_safety.report_module_ready(true);
+  FakeWatchdog no_battery_watchdog;
+  TelemetryRegistry no_battery_telemetry;
+  ControlLoop no_battery_loop(
+      no_battery_inputs, no_battery_mixer, no_battery_safety,
+      no_battery_telemetry, no_battery_watchdog);
+  no_battery_safety.boot_complete(true, false);
+  RawInputs no_battery_raw{};
+  no_battery_raw.valid = true;
+  no_battery_raw.axes.fill(2048);
+  no_battery_raw.axes[2] = 100;
+  no_battery_raw.sampled_at_us = 1000;
+  const auto no_battery_cycle = no_battery_loop.run(
+      make_default_model(), no_battery_raw, 0, 1000, 1100, false);
+  CHECK(no_battery_cycle.safety.reason !=
+        SafetyReason::BatteryCritical);
 
   BatterySnapshotStore snapshot_store;
   std::atomic<bool> torn_snapshot{false};

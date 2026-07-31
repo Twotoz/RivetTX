@@ -235,7 +235,8 @@ class ControlLoop {
 
   ControlCycleResult run(const Model& model, const RawInputs& raw,
                          uint16_t battery_mv, TimeUs cycle_started_us,
-                         TimeUs cycle_finished_us);
+                         TimeUs cycle_finished_us,
+                         bool battery_sensing_configured = true);
 
  private:
   InputProcessor& inputs_;
