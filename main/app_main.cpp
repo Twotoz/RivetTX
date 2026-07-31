@@ -150,9 +150,9 @@ Amt630aConfig amt630a_config()
 
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
 extern const uint8_t
-    amt_image_start[] asm("_binary_firmware_amt630a_openpocket_er_tft050a3_2_bin_start");
+    amt_image_start[] asm("_binary_amt630a_openpocket_er_tft050a3_2_bin_start");
 extern const uint8_t
-    amt_image_end[] asm("_binary_firmware_amt630a_openpocket_er_tft050a3_2_bin_end");
+    amt_image_end[] asm("_binary_amt630a_openpocket_er_tft050a3_2_bin_end");
 constexpr std::array<uint8_t, 32> kAmtImageSha256{
     0x9b, 0xd5, 0x53, 0x56, 0x86, 0x1b, 0xfe, 0x61,
     0xb3, 0x63, 0x13, 0xe5, 0x31, 0xaa, 0xe6, 0xbd,
