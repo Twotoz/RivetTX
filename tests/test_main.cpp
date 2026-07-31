@@ -100,6 +100,7 @@ class FakeAmt630aHardware final : public IAmt630aHardware {
   bool flash_chip_erase() override
   {
     if (!calls_ok) return false;
+    ++erase_count;
     std::fill(flash.begin(), flash.end(), 0xff);
     erase_busy_polls = busy_polls;
     return true;
@@ -162,6 +163,7 @@ class FakeAmt630aHardware final : public IAmt630aHardware {
   uint8_t busy_polls = 1;
   uint8_t erase_busy_polls = 0;
   uint8_t program_busy_polls = 0;
+  uint32_t erase_count = 0;
   Amt630aRuntimeStatus runtime{true, true, true, 1, 0,
                                Amt630aVideoStandard::Pal};
   std::array<uint8_t, kAmt630aFlashSize> flash{};
@@ -2695,6 +2697,29 @@ void test_amt630a_flash_controller()
   CHECK(hardware.programmed_addresses[1] == 256);
   CHECK(hardware.programmed_addresses[2] == 512);
   CHECK(std::equal(image.begin(), image.end(), hardware.flash.begin()));
+
+  FakeAmt630aHardware current_flash;
+  std::copy(image.begin(), image.end(), current_flash.flash.begin());
+  Amt630aController ensure_current(current_flash, {1000, 20});
+  CHECK(ensure_current.ensure_program(image.data(), image.size(), digest, 0));
+  for (std::size_t ticks = 0; ticks < 20 &&
+       ensure_current.status().state != Amt630aState::Complete; ++ticks) {
+    ensure_current.tick(static_cast<TimeUs>(ticks + 1) * 1000U);
+  }
+  CHECK(ensure_current.status().state == Amt630aState::Complete);
+  CHECK(current_flash.erase_count == 0);
+  CHECK(current_flash.programmed_addresses.empty());
+
+  FakeAmt630aHardware corrupt_flash;
+  Amt630aController ensure_corrupt(corrupt_flash, {1000, 20});
+  CHECK(ensure_corrupt.ensure_program(image.data(), image.size(), digest, 0));
+  for (std::size_t ticks = 0; ticks < 120 &&
+       ensure_corrupt.status().state != Amt630aState::Complete; ++ticks) {
+    ensure_corrupt.tick(static_cast<TimeUs>(ticks + 1) * 1000U);
+  }
+  CHECK(ensure_corrupt.status().state == Amt630aState::Complete);
+  CHECK(corrupt_flash.erase_count == 1);
+  CHECK(std::equal(image.begin(), image.end(), corrupt_flash.flash.begin()));
 
   FakeAmt630aHardware identity_fault;
   identity_fault.identity = 0x1234;

@@ -135,10 +135,39 @@ bool Amt630aController::start_program(
   expected_sha256_ = expected_sha256;
   offset_ = verify_offset_ = 0;
   verify_started_ = false;
+  checking_installed_ = false;
   status_.image_size = static_cast<uint32_t>(size);
   status_.programmed_bytes = 0;
   status_.progress_percent = 0;
   status_.fault = Amt630aFault::None;
+  status_.state = Amt630aState::AcquiringFlash;
+  set_deadline(now_us);
+  return true;
+}
+
+bool Amt630aController::ensure_program(
+    const uint8_t* image, std::size_t size,
+    const std::array<uint8_t, 32>& expected_sha256, TimeUs now_us)
+{
+  if (image == nullptr || size == 0 || size > kAmt630aFlashSize ||
+      amt630a_sha256(image, size) != expected_sha256) return false;
+  if (status_.state == Amt630aState::Unavailable) {
+    if (!hardware_.initialize()) {
+      fail(Amt630aFault::Configuration);
+      return false;
+    }
+  } else if (status_.state != Amt630aState::Ready &&
+             status_.state != Amt630aState::Complete &&
+             status_.state != Amt630aState::Fault) {
+    return false;
+  }
+  image_ = image;
+  expected_sha256_ = expected_sha256;
+  offset_ = verify_offset_ = 0;
+  verify_started_ = false;
+  checking_installed_ = true;
+  status_ = {};
+  status_.image_size = static_cast<uint32_t>(size);
   status_.state = Amt630aState::AcquiringFlash;
   set_deadline(now_us);
   return true;
@@ -234,7 +263,36 @@ void Amt630aController::tick(TimeUs now_us)
         fail(Amt630aFault::FlashIdentity);
       } else {
         status_.flash_jedec = jedec;
-        status_.state = Amt630aState::EnablingErase;
+        status_.state = checking_installed_ ? Amt630aState::CheckingFlash
+                                            : Amt630aState::EnablingErase;
+      }
+      break;
+    }
+    case Amt630aState::CheckingFlash: {
+      if (!verify_started_) {
+        sha256_ = Amt630aSha256Context{};
+        verify_started_ = true;
+      }
+      if (verify_offset_ >= status_.image_size) {
+        const bool current = sha256_.finish() == expected_sha256_;
+        verify_started_ = false;
+        checking_installed_ = false;
+        if (current) {
+          status_.state = Amt630aState::ReleasingFlash;
+        } else {
+          offset_ = verify_offset_ = 0;
+          status_.state = Amt630aState::EnablingErase;
+          set_deadline(now_us);
+        }
+      } else {
+        const std::size_t count = std::min<std::size_t>(readback_.size(),
+            status_.image_size - verify_offset_);
+        if (!hardware_.flash_read(verify_offset_, readback_.data(), count)) {
+          fail(Amt630aFault::Readback);
+        } else {
+          sha256_.update(readback_.data(), count);
+          verify_offset_ += static_cast<uint32_t>(count);
+        }
       }
       break;
     }

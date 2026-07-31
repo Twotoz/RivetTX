@@ -33,3 +33,8 @@ idf_component_register(
   PRIV_REQUIRES
     ${rivettx_private_requires}
 )
+
+if(CONFIG_RIVETTX_OPENPOCKET_REV_A)
+  target_add_binary_data(${COMPONENT_LIB}
+    "firmware/amt630a-openpocket-er-tft050a3-2.bin" BINARY)
+endif()

@@ -148,6 +148,18 @@ Amt630aConfig amt630a_config()
   return config;
 }
 
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+extern const uint8_t
+    amt_image_start[] asm("_binary_firmware_amt630a_openpocket_er_tft050a3_2_bin_start");
+extern const uint8_t
+    amt_image_end[] asm("_binary_firmware_amt630a_openpocket_er_tft050a3_2_bin_end");
+constexpr std::array<uint8_t, 32> kAmtImageSha256{
+    0x9b, 0xd5, 0x53, 0x56, 0x86, 0x1b, 0xfe, 0x61,
+    0xb3, 0x63, 0x13, 0xe5, 0x31, 0xaa, 0xe6, 0xbd,
+    0xe8, 0xb2, 0x07, 0x13, 0x84, 0xf0, 0x08, 0xd3,
+    0x53, 0x43, 0x67, 0xb3, 0x69, 0x5a, 0xff, 0x9f};
+#endif
+
 class SpecialActionMailbox final : public ISpecialActionHandler {
  public:
   void execute(SpecialAction action, int16_t parameter,
@@ -2222,6 +2234,7 @@ void board_io_task(void*)
   uint8_t previous_backlight = CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT;
   Amt630aState previous_controller_state = Amt630aState::Unavailable;
   TimeUs next_controller_recovery_us = 0;
+  bool provisioning_requested = false;
   while (true) {
     const TimeUs current = now_us();
     uint32_t controls = 0;
@@ -2257,12 +2270,17 @@ void board_io_task(void*)
     Amt630aStatus controller_status = app.display_controller.status();
     if (power_status.display_5v &&
         !power_status.display_controller_reset_asserted) {
-      if (controller_status.state == Amt630aState::Unavailable) {
-        (void)app.display_controller.initialize(current);
+      if (controller_status.state == Amt630aState::Unavailable &&
+          !provisioning_requested) {
+        const std::size_t image_size =
+            static_cast<std::size_t>(amt_image_end - amt_image_start);
+        provisioning_requested = app.display_controller.ensure_program(
+            amt_image_start, image_size, kAmtImageSha256, current);
       } else if (controller_status.state == Amt630aState::Fault &&
                  (display_changed || current >= next_controller_recovery_us)) {
         if (app.display_controller.recover(current)) {
           next_controller_recovery_us = current + 1000000U;
+          provisioning_requested = false;
         }
       }
       app.display_controller.tick(current);

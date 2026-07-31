@@ -26,6 +26,7 @@ enum class Amt630aState : uint8_t {
   Detecting,
   Ready,
   AcquiringFlash,
+  CheckingFlash,
   EnablingErase,
   Erasing,
   WaitingForErase,
@@ -120,6 +121,11 @@ class Amt630aController {
   bool start_program(const uint8_t* image, std::size_t size,
                      const std::array<uint8_t, 32>& expected_sha256,
                      TimeUs now_us);
+  // Factory/startup path: read and hash the installed image first. A matching
+  // flash is left untouched; a blank, corrupt, or old image is programmed.
+  bool ensure_program(const uint8_t* image, std::size_t size,
+                      const std::array<uint8_t, 32>& expected_sha256,
+                      TimeUs now_us);
   bool cancel_program();
   bool recover(TimeUs now_us);
   void tick(TimeUs now_us);
@@ -143,6 +149,7 @@ class Amt630aController {
   TimeUs deadline_us_ = 0;
   TimeUs next_status_us_ = 0;
   bool verify_started_ = false;
+  bool checking_installed_ = false;
   uint8_t runtime_read_failures_ = 0;
   Amt630aSha256Context sha256_{};
 };
