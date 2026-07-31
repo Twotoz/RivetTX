@@ -221,8 +221,8 @@ class UiController {
 UiScreen make_main_screen(const Model& model, const ChannelFrame& channels,
                           uint16_t battery_mv, uint8_t link_quality,
                           bool safety_enabled);
-UiScreen make_openpocket_home_screen(const Model& model,
-                                     const UiHomeStatus& status);
+UiScreen make_oled_home_screen(const Model& model,
+                               const UiHomeStatus& status);
 UiScreen make_main_menu_screen();
 UiScreen make_warnings_screen(const UiHomeStatus& status);
 UiScreen make_outputs_screen(const ChannelFrame& channels);

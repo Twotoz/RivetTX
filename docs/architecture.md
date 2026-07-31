@@ -98,13 +98,21 @@ No reboot is required, and a failed hand-off remains locked.
 
 ## OpenPocket presentation boundary
 
-The home renderer consumes synchronized snapshots only. It draws two live
-gimbal plots (yaw/throttle and roll/pitch), battery/link/module/video status
-and the highest-priority warning. The warning page lists all current causes,
-including storage, calibration, invalid or stale input, high throttle, ARM
-switch, other required switch positions, mixer deadline, watchdog recovery,
-battery sensor/level, module/link, logging, unsaved model, maintenance and
-video loss.
+Presentation profiles are mutually exclusive:
+
+- The SSD1306 OLED profile is the standalone RivetTX transmitter UI. It does
+  not claim OpenPocket support and does not expose the OpenPocket VRX/OSD menu.
+- The OpenPocket profile uses the analog character OSD as its menu and status
+  presentation. It must not initialize or mirror the menu on an OLED.
+
+Both profiles may consume the same synchronized UI snapshots and model-edit
+commands, but exactly one presentation owner may be active in a product
+build. The OLED renderer draws two live gimbal plots, battery/link/module
+status and the highest-priority warning. The warning page lists all current
+causes, including storage, calibration, invalid or stale input, high
+throttle, ARM switch, other required switch positions, mixer deadline,
+watchdog recovery, battery sensor/level, module/link, logging, unsaved model
+and maintenance.
 
 The VRX controller and 30×16 analog OSD compositor are platform-independent.
 They do not access SPI or video hardware themselves. The selected production

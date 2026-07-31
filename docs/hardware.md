@@ -1,6 +1,19 @@
 # Hardware and bring-up
 
-## Minimum transmitter
+## Presentation profiles
+
+RivetTX supports one presentation path per product build:
+
+- A standalone RivetTX transmitter uses the SSD1306 OLED and buttons. This
+  profile does not provide OpenPocket support.
+- An OpenPocket product uses the analog character OSD for its menu and status
+  display. It does not also initialize or mirror the menu on an OLED.
+
+The current physical firmware backend is the standalone OLED profile. The
+OpenPocket character compositor exists in the core, but its exact VRX, OSD
+silicon, SPI backend and target-PCB validation remain product hardware work.
+
+## Minimum standalone transmitter
 
 RivetTX generates channel data and sends it over CRSF to ExpressLRS firmware
 running in **transmitter mode**. That firmware may run on a regular TX module

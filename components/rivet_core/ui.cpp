@@ -666,12 +666,6 @@ void UiController::draw_home(const LayoutMetrics& metrics)
           : "BAT " + std::to_string(status.battery_mv));
   canvas_.text(info_x, static_cast<int16_t>(box_y + 18),
                status.module_online ? "ELRS OK" : "ELRS OFF");
-  const char band =
-      static_cast<char>('A' + std::min<uint8_t>(status.vrx_band, 5));
-  canvas_.text(
-      info_x, static_cast<int16_t>(box_y + 27),
-      std::string("VRX ") + band +
-          std::to_string(static_cast<unsigned>(status.vrx_channel + 1)));
 }
 
 void UiController::draw_outputs_graph(const LayoutMetrics&)
@@ -802,8 +796,8 @@ UiScreen make_main_screen(const Model& model, const ChannelFrame& channels,
   return screen;
 }
 
-UiScreen make_openpocket_home_screen(const Model& model,
-                                     const UiHomeStatus& status)
+UiScreen make_oled_home_screen(const Model& model,
+                               const UiHomeStatus& status)
 {
   UiScreen screen{};
   screen.id = "home";
@@ -816,8 +810,8 @@ UiScreen make_openpocket_home_screen(const Model& model,
 
 UiScreen make_main_menu_screen()
 {
-  UiScreen screen{"menu", "OpenPocket", {}};
-  const std::array<std::pair<const char*, const char*>, 20> items{{
+  UiScreen screen{"menu", "RivetTX", {}};
+  const std::array<std::pair<const char*, const char*>, 19> items{{
       {"warnings", "WARNINGS"},
       {"models", "MODELS"},
       {"model", "MODEL SETUP"},
@@ -832,7 +826,6 @@ UiScreen make_main_menu_screen()
       {"timers", "TIMERS"},
       {"elrs", "EXPRESSLRS"},
       {"finder", "ELRS FINDER"},
-      {"video", "VIDEO RX OSD"},
       {"usb", "USB SIMULATOR"},
       {"web", "WEB CONFIG"},
       {"telemetry", "TELEMETRY"},

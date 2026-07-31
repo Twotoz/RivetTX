@@ -58,7 +58,6 @@ enum class AppScreen : uint8_t {
   Telemetry,
   Finder,
   Elrs,
-  Video,
   Usb,
   Web,
   Power,
@@ -757,7 +756,7 @@ UiScreen current_screen(
 {
   switch (index) {
     case AppScreen::Home:
-      return make_openpocket_home_screen(app.edit_model, home);
+      return make_oled_home_screen(app.edit_model, home);
     case AppScreen::Menu:
       return make_main_menu_screen();
     case AppScreen::Warnings:
@@ -835,23 +834,6 @@ UiScreen current_screen(
       return make_elrs_finder_screen(finder);
     case AppScreen::Elrs:
       return make_elrs_screen(elrs, app.safety.maintenance_allowed());
-    case AppScreen::Video: {
-      UiScreen screen{"video", "Video RX OSD", {}};
-      screen.fields.push_back(
-          {"vrx_band", "VRX BAND", "", UiFieldKind::Number,
-           app.edit_model.vrx_band, 0, 5, true, true});
-      screen.fields.push_back(
-          {"vrx_channel", "VRX CHANNEL", "", UiFieldKind::Number,
-           app.edit_model.vrx_channel + 1, 1, 8, true, true});
-      screen.fields.push_back(
-          {"overlay", "VIDEO OVERLAY", "", UiFieldKind::Boolean,
-           app.edit_model.video_overlay_enabled ? 1 : 0,
-           0, 1, true, true});
-      screen.fields.push_back(
-          {"backend", "HARDWARE", "NOT DETECTED", UiFieldKind::Label,
-           0, 0, 0, false, true});
-      return screen;
-    }
     case AppScreen::Usb: {
       UiScreen screen{"usb", "USB Simulator", {}};
       const bool supported = app.usb_gamepad.supported();
@@ -931,7 +913,7 @@ UiScreen current_screen(
           battery_mv, esp_get_free_heap_size(),
           safety.missed_deadlines, esp_app_get_description()->version);
   }
-  return make_openpocket_home_screen(app.edit_model, home);
+  return make_oled_home_screen(app.edit_model, home);
 }
 
 bool run_startup_calibration()
@@ -984,7 +966,7 @@ bool run_startup_calibration()
 
 bool menu_target(const std::string& id, AppScreen& target)
 {
-  const std::array<std::pair<const char*, AppScreen>, 20> targets{{
+  const std::array<std::pair<const char*, AppScreen>, 19> targets{{
       {"warnings", AppScreen::Warnings},
       {"models", AppScreen::Models},
       {"model", AppScreen::ModelSetup},
@@ -999,7 +981,6 @@ bool menu_target(const std::string& id, AppScreen& target)
       {"timers", AppScreen::Timers},
       {"elrs", AppScreen::Elrs},
       {"finder", AppScreen::Finder},
-      {"video", AppScreen::Video},
       {"usb", AppScreen::Usb},
       {"web", AppScreen::Web},
       {"telemetry", AppScreen::Telemetry},
