@@ -102,6 +102,20 @@ idf.py set-target esp32s3
 Do not flash a C3 artifact to an S3 or vice versa. OTA manifests also reject a
 target mismatch.
 
+## Firmware health versus RF readiness
+
+For both standalone OLED and OpenPocket profiles, storage, calibrated inputs,
+the selected presentation device, CRSF UART, required tasks, watchdog and
+healthy deadline-compliant control cycles are essential firmware-health
+dependencies. The external or replaceable ExpressLRS module is not: an
+absent, slow, incompatible or reconnecting module cannot reject a pending OTA
+image by itself.
+
+RF readiness is a separate operational safety gate, not an OTA rollback
+condition. Outputs, throttle and CH5 remain locked while the module is
+starting or offline, and are locked again if an online module is lost. The UI
+reports `ELRS OFFLINE` until the module is ready.
+
 ## Default development wiring
 
 The defaults are examples, not a PCB design:

@@ -292,6 +292,41 @@ class ScriptSupervisor {
   uint8_t strikes_ = 0;
 };
 
+enum class ModuleBootCondition : uint8_t {
+  Absent,
+  Starting,
+  Online,
+  Incompatible,
+  Reconnecting,
+};
+
+enum class BootProductProfile : uint8_t {
+  StandaloneOled,
+  OpenPocketOsd,
+};
+
+struct StartupRequirements {
+  bool storage = true;
+  bool inputs = true;
+  bool presentation = true;
+  bool crsf_uart = true;
+  bool control_task = true;
+  bool control_runtime = true;
+  bool module_online = false;
+};
+
+constexpr StartupRequirements startup_requirements_for(
+    BootProductProfile profile)
+{
+  switch (profile) {
+    case BootProductProfile::StandaloneOled:
+      return {true, true, true, true, true, true, false};
+    case BootProductProfile::OpenPocketOsd:
+      return {true, true, true, true, true, true, false};
+  }
+  return {};
+}
+
 struct SelfTestResult {
   bool storage = false;
   bool inputs = false;
@@ -299,12 +334,18 @@ struct SelfTestResult {
   bool crsf_uart = false;
   bool control_task = false;
   bool control_runtime = false;
-  bool module_link = false;
+  ModuleBootCondition module = ModuleBootCondition::Absent;
 
-  bool passed() const
+  bool passed(const StartupRequirements& requirements) const
   {
-    return storage && inputs && display && crsf_uart && control_task &&
-           control_runtime;
+    return (!requirements.storage || storage) &&
+           (!requirements.inputs || inputs) &&
+           (!requirements.presentation || display) &&
+           (!requirements.crsf_uart || crsf_uart) &&
+           (!requirements.control_task || control_task) &&
+           (!requirements.control_runtime || control_runtime) &&
+           (!requirements.module_online ||
+            module == ModuleBootCondition::Online);
   }
 };
 
@@ -319,13 +360,16 @@ class IOtaBackend {
 
 class BootManager {
  public:
-  BootManager(IOtaBackend& ota, DiagnosticLog& diagnostics);
+  BootManager(IOtaBackend& ota, DiagnosticLog& diagnostics,
+              BootProductProfile profile =
+                  BootProductProfile::StandaloneOled);
   bool finish_startup(const SelfTestResult& result, TimeUs now_us);
   bool enter_recovery(bool recovery_button, uint32_t failed_boot_count) const;
 
  private:
   IOtaBackend& ota_;
   DiagnosticLog& diagnostics_;
+  StartupRequirements requirements_{};
 };
 
 struct FirmwareManifest {

@@ -130,6 +130,14 @@ The ESP-IDF second-stage bootloader owns A/B selection. RivetTX:
 - relies on Secure Boot V2 for production signature validation
 - marks a new image valid only after storage, input, display, CRSF, and task
   self-tests pass
+- treats the replaceable ELRS module as optional for firmware acceptance:
+  absent, slow, incompatible, or reconnecting RF hardware cannot reject an
+  otherwise healthy image
+- independently keeps outputs and CH5 locked until that module is online,
+  and locks them again if module readiness is lost
+- defines the standalone OLED and OpenPocket OSD startup policies separately;
+  both require their selected presentation path and mark replaceable ELRS
+  hardware optional for firmware acceptance
 - requests rollback after repeated startup failures
 - enters recovery/maintenance mode when the recovery button is held
 
