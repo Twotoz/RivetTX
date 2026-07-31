@@ -917,12 +917,20 @@ bool WifiBackupPortal::start()
 void WifiBackupPortal::stop()
 {
   if (server_ != nullptr) {
-    (void)httpd_stop(server_);
+    const esp_err_t server_result = httpd_stop(server_);
+    if (server_result != ESP_OK) {
+      ESP_LOGE(kTag, "web server stop failed: %s",
+               esp_err_to_name(server_result));
+    }
     server_ = nullptr;
     safety_.end_maintenance();
   }
 #if CONFIG_RIVETTX_WIFI_BACKUP
-  (void)esp_wifi_stop();
+  const esp_err_t wifi_result = esp_wifi_stop();
+  if (wifi_result != ESP_OK && wifi_result != ESP_ERR_WIFI_NOT_INIT) {
+    ESP_LOGE(kTag, "Wi-Fi stop failed: %s",
+             esp_err_to_name(wifi_result));
+  }
 #endif
 }
 
