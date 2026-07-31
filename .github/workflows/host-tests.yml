@@ -135,7 +135,7 @@ jobs:
       - name: Verify Revision-A 8 MiB/no-PSRAM profile
         if: matrix.defaults == 'sdkconfig.openpocket-rev-a.defaults'
         run: |
-          test "$(grep '^CONFIG_ESPTOOLPY_FLASHSIZE=' build/config/sdkconfig.h | sed 's/.* //')" = '"8MB"'
+          grep -q '^#define CONFIG_ESPTOOLPY_FLASHSIZE_8MB 1$' build/config/sdkconfig.h
           test -z "$(grep '^#define CONFIG_SPIRAM ' build/config/sdkconfig.h || true)"
           firmware_size=$(stat -c %s build/rivettx.bin)
           ota_slot_size=$((0x280000))

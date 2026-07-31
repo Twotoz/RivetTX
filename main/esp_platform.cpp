@@ -80,6 +80,7 @@ bool active_low_input(int gpio_number)
          gpio_get_level(static_cast<gpio_num_t>(gpio_number)) == 0;
 }
 
+#if !CONFIG_RIVETTX_OPENPOCKET_REV_A
 int8_t switch_position(int high_gpio, int low_gpio, bool& valid)
 {
   const bool high = active_low_input(high_gpio);
@@ -93,6 +94,7 @@ int8_t switch_position(int high_gpio, int low_gpio, bool& valid)
   }
   return high ? 1 : (low ? -1 : 0);
 }
+#endif
 
 }  // namespace
 
