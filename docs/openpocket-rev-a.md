@@ -13,7 +13,7 @@ idf.py build
 ```
 
 The partition layout reserves two 2.5 MiB OTA slots, 1.5 MiB for model data,
-and independent crash, recovery, and AMT630A-firmware staging partitions. The
+and independent crash, recovery, and display-firmware staging partitions. The
 layout ends at `0x700000`, leaving 1 MiB unallocated in the 8 MiB device. PSRAM
 is explicitly disabled. Host tests and the OpenPocket compositor allocate no
 PSRAM-specific objects; an ESP32-S3 CI build is the release gate for flash and
@@ -49,8 +49,7 @@ inputs use ADC1.
 | 21 | AT7456E reset |
 | 33 / 34 | Encoder A / B |
 | 35 | Buzzer or haptic driver |
-| 36 | AMT630A flash-bus ownership control |
-| 38 / 39 | AMT630A reset / flash CS |
+| 38 | TW8836 active-low reset |
 | 40 / 41 / 42 | 5V_VIDEO / 5V_DISPLAY / 5V_ELRS enables |
 | 43 / 44 | BQ25895 interrupt / MAX17048 ALERT |
 | 47 / 48 | Backlight PWM / protected VBUS detect |
@@ -63,7 +62,7 @@ task never performs I2C traffic.
 ## Power and simulator policy
 
 The board-power service starts all switched 5 V domains and the backlight off,
-with AMT630A reset asserted. It reads BQ25895 status, MAX17048 cell voltage and
+with TW8836 reset asserted. It reads BQ25895 status, MAX17048 cell voltage and
 state of charge, and protected USB VBUS state outside the control task.
 
 Entering USB simulator mode immediately disables `5V_ELRS` and `5V_VIDEO`,
@@ -71,15 +70,16 @@ blocks CRSF transmission, requests the safety lock, and consequently holds
 ARM/CH5 low. Display power and backlight remain independently controllable, so
 USB-only simulator operation does not require a battery.
 
-AMT630A flash mode first turns the backlight off, asserts AMT630A reset, and
-then grants the ESP32 ownership of the isolated flash bus. Leaving reverses
-ownership before reset is released. The physical PCB must enforce this with a
-break-before-make bus switch; firmware sequencing is not a substitute for bus
-isolation.
+The TW8836 owns its W25Q16 flash exclusively. Factory programming uses the
+controller's documented I2C ISP path: RivetTX halts the embedded MCU, performs
+bounded erase/program/readback operations through TW8836 XRAM and SPI DMA,
+verifies SHA-256 on the ESP32, and restarts the controller. No shared SPI bus
+or flash-ownership multiplexer exists.
 
 ## Validation status
 
-Native tests cover the delayed-start regression and safe power-state logic.
-They do not validate the assembled board. Hardware release remains blocked
-until RX5808, AT7456E, AMT630A, panel, charger, rail, USB, RF coexistence, and
-propeller-off HIL tests pass on Revision-A hardware.
+Native tests cover delayed RX5808 startup, safe power-state logic, and bounded
+TW8836 ISP sequencing including erase/program/readback/checksum/boot failures.
+The merged profile is an engineering prototype: RX5808, AT7456E, TW8836,
+ER-TFT050-6, charger, rail, USB, RF-coexistence, and propeller-off HIL evidence
+is recorded only after first-article boards exist.

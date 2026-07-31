@@ -36,8 +36,7 @@ struct BoardPowerStatus {
   bool video_5v = false;
   bool display_5v = false;
   bool elrs_5v = false;
-  bool amt630a_reset_asserted = true;
-  bool amt630a_flash_owned_by_esp = false;
+  bool display_controller_reset_asserted = true;
   bool simulator_mode = false;
   uint8_t backlight_percent = 0;
 };
@@ -50,8 +49,7 @@ class IBoardPowerHardware {
   virtual bool set_display_5v(bool enabled) = 0;
   virtual bool set_elrs_5v(bool enabled) = 0;
   virtual bool set_backlight(uint8_t percent) = 0;
-  virtual bool set_amt630a_reset(bool asserted) = 0;
-  virtual bool set_amt630a_flash_owner(bool esp_owns_bus) = 0;
+  virtual bool set_display_controller_reset(bool asserted) = 0;
   virtual bool read_vbus_present(bool& present) = 0;
   virtual ChargerTelemetry read_charger() = 0;
   virtual FuelGaugeTelemetry read_fuel_gauge() = 0;
@@ -74,8 +72,6 @@ class BoardPowerController {
   bool request_display(bool enabled, uint8_t backlight_percent = 60);
   bool request_elrs(bool enabled);
   bool set_simulator_mode(bool enabled);
-  bool enter_amt630a_flash_mode();
-  bool leave_amt630a_flash_mode();
   void tick(TimeUs now_us);
   const BoardPowerStatus& status() const;
 

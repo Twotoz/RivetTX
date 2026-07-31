@@ -8,6 +8,7 @@
 #include "rivettx/product.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
+#include "rivettx/tw8836.hpp"
 #include "rivettx/ui.hpp"
 
 #include <array>
@@ -62,29 +63,51 @@ class EspBoard {
   std::atomic<bool> rev_a_controls_valid_{false};
 };
 
-class EspBoardPowerIo final : public IBoardPowerHardware {
+class EspBoardPowerIo final : public IBoardPowerHardware,
+                              public ITw8836Hardware {
  public:
   bool initialize() override;
   bool set_video_5v(bool enabled) override;
   bool set_display_5v(bool enabled) override;
   bool set_elrs_5v(bool enabled) override;
   bool set_backlight(uint8_t percent) override;
-  bool set_amt630a_reset(bool asserted) override;
-  bool set_amt630a_flash_owner(bool esp_owns_bus) override;
+  bool set_display_controller_reset(bool asserted) override;
   bool read_vbus_present(bool& present) override;
   ChargerTelemetry read_charger() override;
   FuelGaugeTelemetry read_fuel_gauge() override;
   bool read_expanded_controls(uint32_t& active_low_bits);
+  bool read_identity(uint16_t& identity) override;
+  bool enter_isp() override;
+  bool write_enable() override;
+  bool start_erase() override;
+  bool flash_busy(bool& busy) override;
+  bool load_xram_block(const uint8_t* data, std::size_t size) override;
+  bool start_program_flash_block(uint32_t address,
+                                 std::size_t size) override;
+  bool begin_read_flash_block(uint32_t address,
+                              std::size_t size) override;
+  bool read_xram_block(uint8_t* data, std::size_t size) override;
+  bool exit_isp_and_reset() override;
+  bool read_runtime_status(Tw8836RuntimeStatus& status) override;
 
  private:
   bool set_output(int gpio, bool enabled);
   bool read_register(i2c_master_dev_handle_t device, uint8_t reg,
                      uint8_t* data, std::size_t size);
+  bool write_register(i2c_master_dev_handle_t device, uint8_t reg,
+                      const uint8_t* data, std::size_t size);
+  bool tw8836_select_page(uint8_t page);
+  bool tw8836_read(uint16_t reg, uint8_t& value);
+  bool tw8836_write(uint16_t reg, uint8_t value);
+  bool tw8836_dma(uint16_t xram, uint32_t flash, uint32_t size,
+                  uint8_t control, uint8_t command, uint8_t busy);
 
   i2c_master_bus_handle_t bus_ = nullptr;
   i2c_master_dev_handle_t charger_ = nullptr;
   i2c_master_dev_handle_t gauge_ = nullptr;
+  i2c_master_dev_handle_t tw8836_ = nullptr;
   std::array<i2c_master_dev_handle_t, 2> expanders_{};
+  uint8_t tw8836_page_ = 0xff;
   bool initialized_ = false;
 };
 

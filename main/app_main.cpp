@@ -139,6 +139,15 @@ BoardPowerConfig board_power_config()
   return config;
 }
 
+Tw8836Config tw8836_config()
+{
+  Tw8836Config config{};
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  config.operation_timeout_ms = CONFIG_RIVETTX_TW8836_ISP_TIMEOUT_MS;
+#endif
+  return config;
+}
+
 class SpecialActionMailbox final : public ISpecialActionHandler {
  public:
   void execute(SpecialAction action, int16_t parameter,
@@ -211,6 +220,7 @@ struct Application {
   EspBoard board;
   EspBoardPowerIo board_power_io;
   BoardPowerController board_power{board_power_io, board_power_config()};
+  Tw8836Controller display_controller{board_power_io, tw8836_config()};
   EspRx5808Io vrx_io{board};
   Rtc6715Backend vrx_hardware{vrx_io, rtc6715_config()};
   VrxController vrx{vrx_hardware, vrx_controller_config()};
@@ -284,6 +294,7 @@ struct Application {
   portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
   VrxStatus latest_vrx{};
   BoardPowerStatus latest_board_power{};
+  Tw8836Status latest_display_controller{};
   portMUX_TYPE vrx_command_lock = portMUX_INITIALIZER_UNLOCKED;
   VrxCommandQueue vrx_commands{};
   std::atomic<int16_t> vrx_scan_result{-1};
@@ -2206,6 +2217,7 @@ void board_io_task(void*)
   bool previous_simulator = false;
   bool previous_display = true;
   uint8_t previous_backlight = CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT;
+  Tw8836State previous_controller_state = Tw8836State::Unavailable;
   while (true) {
     const TimeUs current = now_us();
     uint32_t controls = 0;
@@ -2236,8 +2248,19 @@ void board_io_task(void*)
       previous_backlight = backlight;
     }
     app.board_power.tick(current);
+    app.display_controller.tick(current);
+    const Tw8836Status controller_status = app.display_controller.status();
+    if (controller_status.state != previous_controller_state) {
+      ESP_LOGI(kTag, "TW8836 state=%u fault=%u video=%u standard=%u",
+               static_cast<unsigned>(controller_status.state),
+               static_cast<unsigned>(controller_status.fault),
+               controller_status.runtime.video_present ? 1U : 0U,
+               static_cast<unsigned>(controller_status.runtime.standard));
+      previous_controller_state = controller_status.state;
+    }
     taskENTER_CRITICAL(&app.frame_lock);
     app.latest_board_power = app.board_power.status();
+    app.latest_display_controller = controller_status;
     taskEXIT_CRITICAL(&app.frame_lock);
     vTaskDelay(pdMS_TO_TICKS(4));
   }
@@ -2351,6 +2374,9 @@ extern "C" void app_main()
         true, CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT);
     (void)app.board_power.request_elrs(true);
     app.latest_board_power = app.board_power.status();
+    if (!app.display_controller.initialize(now_us())) {
+      ESP_LOGW(kTag, "TW8836 unavailable; controls and CRSF remain active");
+    }
   } else {
     ESP_LOGE(kTag, "Revision-A board power initialization failed");
   }

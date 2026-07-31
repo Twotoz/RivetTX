@@ -10,6 +10,7 @@ idf_component_register(
     "rx5808.cpp"
     "services.cpp"
     "storage.cpp"
+    "tw8836.cpp"
     "ui.cpp"
   INCLUDE_DIRS "include"
 )

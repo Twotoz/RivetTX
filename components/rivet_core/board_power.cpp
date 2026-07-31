@@ -22,20 +22,18 @@ bool BoardPowerController::initialize(bool simulator_mode)
   if (!hardware_.initialize() || !hardware_.set_backlight(0) ||
       !hardware_.set_elrs_5v(false) || !hardware_.set_video_5v(false) ||
       !hardware_.set_display_5v(false) ||
-      !hardware_.set_amt630a_reset(true) ||
-      !hardware_.set_amt630a_flash_owner(false)) {
+      !hardware_.set_display_controller_reset(true)) {
     return false;
   }
   initialized_ = true;
-  status_.amt630a_reset_asserted = true;
+  status_.display_controller_reset_asserted = true;
   status_.simulator_mode = simulator_mode;
   return true;
 }
 
 bool BoardPowerController::request_video(bool enabled)
 {
-  if (!initialized_ || status_.amt630a_flash_owned_by_esp ||
-      (status_.simulator_mode && enabled)) {
+  if (!initialized_ || (status_.simulator_mode && enabled)) {
     return false;
   }
   if (!hardware_.set_video_5v(enabled)) {
@@ -48,31 +46,31 @@ bool BoardPowerController::request_video(bool enabled)
 bool BoardPowerController::request_display(bool enabled,
                                            uint8_t backlight_percent)
 {
-  if (!initialized_ || status_.amt630a_flash_owned_by_esp) {
+  if (!initialized_) {
     return false;
   }
   backlight_percent = std::min<uint8_t>(100, backlight_percent);
   if (!enabled) {
     if (!hardware_.set_backlight(0) ||
-        !hardware_.set_amt630a_reset(true) ||
+        !hardware_.set_display_controller_reset(true) ||
         !hardware_.set_display_5v(false)) {
       return false;
     }
     status_.backlight_percent = 0;
-    status_.amt630a_reset_asserted = true;
+    status_.display_controller_reset_asserted = true;
     status_.display_5v = false;
     return true;
   }
   if (!hardware_.set_display_5v(true) ||
-      !hardware_.set_amt630a_reset(false) ||
+      !hardware_.set_display_controller_reset(false) ||
       !hardware_.set_backlight(backlight_percent)) {
     (void)hardware_.set_backlight(0);
-    (void)hardware_.set_amt630a_reset(true);
+    (void)hardware_.set_display_controller_reset(true);
     (void)hardware_.set_display_5v(false);
     return false;
   }
   status_.display_5v = true;
-  status_.amt630a_reset_asserted = false;
+  status_.display_controller_reset_asserted = false;
   status_.backlight_percent = backlight_percent;
   return true;
 }
@@ -101,34 +99,6 @@ bool BoardPowerController::set_simulator_mode(bool enabled)
     status_.elrs_5v = false;
     status_.video_5v = false;
   }
-  return true;
-}
-
-bool BoardPowerController::enter_amt630a_flash_mode()
-{
-  if (!initialized_ || status_.amt630a_flash_owned_by_esp ||
-      !hardware_.set_backlight(0) ||
-      !hardware_.set_amt630a_reset(true) ||
-      !hardware_.set_amt630a_flash_owner(true)) {
-    return false;
-  }
-  status_.backlight_percent = 0;
-  status_.amt630a_reset_asserted = true;
-  status_.amt630a_flash_owned_by_esp = true;
-  return true;
-}
-
-bool BoardPowerController::leave_amt630a_flash_mode()
-{
-  if (!initialized_ || !status_.amt630a_flash_owned_by_esp ||
-      !hardware_.set_amt630a_flash_owner(false)) {
-    return false;
-  }
-  status_.amt630a_flash_owned_by_esp = false;
-  if (!hardware_.set_amt630a_reset(false)) {
-    return false;
-  }
-  status_.amt630a_reset_asserted = false;
   return true;
 }
 

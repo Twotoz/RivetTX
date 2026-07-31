@@ -14,6 +14,7 @@ CORE := \
 	components/rivet_core/rx5808.cpp \
 	components/rivet_core/services.cpp \
 	components/rivet_core/storage.cpp \
+	components/rivet_core/tw8836.cpp \
 	components/rivet_core/ui.cpp
 SIMULATION := simulator/virtual_hardware.cpp
 COMMON_SOURCES := $(CORE) $(SIMULATION)
