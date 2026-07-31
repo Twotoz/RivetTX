@@ -386,8 +386,9 @@ void CharacterOsdComposer::compose_home(
     text(13, 11, "MORE");
   }
 
-  text(0, 13, "CH5");
-  number(5, 13, home.channels[4]);
+  text(0, 13, "ARM CH5");
+  text(9, 13, home.channels[4] > 0 ? "HIGH" : "LOW");
+  number(15, 13, home.channels[4]);
   text(0, 15, "ENTER MENU");
   right_text(15, "RIVETTX");
 }
@@ -715,6 +716,227 @@ std::size_t CharacterOsdUi::scroll_offset() const
 bool CharacterOsdUi::editing() const
 {
   return editing_;
+}
+
+OpenPocketMenuController::OpenPocketMenuController(
+    IOpenPocketScreenProvider& screens)
+    : screens_(screens)
+{
+}
+
+UiScreen OpenPocketMenuController::screen_for(OpenPocketPage page)
+{
+  switch (page) {
+    case OpenPocketPage::MainMenu:
+      return make_openpocket_main_menu_screen();
+    case OpenPocketPage::ModelMenu:
+      return make_openpocket_group_menu_screen(OpenPocketMenuGroup::Model);
+    case OpenPocketPage::RadioMenu:
+      return make_openpocket_group_menu_screen(OpenPocketMenuGroup::Radio);
+    case OpenPocketPage::ElrsMenu:
+      return make_openpocket_group_menu_screen(OpenPocketMenuGroup::Elrs);
+    case OpenPocketPage::VideoMenu:
+      return make_openpocket_group_menu_screen(OpenPocketMenuGroup::Video);
+    case OpenPocketPage::UsbMenu:
+      return make_openpocket_group_menu_screen(OpenPocketMenuGroup::Usb);
+    case OpenPocketPage::DiagnosticsMenu:
+      return make_openpocket_group_menu_screen(
+          OpenPocketMenuGroup::Diagnostics);
+    case OpenPocketPage::SystemMenu:
+      return make_openpocket_group_menu_screen(OpenPocketMenuGroup::System);
+    default:
+      return screens_.screen(page);
+  }
+}
+
+void OpenPocketMenuController::start(const UiHomeStatus& home)
+{
+  home_ = home;
+  history_size_ = 0;
+  page_ = OpenPocketPage::Home;
+  ui_.set_screen(screen_for(page_));
+  ui_.update_home(home_);
+  change_pending_ = false;
+}
+
+void OpenPocketMenuController::refresh(const UiHomeStatus& home)
+{
+  home_ = home;
+  ui_.set_screen(screen_for(page_));
+  ui_.update_home(home_);
+}
+
+bool OpenPocketMenuController::route(
+    const UiChange& change, OpenPocketPage& target) const
+{
+  if (page_ == OpenPocketPage::Home && change.field_id == "menu") {
+    target = OpenPocketPage::MainMenu;
+    return true;
+  }
+  if (page_ == OpenPocketPage::MainMenu) {
+    const std::array<std::pair<const char*, OpenPocketPage>, 7> groups{{
+        {"group.model", OpenPocketPage::ModelMenu},
+        {"group.radio", OpenPocketPage::RadioMenu},
+        {"group.elrs", OpenPocketPage::ElrsMenu},
+        {"group.video", OpenPocketPage::VideoMenu},
+        {"group.usb", OpenPocketPage::UsbMenu},
+        {"group.diagnostics", OpenPocketPage::DiagnosticsMenu},
+        {"group.system", OpenPocketPage::SystemMenu},
+    }};
+    for (const auto& group : groups) {
+      if (change.field_id == group.first) {
+        target = group.second;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  struct Route {
+    OpenPocketPage parent;
+    const char* field;
+    OpenPocketPage target;
+  };
+  static constexpr std::array<Route, 19> routes{{
+      {OpenPocketPage::ModelMenu, "models", OpenPocketPage::Models},
+      {OpenPocketPage::ModelMenu, "model", OpenPocketPage::ModelSetup},
+      {OpenPocketPage::ModelMenu, "inputs", OpenPocketPage::Inputs},
+      {OpenPocketPage::ModelMenu, "mixes", OpenPocketPage::Mixes},
+      {OpenPocketPage::ModelMenu, "limits", OpenPocketPage::Limits},
+      {OpenPocketPage::ModelMenu, "flight_modes",
+       OpenPocketPage::FlightModes},
+      {OpenPocketPage::ModelMenu, "curves", OpenPocketPage::Curves},
+      {OpenPocketPage::ModelMenu, "logical",
+       OpenPocketPage::LogicalSwitches},
+      {OpenPocketPage::ModelMenu, "special",
+       OpenPocketPage::SpecialFunctions},
+      {OpenPocketPage::ModelMenu, "timers", OpenPocketPage::Timers},
+      {OpenPocketPage::RadioMenu, "outputs", OpenPocketPage::Outputs},
+      {OpenPocketPage::RadioMenu, "power", OpenPocketPage::Power},
+      {OpenPocketPage::ElrsMenu, "elrs", OpenPocketPage::Elrs},
+      {OpenPocketPage::ElrsMenu, "finder", OpenPocketPage::Finder},
+      {OpenPocketPage::VideoMenu, "video", OpenPocketPage::Video},
+      {OpenPocketPage::UsbMenu, "usb", OpenPocketPage::Usb},
+      {OpenPocketPage::DiagnosticsMenu, "warnings",
+       OpenPocketPage::Warnings},
+      {OpenPocketPage::DiagnosticsMenu, "telemetry",
+       OpenPocketPage::Telemetry},
+      {OpenPocketPage::SystemMenu, "web", OpenPocketPage::Web},
+  }};
+  for (const auto& item : routes) {
+    if (page_ == item.parent && change.field_id == item.field) {
+      target = item.target;
+      return true;
+    }
+  }
+  if (page_ == OpenPocketPage::SystemMenu &&
+      change.field_id == "system") {
+    target = OpenPocketPage::System;
+    return true;
+  }
+  return false;
+}
+
+void OpenPocketMenuController::navigate(OpenPocketPage target)
+{
+  if (history_size_ < history_.size()) {
+    history_[history_size_++] = page_;
+  }
+  page_ = target;
+  ui_.set_screen(screen_for(page_));
+  ui_.update_home(home_);
+}
+
+void OpenPocketMenuController::go_back()
+{
+  if (history_size_ == 0) {
+    go_home();
+    return;
+  }
+  page_ = history_[--history_size_];
+  ui_.set_screen(screen_for(page_));
+  ui_.update_home(home_);
+}
+
+void OpenPocketMenuController::go_home()
+{
+  history_size_ = 0;
+  page_ = OpenPocketPage::Home;
+  ui_.set_screen(screen_for(page_));
+  ui_.update_home(home_);
+}
+
+bool OpenPocketMenuController::handle(const UiEvent& event)
+{
+  if (event.type == UiEventType::Home) {
+    go_home();
+    return true;
+  }
+  const bool handled = ui_.handle(event);
+  UiChange change{};
+  if (ui_.take_change(change)) {
+    OpenPocketPage target = page_;
+    if (route(change, target)) {
+      navigate(target);
+    } else {
+      pending_change_ = change;
+      change_pending_ = true;
+    }
+  }
+  if (ui_.take_back_request()) {
+    go_back();
+  }
+  return handled;
+}
+
+bool OpenPocketMenuController::render(const VrxStatus& vrx)
+{
+  return ui_.render(vrx);
+}
+
+bool OpenPocketMenuController::take_change(UiChange& change)
+{
+  if (!change_pending_) {
+    return false;
+  }
+  change = pending_change_;
+  change_pending_ = false;
+  return true;
+}
+
+OpenPocketPage OpenPocketMenuController::page() const
+{
+  return page_;
+}
+
+std::size_t OpenPocketMenuController::depth() const
+{
+  return history_size_;
+}
+
+const UiScreen& OpenPocketMenuController::screen() const
+{
+  return ui_.screen();
+}
+
+const CharacterOsdFrame& OpenPocketMenuController::frame() const
+{
+  return ui_.frame();
+}
+
+std::size_t OpenPocketMenuController::selected_index() const
+{
+  return ui_.selected_index();
+}
+
+std::size_t OpenPocketMenuController::scroll_offset() const
+{
+  return ui_.scroll_offset();
+}
+
+bool OpenPocketMenuController::editing() const
+{
+  return ui_.editing();
 }
 
 bool UsbSimulator::enter(bool outputs_locked, bool rf_safety_lock)

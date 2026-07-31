@@ -72,6 +72,89 @@ class FakeVrxHardware final : public IVrxHardware {
   bool available = true;
 };
 
+class FakeOpenPocketScreens final : public IOpenPocketScreenProvider {
+ public:
+  UiScreen screen(OpenPocketPage page) override
+  {
+    ++requests;
+    last_page = page;
+    switch (page) {
+      case OpenPocketPage::Home:
+        return make_openpocket_home_screen(model, home);
+      case OpenPocketPage::Warnings:
+        return make_warnings_screen(home);
+      case OpenPocketPage::Models:
+        return {"models", "Models",
+                {{"select.0", "DEFAULT", "ACTIVE", UiFieldKind::Action,
+                  0, 0, 31, false, true}}};
+      case OpenPocketPage::Outputs:
+        return make_outputs_screen(channels);
+      case OpenPocketPage::ModelSetup:
+        return make_model_setup_screen(model);
+      case OpenPocketPage::Inputs:
+        return make_inputs_screen(model);
+      case OpenPocketPage::Mixes:
+        return make_mixes_screen(model);
+      case OpenPocketPage::Limits:
+        return make_output_limits_screen(model);
+      case OpenPocketPage::FlightModes:
+        return make_flight_modes_screen(model);
+      case OpenPocketPage::Curves:
+        return make_curves_screen(model);
+      case OpenPocketPage::LogicalSwitches:
+        return make_logical_switches_screen(model);
+      case OpenPocketPage::SpecialFunctions:
+        return make_special_functions_screen(model);
+      case OpenPocketPage::Timers:
+        return make_timers_screen(model, timers);
+      case OpenPocketPage::Elrs:
+        return make_elrs_screen(elrs, true);
+      case OpenPocketPage::Finder:
+        return make_elrs_finder_screen(finder);
+      case OpenPocketPage::Video:
+        return make_openpocket_video_screen(vrx);
+      case OpenPocketPage::Usb:
+        return {"usb", "USB Simulator",
+                {{"enable", "START SIMULATOR", "ENTER",
+                  UiFieldKind::Action, 0, 0, 1, false, true}}};
+      case OpenPocketPage::Web:
+        return {"web", "Web Config",
+                {{"start", "START WEB CONFIG", "ENTER",
+                  UiFieldKind::Action, 0, 0, 1, false, true}}};
+      case OpenPocketPage::Telemetry:
+        return make_telemetry_screen(
+            {{"lq", "UPLINK LQ", "92%", UiFieldKind::Label,
+              92, 0, 100, false, true}});
+      case OpenPocketPage::Power:
+        return {"power", "Power",
+                {{"state", "STATE", "OK", UiFieldKind::Label,
+                  0, 0, 0, false, true}}};
+      case OpenPocketPage::System:
+        return make_system_screen(3900, 65536, 0, "test");
+      case OpenPocketPage::MainMenu:
+      case OpenPocketPage::ModelMenu:
+      case OpenPocketPage::RadioMenu:
+      case OpenPocketPage::ElrsMenu:
+      case OpenPocketPage::VideoMenu:
+      case OpenPocketPage::UsbMenu:
+      case OpenPocketPage::DiagnosticsMenu:
+      case OpenPocketPage::SystemMenu:
+        return {};
+    }
+    return {};
+  }
+
+  Model model = make_default_model();
+  UiHomeStatus home{};
+  ChannelFrame channels{};
+  std::array<TimerState, kMaxTimers> timers{};
+  ElrsManagerStatus elrs{};
+  ElrsFinderStatus finder{};
+  VrxStatus vrx{};
+  OpenPocketPage last_page = OpenPocketPage::Home;
+  uint32_t requests = 0;
+};
+
 class FakeToneOutput final : public IToneOutput {
  public:
   bool play_tone(uint16_t frequency_hz,
@@ -1702,6 +1785,7 @@ void test_openpocket_product_services()
   CHECK(osd_row(osd.frame(), 5).find("TX BAT 3900") == 0);
   CHECK(osd_row(osd.frame(), 7).find("VRX B4 CH4 5800MHZ") == 0);
   CHECK(osd_row(osd.frame(), 8).find("VIDEO SIGNAL OK") == 0);
+  CHECK(osd_row(osd.frame(), 13).find("ARM CH5  LOW") == 0);
   CHECK(osd_row(osd.frame(), 15).find("ENTER MENU") == 0);
 
   UiHomeStatus warning_home = home;
@@ -1844,6 +1928,120 @@ void test_openpocket_product_services()
   CHECK(guide.complete());
 }
 
+void test_complete_openpocket_menu()
+{
+  FakeOpenPocketScreens screens;
+  screens.home.battery_mv = 3900;
+  screens.home.battery_percent = 75;
+  screens.home.battery_percent_valid = true;
+  screens.home.link_quality = 92;
+  screens.home.module_online = true;
+  screens.home.channels[4] = -kResolution;
+  screens.vrx.available = true;
+  screens.vrx.signal_fresh = true;
+  screens.vrx.video_signal = true;
+  screens.vrx.band = 3;
+  screens.vrx.channel = 3;
+  screens.vrx.frequency_mhz = 5800;
+
+  struct GroupExpectation {
+    OpenPocketPage group;
+    std::vector<OpenPocketPage> details;
+  };
+  const std::array<GroupExpectation, 7> expectations{{
+      {OpenPocketPage::ModelMenu,
+       {OpenPocketPage::Models, OpenPocketPage::ModelSetup,
+        OpenPocketPage::Inputs, OpenPocketPage::Mixes,
+        OpenPocketPage::Limits, OpenPocketPage::FlightModes,
+        OpenPocketPage::Curves, OpenPocketPage::LogicalSwitches,
+        OpenPocketPage::SpecialFunctions, OpenPocketPage::Timers}},
+      {OpenPocketPage::RadioMenu,
+       {OpenPocketPage::Outputs, OpenPocketPage::Power}},
+      {OpenPocketPage::ElrsMenu,
+       {OpenPocketPage::Elrs, OpenPocketPage::Finder}},
+      {OpenPocketPage::VideoMenu, {OpenPocketPage::Video}},
+      {OpenPocketPage::UsbMenu, {OpenPocketPage::Usb}},
+      {OpenPocketPage::DiagnosticsMenu,
+       {OpenPocketPage::Warnings, OpenPocketPage::Telemetry}},
+      {OpenPocketPage::SystemMenu,
+       {OpenPocketPage::Web, OpenPocketPage::System}},
+  }};
+
+  OpenPocketMenuController menu(screens);
+  for (std::size_t group_index = 0;
+       group_index < expectations.size(); ++group_index) {
+    menu.start(screens.home);
+    CHECK(menu.page() == OpenPocketPage::Home);
+    CHECK(menu.depth() == 0);
+    CHECK(menu.handle({UiEventType::Enter}));
+    CHECK(menu.page() == OpenPocketPage::MainMenu);
+    CHECK(menu.depth() == 1);
+    if (group_index != 0) {
+      CHECK(menu.handle(
+          {UiEventType::Rotate, static_cast<int16_t>(group_index)}));
+    }
+    CHECK(menu.handle({UiEventType::Enter}));
+    CHECK(menu.page() == expectations[group_index].group);
+    CHECK(menu.depth() == 2);
+
+    for (std::size_t detail_index = 0;
+         detail_index < expectations[group_index].details.size();
+         ++detail_index) {
+      if (detail_index != 0) {
+        CHECK(menu.handle(
+            {UiEventType::Rotate, static_cast<int16_t>(detail_index)}));
+      }
+      CHECK(menu.handle({UiEventType::Enter}));
+      CHECK(menu.page() ==
+            expectations[group_index].details[detail_index]);
+      CHECK(menu.depth() == 3);
+      CHECK(screens.last_page ==
+            expectations[group_index].details[detail_index]);
+      CHECK(menu.render(screens.vrx));
+      CHECK(menu.handle({UiEventType::Back}));
+      CHECK(menu.page() == expectations[group_index].group);
+      CHECK(menu.depth() == 2);
+    }
+    CHECK(menu.handle({UiEventType::Back}));
+    CHECK(menu.page() == OpenPocketPage::MainMenu);
+    CHECK(menu.handle({UiEventType::Back}));
+    CHECK(menu.page() == OpenPocketPage::Home);
+    CHECK(menu.depth() == 0);
+  }
+
+  menu.start(screens.home);
+  CHECK(menu.handle({UiEventType::Enter}));
+  CHECK(menu.handle({UiEventType::Enter}));
+  CHECK(menu.handle({UiEventType::Rotate, 1}));
+  CHECK(menu.handle({UiEventType::Enter}));
+  CHECK(menu.page() == OpenPocketPage::ModelSetup);
+  const int32_t original_model_id = menu.screen().fields[0].value;
+  CHECK(menu.handle({UiEventType::Enter}));
+  CHECK(menu.editing());
+  CHECK(menu.handle({UiEventType::Rotate, 3}));
+  CHECK(menu.handle({UiEventType::Back}));
+  CHECK(menu.page() == OpenPocketPage::ModelSetup);
+  CHECK(!menu.editing());
+  CHECK(menu.screen().fields[0].value == original_model_id);
+  UiChange change{};
+  CHECK(!menu.take_change(change));
+
+  CHECK(menu.handle({UiEventType::Enter}));
+  CHECK(menu.handle({UiEventType::Rotate, 2}));
+  CHECK(menu.handle({UiEventType::Enter}));
+  CHECK(menu.take_change(change));
+  CHECK(change.screen_id == "model");
+  CHECK(change.field_id == "model_id");
+  CHECK(change.value == original_model_id + 2);
+  CHECK(menu.page() == OpenPocketPage::ModelSetup);
+
+  CHECK(menu.handle({UiEventType::Home}));
+  CHECK(menu.page() == OpenPocketPage::Home);
+  CHECK(menu.depth() == 0);
+  CHECK(menu.render(screens.vrx));
+  CHECK(menu.frame().at(0, 15) == 'E');
+}
+
 }  // namespace
 
 int main()
@@ -1862,6 +2060,7 @@ int main()
   test_services();
   test_module_update_backup_and_calibration();
   test_openpocket_product_services();
+  test_complete_openpocket_menu();
 
   if (failures != 0) {
     std::cerr << failures << " of " << checks << " checks failed\n";

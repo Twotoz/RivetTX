@@ -11,8 +11,9 @@ RivetTX supports one presentation path per product build:
 
 The current physical firmware backend is the standalone OLED profile. The
 OpenPocket core provides its separate interactive 30×16 home, grouped menu,
-detail and edit presentation, but its exact VRX, OSD silicon, SPI backend and
-target-PCB validation remain product hardware work.
+all shared detail routes, bounded navigation stack and edit presentation, but
+its exact VRX, OSD silicon, SPI backend and target-PCB validation remain
+product hardware work.
 
 ## Minimum standalone transmitter
 

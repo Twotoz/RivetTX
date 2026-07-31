@@ -120,6 +120,13 @@ the shared `UiScreen` model. It owns character-cell selection, twelve-row
 scrolling and transactional editing: ENTER confirms a staged value and BACK
 restores it. It does not instantiate or mirror the OLED renderer.
 
+The fixed-capacity OpenPocket navigation stack exposes all Model, Radio,
+ExpressLRS, Video, USB, Diagnostics and System detail routes. Encoder rotation
+and UP/DOWN move the same selection; ENTER opens or confirms. BACK cancels an
+active edit, otherwise it pops one level. A `Home` event clears the stack and
+returns directly to status; target hardware may map that event to a dedicated
+key or documented long press.
+
 The compositor does not access SPI or video hardware itself. The selected
 production VRX and AT7456E-class device must implement those target interfaces
 after the schematic and pinout are frozen.

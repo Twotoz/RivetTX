@@ -400,6 +400,103 @@ struct DisplayProfile {
   const char* filename;
 };
 
+class SimulatorOpenPocketScreens final : public IOpenPocketScreenProvider {
+ public:
+  SimulatorOpenPocketScreens(const Model& model, const UiHomeStatus& home,
+                             const ChannelFrame& channels,
+                             const VrxStatus& vrx)
+      : model_(model), home_(home), channels_(channels), vrx_(vrx)
+  {
+  }
+
+  UiScreen screen(OpenPocketPage page) override
+  {
+    switch (page) {
+      case OpenPocketPage::Home:
+        return make_openpocket_home_screen(model_, home_);
+      case OpenPocketPage::Warnings:
+        return make_warnings_screen(home_);
+      case OpenPocketPage::Models:
+        return {"models", "Models",
+                {{"select.0", model_.name.data(), "ACTIVE",
+                  UiFieldKind::Action, 0, 0, 31, false, true},
+                 {"copy", "COPY ACTIVE", "ENTER", UiFieldKind::Action,
+                  0, 0, 1, false, true}}};
+      case OpenPocketPage::Outputs:
+        return make_outputs_screen(channels_);
+      case OpenPocketPage::ModelSetup:
+        return make_model_setup_screen(model_);
+      case OpenPocketPage::Inputs:
+        return make_inputs_screen(model_);
+      case OpenPocketPage::Mixes:
+        return make_mixes_screen(model_);
+      case OpenPocketPage::Limits:
+        return make_output_limits_screen(model_);
+      case OpenPocketPage::FlightModes:
+        return make_flight_modes_screen(model_);
+      case OpenPocketPage::Curves:
+        return make_curves_screen(model_);
+      case OpenPocketPage::LogicalSwitches:
+        return make_logical_switches_screen(model_);
+      case OpenPocketPage::SpecialFunctions:
+        return make_special_functions_screen(model_);
+      case OpenPocketPage::Timers:
+        return make_timers_screen(model_, timers_);
+      case OpenPocketPage::Elrs:
+        return make_elrs_screen(elrs_, true);
+      case OpenPocketPage::Finder:
+        return make_elrs_finder_screen(finder_);
+      case OpenPocketPage::Video:
+        return make_openpocket_video_screen(vrx_);
+      case OpenPocketPage::Usb:
+        return {"usb", "USB Simulator",
+                {{"state", "USB GAMEPAD", "S3 READY", UiFieldKind::Label,
+                  0, 0, 0, false, true},
+                 {"enable", "START SIMULATOR", "ENTER",
+                  UiFieldKind::Action, 0, 0, 1, false, true}}};
+      case OpenPocketPage::Web:
+        return {"web", "Web Config",
+                {{"state", "CONFIG WIFI", "OFF", UiFieldKind::Label,
+                  0, 0, 0, false, true},
+                 {"start", "START WEB CONFIG", "ENTER",
+                  UiFieldKind::Action, 0, 0, 1, false, true}}};
+      case OpenPocketPage::Telemetry:
+        return make_telemetry_screen(
+            {{"lq", "UPLINK LQ", "96%", UiFieldKind::Label,
+              96, 0, 100, false, true},
+             {"rssi", "UPLINK RSSI", "-42DBM", UiFieldKind::Label,
+              -42, -140, 0, false, true}});
+      case OpenPocketPage::Power:
+        return {"power", "Power",
+                {{"battery", "BATTERY", "3800MV", UiFieldKind::Label,
+                  3800, 0, 0, false, true},
+                 {"state", "STATE", "OK", UiFieldKind::Label,
+                  0, 0, 0, false, true}}};
+      case OpenPocketPage::System:
+        return make_system_screen(3800, 65536, 0, "sim");
+      case OpenPocketPage::MainMenu:
+      case OpenPocketPage::ModelMenu:
+      case OpenPocketPage::RadioMenu:
+      case OpenPocketPage::ElrsMenu:
+      case OpenPocketPage::VideoMenu:
+      case OpenPocketPage::UsbMenu:
+      case OpenPocketPage::DiagnosticsMenu:
+      case OpenPocketPage::SystemMenu:
+        return {};
+    }
+    return {};
+  }
+
+ private:
+  const Model& model_;
+  const UiHomeStatus& home_;
+  const ChannelFrame& channels_;
+  const VrxStatus& vrx_;
+  std::array<TimerState, kMaxTimers> timers_{};
+  ElrsManagerStatus elrs_{};
+  ElrsFinderStatus finder_{};
+};
+
 bool render_displays(const Options& options, const Model& model,
                      const ChannelFrame& channels)
 {
@@ -483,39 +580,108 @@ bool render_openpocket_osd(const Options& options, const Model& model,
   vrx.signal_fresh = true;
   vrx.video_signal = true;
 
-  CharacterOsdUi ui;
-  const auto write_frame = [&output, &ui](const char* name) {
+  const auto write_frame = [&output](const char* name,
+                                     const CharacterOsdFrame& frame) {
     output << "=== " << name << " ===\n";
     for (std::size_t row = 0; row < kOsdRows; ++row) {
       output.write(
-          ui.frame().cells.data() + row * kOsdColumns,
+          frame.cells.data() + row * kOsdColumns,
           static_cast<std::streamsize>(kOsdColumns));
       output << "\n";
     }
   };
 
-  ui.set_screen(make_openpocket_home_screen(model, home));
-  (void)ui.render(vrx);
-  write_frame("HOME");
+  SimulatorOpenPocketScreens screens(model, home, channels, vrx);
+  OpenPocketMenuController menu(screens);
+  menu.start(home);
+  (void)menu.render(vrx);
+  write_frame("HOME", menu.frame());
 
-  ui.set_screen(make_openpocket_main_menu_screen());
-  (void)ui.render(vrx);
-  write_frame("MAIN MENU");
+  (void)menu.handle({UiEventType::Enter});
+  (void)menu.render(vrx);
+  write_frame("MAIN MENU", menu.frame());
 
-  ui.set_screen(
-      make_openpocket_group_menu_screen(OpenPocketMenuGroup::Model));
-  (void)ui.handle({UiEventType::Rotate, 1});
-  (void)ui.render(vrx);
-  write_frame("MODEL MENU");
+  (void)menu.handle({UiEventType::Enter});
+  (void)menu.handle({UiEventType::Rotate, 1});
+  (void)menu.render(vrx);
+  write_frame("MODEL MENU", menu.frame());
 
-  ui.set_screen(make_model_setup_screen(model));
-  (void)ui.render(vrx);
-  write_frame("DETAIL");
+  (void)menu.handle({UiEventType::Enter});
+  (void)menu.render(vrx);
+  write_frame("MODEL DETAIL", menu.frame());
 
-  (void)ui.handle({UiEventType::Enter});
-  (void)ui.handle({UiEventType::Rotate, 2});
-  (void)ui.render(vrx);
-  write_frame("EDIT");
+  (void)menu.handle({UiEventType::Enter});
+  (void)menu.handle({UiEventType::Rotate, 2});
+  (void)menu.render(vrx);
+  write_frame("MODEL EDIT", menu.frame());
+
+  CharacterOsdUi page_ui;
+  const std::array<std::pair<OpenPocketMenuGroup, const char*>, 7> groups{{
+      {OpenPocketMenuGroup::Model, "GROUP MODEL"},
+      {OpenPocketMenuGroup::Radio, "GROUP RADIO"},
+      {OpenPocketMenuGroup::Elrs, "GROUP ELRS"},
+      {OpenPocketMenuGroup::Video, "GROUP VIDEO"},
+      {OpenPocketMenuGroup::Usb, "GROUP USB"},
+      {OpenPocketMenuGroup::Diagnostics, "GROUP DIAGNOSTICS"},
+      {OpenPocketMenuGroup::System, "GROUP SYSTEM"},
+  }};
+  for (const auto& group : groups) {
+    page_ui.set_screen(make_openpocket_group_menu_screen(group.first));
+    page_ui.update_home(home);
+    (void)page_ui.render(vrx);
+    write_frame(group.second, page_ui.frame());
+  }
+
+  const std::array<std::pair<OpenPocketPage, const char*>, 20> details{{
+      {OpenPocketPage::Warnings, "DETAIL WARNINGS"},
+      {OpenPocketPage::Models, "DETAIL MODELS"},
+      {OpenPocketPage::Outputs, "DETAIL OUTPUTS"},
+      {OpenPocketPage::ModelSetup, "DETAIL MODEL SETUP"},
+      {OpenPocketPage::Inputs, "DETAIL INPUTS"},
+      {OpenPocketPage::Mixes, "DETAIL MIXES"},
+      {OpenPocketPage::Limits, "DETAIL LIMITS"},
+      {OpenPocketPage::FlightModes, "DETAIL FLIGHT MODES"},
+      {OpenPocketPage::Curves, "DETAIL CURVES"},
+      {OpenPocketPage::LogicalSwitches, "DETAIL LOGICAL SWITCHES"},
+      {OpenPocketPage::SpecialFunctions, "DETAIL SPECIAL FUNCTIONS"},
+      {OpenPocketPage::Timers, "DETAIL TIMERS"},
+      {OpenPocketPage::Elrs, "DETAIL ELRS"},
+      {OpenPocketPage::Finder, "DETAIL FINDER"},
+      {OpenPocketPage::Video, "DETAIL VIDEO"},
+      {OpenPocketPage::Usb, "DETAIL USB"},
+      {OpenPocketPage::Web, "DETAIL WEB"},
+      {OpenPocketPage::Telemetry, "DETAIL TELEMETRY"},
+      {OpenPocketPage::Power, "DETAIL POWER"},
+      {OpenPocketPage::System, "DETAIL SYSTEM"},
+  }};
+  for (const auto& detail : details) {
+    page_ui.set_screen(screens.screen(detail.first));
+    page_ui.update_home(home);
+    (void)page_ui.render(vrx);
+    write_frame(detail.second, page_ui.frame());
+  }
+
+  UiHomeStatus error_home = home;
+  error_home.warning_count = 2;
+  error_home.warnings[0] = UiWarningCode::BatteryCritical;
+  error_home.warnings[1] = UiWarningCode::VideoNoSignal;
+  VrxStatus error_vrx = vrx;
+  error_vrx.video_signal = false;
+  page_ui.set_screen(make_openpocket_home_screen(model, error_home));
+  page_ui.update_home(error_home);
+  (void)page_ui.render(error_vrx);
+  write_frame("HOME ERROR", page_ui.frame());
+
+  UiScreen clipping{
+      "clipping",
+      "OPENPOCKET TITLE THAT IS TOO LONG",
+      {{"long", "A VERY LONG FIELD LABEL THAT MUST CLIP",
+        "A VALUE THAT MUST CLIP", UiFieldKind::Label,
+        0, 0, 0, false, true}}};
+  page_ui.set_screen(std::move(clipping));
+  page_ui.update_home(home);
+  (void)page_ui.render(vrx);
+  write_frame("CLIPPING", page_ui.frame());
 
   output.flush();
   const bool success = output.good();

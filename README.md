@@ -135,6 +135,9 @@ build/sim-screen-large.pbm
 build/sim-openpocket-osd.txt
 ```
 
+The OpenPocket text artifact contains every grouped menu and detail page plus
+representative edit, clipping and fault states.
+
 Run one focused case or display profile with:
 
 ```bash
