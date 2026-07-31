@@ -2240,7 +2240,8 @@ void board_io_task(void*)
       }
       previous_simulator = simulator;
     }
-    if (display != previous_display || backlight != previous_backlight) {
+    const bool display_changed = display != previous_display;
+    if (display_changed || backlight != previous_backlight) {
       if (!app.board_power.request_display(display, backlight)) {
         ESP_LOGE(kTag, "Revision-A display power request failed");
       }
@@ -2248,8 +2249,23 @@ void board_io_task(void*)
       previous_backlight = backlight;
     }
     app.board_power.tick(current);
-    app.display_controller.tick(current);
-    const Tw8836Status controller_status = app.display_controller.status();
+    BoardPowerStatus power_status = app.board_power.status();
+    Tw8836Status controller_status = app.display_controller.status();
+    if (power_status.display_5v &&
+        !power_status.display_controller_reset_asserted) {
+      if (controller_status.state == Tw8836State::Unavailable) {
+        (void)app.display_controller.initialize(current);
+      } else if (controller_status.state == Tw8836State::Fault &&
+                 display_changed) {
+        (void)app.display_controller.recover(current);
+      }
+      app.display_controller.tick(current);
+      controller_status = app.display_controller.status();
+    }
+    app.board_power.set_display_controller_ready(
+        controller_status.runtime.booted &&
+        controller_status.runtime.panel_timing_active);
+    power_status = app.board_power.status();
     if (controller_status.state != previous_controller_state) {
       ESP_LOGI(kTag, "TW8836 state=%u fault=%u video=%u standard=%u",
                static_cast<unsigned>(controller_status.state),
@@ -2259,7 +2275,7 @@ void board_io_task(void*)
       previous_controller_state = controller_status.state;
     }
     taskENTER_CRITICAL(&app.frame_lock);
-    app.latest_board_power = app.board_power.status();
+    app.latest_board_power = power_status;
     app.latest_display_controller = controller_status;
     taskEXIT_CRITICAL(&app.frame_lock);
     vTaskDelay(pdMS_TO_TICKS(4));
@@ -2374,9 +2390,6 @@ extern "C" void app_main()
         true, CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT);
     (void)app.board_power.request_elrs(true);
     app.latest_board_power = app.board_power.status();
-    if (!app.display_controller.initialize(now_us())) {
-      ESP_LOGW(kTag, "TW8836 unavailable; controls and CRSF remain active");
-    }
   } else {
     ESP_LOGE(kTag, "Revision-A board power initialization failed");
   }

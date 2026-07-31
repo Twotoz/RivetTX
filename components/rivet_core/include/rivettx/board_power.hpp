@@ -13,6 +13,14 @@ enum class BoardSensorState : uint8_t {
   Fault,
 };
 
+enum class DisplayPowerState : uint8_t {
+  Off,
+  PowerSettling,
+  WaitingForController,
+  Ready,
+  Fault,
+};
+
 struct ChargerTelemetry {
   BoardSensorState state = BoardSensorState::Unavailable;
   ChargeState charge = ChargeState::Unknown;
@@ -39,6 +47,7 @@ struct BoardPowerStatus {
   bool display_controller_reset_asserted = true;
   bool simulator_mode = false;
   uint8_t backlight_percent = 0;
+  DisplayPowerState display_state = DisplayPowerState::Off;
 };
 
 class IBoardPowerHardware {
@@ -58,6 +67,7 @@ class IBoardPowerHardware {
 struct BoardPowerConfig {
   uint32_t sample_interval_ms = 100;
   uint8_t default_backlight_percent = 60;
+  uint16_t display_power_settle_ms = 20;
 };
 
 // Runs only from a service task. Every operation is bounded to one hardware
@@ -72,6 +82,7 @@ class BoardPowerController {
   bool request_display(bool enabled, uint8_t backlight_percent = 60);
   bool request_elrs(bool enabled);
   bool set_simulator_mode(bool enabled);
+  void set_display_controller_ready(bool ready);
   void tick(TimeUs now_us);
   const BoardPowerStatus& status() const;
 
@@ -80,6 +91,9 @@ class BoardPowerController {
   BoardPowerConfig config_{};
   BoardPowerStatus status_{};
   TimeUs next_sample_us_ = 0;
+  TimeUs display_deadline_us_ = 0;
+  uint8_t requested_backlight_percent_ = 0;
+  bool display_controller_ready_ = false;
   bool initialized_ = false;
 };
 

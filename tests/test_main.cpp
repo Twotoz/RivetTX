@@ -2562,8 +2562,9 @@ void test_openpocket_board_power()
   CHECK(power.status().video_5v);
   CHECK(power.status().display_5v);
   CHECK(power.status().elrs_5v);
-  CHECK(power.status().backlight_percent == 70);
-  CHECK(!power.status().display_controller_reset_asserted);
+  CHECK(power.status().backlight_percent == 0);
+  CHECK(power.status().display_controller_reset_asserted);
+  CHECK(power.status().display_state == DisplayPowerState::PowerSettling);
 
   power.tick(0);
   CHECK(power.status().vbus_present);
@@ -2571,6 +2572,18 @@ void test_openpocket_board_power()
   CHECK(power.status().charger.battery_mv == 3880);
   CHECK(power.status().fuel_gauge.cell_mv == 3890);
   CHECK(power.status().fuel_gauge.state_of_charge == 67);
+  power.tick(20000);
+  CHECK(!power.status().display_controller_reset_asserted);
+  CHECK(power.status().display_state ==
+        DisplayPowerState::WaitingForController);
+  power.set_display_controller_ready(true);
+  power.tick(20001);
+  CHECK(power.status().backlight_percent == 70);
+  CHECK(power.status().display_state == DisplayPowerState::Ready);
+  power.set_display_controller_ready(false);
+  CHECK(power.status().backlight_percent == 0);
+  CHECK(power.status().display_state ==
+        DisplayPowerState::WaitingForController);
 
   CHECK(power.set_simulator_mode(true));
   CHECK(!hardware.elrs);
