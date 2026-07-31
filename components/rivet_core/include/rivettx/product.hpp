@@ -66,18 +66,78 @@ struct CharacterOsdFrame {
   char at(std::size_t column, std::size_t row) const;
 };
 
+enum class OpenPocketMenuGroup : uint8_t {
+  Model,
+  Radio,
+  Elrs,
+  Video,
+  Usb,
+  Diagnostics,
+  System,
+};
+
+UiScreen make_openpocket_home_screen(const Model& model,
+                                     const UiHomeStatus& home);
+UiScreen make_openpocket_main_menu_screen();
+UiScreen make_openpocket_group_menu_screen(OpenPocketMenuGroup group);
+UiScreen make_openpocket_video_screen(const VrxStatus& vrx);
+
 class CharacterOsdComposer {
  public:
   void compose(const Model& model, const UiHomeStatus& home,
                const VrxStatus& vrx);
+  void compose(const UiScreen& screen, const UiHomeStatus& home,
+               const VrxStatus& vrx, std::size_t selected_index,
+               std::size_t scroll_offset, bool editing);
   const CharacterOsdFrame& frame() const;
 
  private:
   void clear();
   void text(std::size_t column, std::size_t row, const char* value);
+  void text(std::size_t column, std::size_t row, const std::string& value,
+            std::size_t maximum);
+  void right_text(std::size_t row, const char* value);
   void number(std::size_t column, std::size_t row, int32_t value);
+  void compose_home(const UiScreen& screen, const UiHomeStatus& home,
+                    const VrxStatus& vrx);
+  void compose_list(const UiScreen& screen, const UiHomeStatus& home,
+                    std::size_t selected_index, std::size_t scroll_offset,
+                    bool editing);
 
   CharacterOsdFrame frame_{};
+};
+
+class CharacterOsdUi {
+ public:
+  void set_screen(UiScreen screen);
+  void update_home(const UiHomeStatus& home);
+  bool handle(const UiEvent& event);
+  bool render(const VrxStatus& vrx);
+  bool take_change(UiChange& change);
+  bool take_back_request();
+  const UiScreen& screen() const;
+  const CharacterOsdFrame& frame() const;
+  std::size_t selected_index() const;
+  std::size_t scroll_offset() const;
+  bool editing() const;
+
+ private:
+  void select_first_visible();
+  void move_selection(int direction, int steps = 1);
+  void keep_selection_visible();
+  void update_value_text(UiField& field);
+
+  CharacterOsdComposer composer_{};
+  UiScreen screen_{};
+  UiHomeStatus home_{};
+  std::size_t selected_index_ = 0;
+  std::size_t scroll_offset_ = 0;
+  int32_t edit_original_value_ = 0;
+  std::string edit_original_text_;
+  UiChange pending_change_{};
+  bool editing_ = false;
+  bool change_pending_ = false;
+  bool back_pending_ = false;
 };
 
 struct UsbGamepadReport {

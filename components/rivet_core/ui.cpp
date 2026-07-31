@@ -213,6 +213,11 @@ bool warning_blocks_startup(UiWarningCode warning)
 
 }  // namespace
 
+const char* ui_warning_text(UiWarningCode warning)
+{
+  return warning_text(warning);
+}
+
 void Canvas::horizontal_line(int16_t x, int16_t y, int16_t length, bool on)
 {
   for (int16_t i = 0; i < length; ++i) {
@@ -601,7 +606,7 @@ void UiController::draw_home(const LayoutMetrics& metrics)
       {0, banner_y, static_cast<int16_t>(canvas_.width()), 9}, true,
       warning);
   const char* banner =
-      warning ? warning_text(status.warnings[0])
+      warning ? ui_warning_text(status.warnings[0])
               : (status.outputs_enabled ? "OUTPUT LIVE" : "OUTPUT SAFE");
   canvas_.text(2, static_cast<int16_t>(banner_y + 1), banner, warning, 1);
   if (status.warning_count > 1) {
@@ -853,7 +858,8 @@ UiScreen make_warnings_screen(const UiHomeStatus& status)
       status.warning_count, status.warnings.size());
   for (std::size_t index = 0; index < count; ++index) {
     screen.fields.push_back(
-        {"warning." + std::to_string(index), warning_text(status.warnings[index]),
+        {"warning." + std::to_string(index),
+         ui_warning_text(status.warnings[index]),
          warning_action(status.warnings[index]), UiFieldKind::Label,
          0, 0, 0, false, true});
   }

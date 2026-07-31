@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <utility>
 
 namespace rivettx {
 
@@ -145,6 +147,125 @@ char CharacterOsdFrame::at(std::size_t column, std::size_t row) const
              : '\0';
 }
 
+UiScreen make_openpocket_home_screen(const Model& model,
+                                     const UiHomeStatus& home)
+{
+  UiScreen screen{};
+  screen.id = "openpocket.home";
+  screen.title = model.name.data();
+  screen.scrollable = false;
+  screen.kind = UiScreenKind::Home;
+  screen.home = home;
+  return screen;
+}
+
+UiScreen make_openpocket_main_menu_screen()
+{
+  UiScreen screen{"openpocket.menu", "OpenPocket", {}};
+  const std::array<std::pair<const char*, const char*>, 7> groups{{
+      {"group.model", "MODEL"},
+      {"group.radio", "RADIO"},
+      {"group.elrs", "EXPRESSLRS"},
+      {"group.video", "VIDEO"},
+      {"group.usb", "USB"},
+      {"group.diagnostics", "DIAGNOSTICS"},
+      {"group.system", "SYSTEM"},
+  }};
+  for (const auto& group : groups) {
+    screen.fields.push_back(
+        {group.first, group.second, "OPEN", UiFieldKind::Action,
+         0, 0, 1, false, true});
+  }
+  return screen;
+}
+
+UiScreen make_openpocket_group_menu_screen(OpenPocketMenuGroup group)
+{
+  UiScreen screen{};
+  const auto add_action = [&screen](const char* id, const char* label) {
+    screen.fields.push_back(
+        {id, label, "OPEN", UiFieldKind::Action,
+         0, 0, 1, false, true});
+  };
+  switch (group) {
+    case OpenPocketMenuGroup::Model:
+      screen = {"openpocket.group.model", "Model", {}};
+      add_action("models", "MODELS");
+      add_action("model", "MODEL SETUP");
+      add_action("inputs", "INPUTS");
+      add_action("mixes", "MIXES");
+      add_action("limits", "OUTPUT LIMITS");
+      add_action("flight_modes", "FLIGHT MODES");
+      add_action("curves", "CURVES");
+      add_action("logical", "LOGICAL SWITCHES");
+      add_action("special", "SPECIAL FUNCTIONS");
+      add_action("timers", "TIMERS");
+      break;
+    case OpenPocketMenuGroup::Radio:
+      screen = {"openpocket.group.radio", "Radio", {}};
+      add_action("outputs", "CHANNEL OUTPUTS");
+      add_action("power", "POWER");
+      break;
+    case OpenPocketMenuGroup::Elrs:
+      screen = {"openpocket.group.elrs", "ExpressLRS", {}};
+      add_action("elrs", "ELRS SETTINGS");
+      add_action("finder", "ELRS FINDER");
+      break;
+    case OpenPocketMenuGroup::Video:
+      screen = {"openpocket.group.video", "Video", {}};
+      add_action("video", "VIDEO RECEIVER");
+      break;
+    case OpenPocketMenuGroup::Usb:
+      screen = {"openpocket.group.usb", "USB", {}};
+      add_action("usb", "USB SIMULATOR");
+      break;
+    case OpenPocketMenuGroup::Diagnostics:
+      screen = {"openpocket.group.diagnostics", "Diagnostics", {}};
+      add_action("warnings", "WARNINGS");
+      add_action("telemetry", "TELEMETRY");
+      break;
+    case OpenPocketMenuGroup::System:
+      screen = {"openpocket.group.system", "System", {}};
+      add_action("web", "WEB CONFIG");
+      add_action("system", "RADIO SYSTEM");
+      break;
+  }
+  return screen;
+}
+
+UiScreen make_openpocket_video_screen(const VrxStatus& vrx)
+{
+  UiScreen screen{"video", "Video receiver", {}};
+  screen.fields.push_back(
+      {"band", "BAND", "", UiFieldKind::Choice,
+       static_cast<int32_t>(vrx.band + 1), 1,
+       static_cast<int32_t>(kVrxBandCount), true, true});
+  screen.fields.push_back(
+      {"channel", "CHANNEL", "", UiFieldKind::Choice,
+       static_cast<int32_t>(vrx.channel + 1), 1,
+       static_cast<int32_t>(kVrxChannelsPerBand), true, true});
+  screen.fields.push_back(
+      {"frequency", "FREQUENCY",
+       vrx.frequency_mhz == 0
+           ? "NOT TUNED"
+           : std::to_string(vrx.frequency_mhz) + "MHZ",
+       UiFieldKind::Label, vrx.frequency_mhz, 0, 0, false, true});
+  screen.fields.push_back(
+      {"signal", "VIDEO",
+       !vrx.signal_fresh
+           ? "UNKNOWN"
+           : (vrx.video_signal ? "SIGNAL OK" : "NO SIGNAL"),
+       UiFieldKind::Label, vrx.video_signal ? 1 : 0, 0, 1, false, true});
+  screen.fields.push_back(
+      {"rssi", "VRX STRENGTH",
+       std::to_string(vrx.strength_percent) + "%",
+       UiFieldKind::Progress, vrx.strength_percent, 0, 100, false, true});
+  screen.fields.push_back(
+      {"scan", vrx.scanning ? "CANCEL SCAN" : "START SCAN",
+       "ENTER", UiFieldKind::Action, 0, 0, 1, false, true});
+  return screen;
+}
+
 void CharacterOsdComposer::clear()
 {
   frame_.cells.fill(' ');
@@ -162,6 +283,30 @@ void CharacterOsdComposer::text(std::size_t column, std::size_t row,
   }
 }
 
+void CharacterOsdComposer::text(std::size_t column, std::size_t row,
+                                const std::string& value,
+                                std::size_t maximum)
+{
+  if (row >= kOsdRows || column >= kOsdColumns) {
+    return;
+  }
+  const std::size_t count =
+      std::min({value.size(), maximum, kOsdColumns - column});
+  for (std::size_t index = 0; index < count; ++index) {
+    frame_.cells[row * kOsdColumns + column + index] = value[index];
+  }
+}
+
+void CharacterOsdComposer::right_text(std::size_t row, const char* value)
+{
+  if (row >= kOsdRows || value == nullptr) {
+    return;
+  }
+  const std::size_t length = std::min<std::size_t>(
+      std::strlen(value), kOsdColumns);
+  text(kOsdColumns - length, row, value);
+}
+
 void CharacterOsdComposer::number(std::size_t column, std::size_t row,
                                   int32_t value)
 {
@@ -175,29 +320,401 @@ void CharacterOsdComposer::compose(const Model& model,
                                    const UiHomeStatus& home,
                                    const VrxStatus& vrx)
 {
+  const UiScreen screen = make_openpocket_home_screen(model, home);
+  compose(screen, home, vrx, 0, 0, false);
+}
+
+void CharacterOsdComposer::compose(
+    const UiScreen& screen, const UiHomeStatus& home,
+    const VrxStatus& vrx, std::size_t selected_index,
+    std::size_t scroll_offset, bool editing)
+{
   clear();
-  text(0, 0, model.name.data());
-  text(20, 0, home.outputs_enabled ? "LIVE" : "SAFE");
-  if (home.warning_count != 0) {
-    text(0, 2, "WARNING");
-    number(8, 2, static_cast<int32_t>(home.warnings[0]));
+  if (screen.kind == UiScreenKind::Home) {
+    compose_home(screen, home, vrx);
+  } else {
+    compose_list(screen, home, selected_index, scroll_offset, editing);
   }
-  text(0, 4, "TX");
-  number(3, 4, home.battery_mv);
-  text(9, 4, "LQ");
-  number(12, 4, home.link_quality);
-  text(18, 4, home.module_online ? "ELRS OK" : "ELRS LOST");
-  text(0, 6, "VRX");
-  number(4, 6, vrx.frequency_mhz);
-  text(10, 6, vrx.video_signal ? "VIDEO" : "NO SIGNAL");
-  text(0, 8, "CH5");
-  number(4, 8, home.channels[4]);
-  text(0, 15, "RIVETTX OPENPOCKET");
+}
+
+void CharacterOsdComposer::compose_home(
+    const UiScreen& screen, const UiHomeStatus& home,
+    const VrxStatus& vrx)
+{
+  text(0, 0, screen.title, 20);
+  right_text(0, home.outputs_enabled ? "LIVE" : "SAFE");
+  text(0, 1, "------------------------------");
+
+  text(0, 3, "ELRS");
+  text(6, 3, home.module_online ? "ONLINE" : "OFFLINE");
+  text(18, 3, "LQ");
+  number(21, 3, home.link_quality);
+  text(25, 3, "%");
+
+  text(0, 5, "TX BAT");
+  number(7, 5, home.battery_mv);
+  text(12, 5, "MV");
+  if (home.battery_percent_valid) {
+    number(18, 5, home.battery_percent);
+    text(21, 5, "%");
+  }
+
+  char vrx_line[30]{};
+  if (vrx.available) {
+    (void)std::snprintf(
+        vrx_line, sizeof(vrx_line), "VRX B%u CH%u %uMHZ",
+        static_cast<unsigned>(vrx.band + 1),
+        static_cast<unsigned>(vrx.channel + 1),
+        static_cast<unsigned>(vrx.frequency_mhz));
+  } else {
+    (void)std::snprintf(vrx_line, sizeof(vrx_line), "VRX NOT AVAILABLE");
+  }
+  text(0, 7, vrx_line);
+  text(0, 8,
+       vrx.scanning
+           ? "VIDEO SCANNING"
+           : (vrx.video_signal ? "VIDEO SIGNAL OK" : "VIDEO NO SIGNAL"));
+
+  text(0, 10, "WARNING");
+  text(9, 10,
+       home.warning_count == 0
+           ? "NONE"
+           : ui_warning_text(home.warnings[0]));
+  if (home.warning_count > 1) {
+    text(9, 11, "+");
+    number(10, 11, static_cast<int32_t>(home.warning_count - 1));
+    text(13, 11, "MORE");
+  }
+
+  text(0, 13, "CH5");
+  number(5, 13, home.channels[4]);
+  text(0, 15, "ENTER MENU");
+  right_text(15, "RIVETTX");
+}
+
+void CharacterOsdComposer::compose_list(
+    const UiScreen& screen, const UiHomeStatus& home,
+    std::size_t selected_index, std::size_t scroll_offset,
+    bool editing)
+{
+  constexpr std::size_t kVisibleRows = 12;
+  text(0, 0, screen.title, 20);
+  right_text(0, editing ? "EDIT"
+                       : (home.outputs_enabled ? "LIVE" : "SAFE"));
+  text(0, 1, "------------------------------");
+
+  const std::size_t visible_count = static_cast<std::size_t>(
+      std::count_if(screen.fields.begin(), screen.fields.end(),
+                    [](const UiField& field) { return field.visible; }));
+  std::size_t visible_index = 0;
+  std::size_t rendered = 0;
+  std::size_t selected_visible = 0;
+  for (std::size_t index = 0; index < screen.fields.size(); ++index) {
+    const auto& field = screen.fields[index];
+    if (!field.visible) {
+      continue;
+    }
+    if (index == selected_index) {
+      selected_visible = visible_index;
+    }
+    if (visible_index++ < scroll_offset || rendered >= kVisibleRows) {
+      continue;
+    }
+
+    const std::size_t row = 2 + rendered++;
+    frame_.cells[row * kOsdColumns] =
+        index == selected_index ? (editing ? '*' : '>') : ' ';
+    text(2, row, field.label, 17);
+    if (!field.value_text.empty()) {
+      text(20, row, field.value_text, 10);
+    } else if (field.kind == UiFieldKind::Boolean) {
+      text(25, row, field.value != 0 ? "ON" : "OFF");
+    } else if (field.kind == UiFieldKind::Number ||
+               field.kind == UiFieldKind::Choice ||
+               field.kind == UiFieldKind::Progress) {
+      number(24, row, field.value);
+    }
+  }
+
+  if (scroll_offset > 0) {
+    frame_.cells[2 * kOsdColumns + 29] = '^';
+  }
+  if (scroll_offset + kVisibleRows < visible_count) {
+    frame_.cells[13 * kOsdColumns + 29] = 'v';
+  }
+  char position[24]{};
+  (void)std::snprintf(
+      position, sizeof(position), "%u/%u",
+      static_cast<unsigned>(visible_count == 0 ? 0 : selected_visible + 1),
+      static_cast<unsigned>(visible_count));
+  text(0, 14, position);
+  right_text(14, home.module_online ? "ELRS OK" : "ELRS LOST");
+  text(0, 15,
+       editing ? "ROTATE CHANGE ENTER SAVE"
+               : "ENTER SELECT  BACK");
 }
 
 const CharacterOsdFrame& CharacterOsdComposer::frame() const
 {
   return frame_;
+}
+
+void CharacterOsdUi::set_screen(UiScreen screen)
+{
+  const bool same_screen = screen.id == screen_.id;
+  std::string selected_id;
+  int32_t staged_value = 0;
+  std::string staged_text;
+  const bool preserve_edit =
+      same_screen && editing_ && selected_index_ < screen_.fields.size() &&
+      screen_.fields[selected_index_].editable;
+  if (same_screen && selected_index_ < screen_.fields.size()) {
+    selected_id = screen_.fields[selected_index_].id;
+    if (preserve_edit) {
+      staged_value = screen_.fields[selected_index_].value;
+      staged_text = screen_.fields[selected_index_].value_text;
+    }
+  }
+  screen_ = std::move(screen);
+  if (screen_.kind == UiScreenKind::Home) {
+    home_ = screen_.home;
+  }
+  selected_index_ = 0;
+  if (same_screen && !selected_id.empty()) {
+    for (std::size_t index = 0; index < screen_.fields.size(); ++index) {
+      if (screen_.fields[index].id == selected_id) {
+        selected_index_ = index;
+        break;
+      }
+    }
+  }
+  select_first_visible();
+  editing_ = preserve_edit && selected_index_ < screen_.fields.size() &&
+             screen_.fields[selected_index_].id == selected_id &&
+             screen_.fields[selected_index_].editable;
+  if (editing_) {
+    screen_.fields[selected_index_].value = staged_value;
+    screen_.fields[selected_index_].value_text = staged_text;
+  }
+  keep_selection_visible();
+}
+
+void CharacterOsdUi::update_home(const UiHomeStatus& home)
+{
+  home_ = home;
+  if (screen_.kind == UiScreenKind::Home) {
+    screen_.home = home;
+  }
+}
+
+void CharacterOsdUi::select_first_visible()
+{
+  if (screen_.fields.empty()) {
+    selected_index_ = 0;
+    scroll_offset_ = 0;
+    return;
+  }
+  if (selected_index_ < screen_.fields.size() &&
+      screen_.fields[selected_index_].visible) {
+    return;
+  }
+  for (std::size_t index = 0; index < screen_.fields.size(); ++index) {
+    if (screen_.fields[index].visible) {
+      selected_index_ = index;
+      return;
+    }
+  }
+  selected_index_ = 0;
+}
+
+void CharacterOsdUi::move_selection(int direction, int steps)
+{
+  if (screen_.fields.empty() || direction == 0) {
+    return;
+  }
+  for (int step = 0; step < steps; ++step) {
+    std::size_t candidate = selected_index_;
+    while (true) {
+      if (direction > 0) {
+        if (candidate + 1 >= screen_.fields.size()) {
+          return;
+        }
+        ++candidate;
+      } else {
+        if (candidate == 0) {
+          return;
+        }
+        --candidate;
+      }
+      if (screen_.fields[candidate].visible) {
+        selected_index_ = candidate;
+        break;
+      }
+    }
+  }
+}
+
+void CharacterOsdUi::keep_selection_visible()
+{
+  constexpr std::size_t kVisibleRows = 12;
+  std::size_t selected_visible = 0;
+  for (std::size_t index = 0; index < selected_index_ &&
+                              index < screen_.fields.size(); ++index) {
+    if (screen_.fields[index].visible) {
+      ++selected_visible;
+    }
+  }
+  if (selected_visible < scroll_offset_) {
+    scroll_offset_ = selected_visible;
+  } else if (selected_visible >= scroll_offset_ + kVisibleRows) {
+    scroll_offset_ = selected_visible - kVisibleRows + 1;
+  }
+}
+
+void CharacterOsdUi::update_value_text(UiField& field)
+{
+  if (field.kind == UiFieldKind::Boolean) {
+    field.value_text = field.value != 0 ? "ON" : "OFF";
+    return;
+  }
+  char value[16]{};
+  (void)std::snprintf(value, sizeof(value), "%ld",
+                      static_cast<long>(field.value));
+  field.value_text = value;
+}
+
+bool CharacterOsdUi::handle(const UiEvent& event)
+{
+  if (screen_.kind == UiScreenKind::Home) {
+    if (event.type == UiEventType::Enter) {
+      pending_change_ = {screen_.id, "menu", 1};
+      change_pending_ = true;
+      return true;
+    }
+    return false;
+  }
+  if (event.type == UiEventType::Back) {
+    if (editing_ && selected_index_ < screen_.fields.size()) {
+      auto& field = screen_.fields[selected_index_];
+      field.value = edit_original_value_;
+      field.value_text = edit_original_text_;
+      editing_ = false;
+    } else {
+      back_pending_ = true;
+    }
+    return true;
+  }
+  if (screen_.fields.empty() || selected_index_ >= screen_.fields.size()) {
+    return false;
+  }
+
+  auto& field = screen_.fields[selected_index_];
+  auto adjust = [this, &field](int32_t delta) {
+    if (!editing_ || !field.editable || delta == 0) {
+      return;
+    }
+    field.value =
+        clamp<int32_t>(field.minimum, field.value + delta, field.maximum);
+    update_value_text(field);
+  };
+
+  switch (event.type) {
+    case UiEventType::Up:
+      if (editing_) {
+        adjust(1);
+      } else {
+        move_selection(-1);
+      }
+      break;
+    case UiEventType::Down:
+      if (editing_) {
+        adjust(-1);
+      } else {
+        move_selection(1);
+      }
+      break;
+    case UiEventType::Left:
+      adjust(-1);
+      break;
+    case UiEventType::Right:
+      adjust(1);
+      break;
+    case UiEventType::Rotate:
+      if (editing_) {
+        adjust(event.value);
+      } else if (event.value != 0) {
+        move_selection(event.value > 0 ? 1 : -1,
+                       std::min(16, std::abs(event.value)));
+      }
+      break;
+    case UiEventType::Enter:
+      if (field.kind == UiFieldKind::Action) {
+        pending_change_ = {screen_.id, field.id, 1};
+        change_pending_ = true;
+      } else if (field.editable && !editing_) {
+        edit_original_value_ = field.value;
+        edit_original_text_ = field.value_text;
+        editing_ = true;
+      } else if (field.editable) {
+        pending_change_ = {screen_.id, field.id, field.value};
+        change_pending_ = true;
+        editing_ = false;
+      }
+      break;
+    default:
+      return false;
+  }
+  keep_selection_visible();
+  return true;
+}
+
+bool CharacterOsdUi::render(const VrxStatus& vrx)
+{
+  composer_.compose(screen_, home_, vrx, selected_index_, scroll_offset_,
+                    editing_);
+  return true;
+}
+
+bool CharacterOsdUi::take_change(UiChange& change)
+{
+  if (!change_pending_) {
+    return false;
+  }
+  change = pending_change_;
+  change_pending_ = false;
+  return true;
+}
+
+bool CharacterOsdUi::take_back_request()
+{
+  const bool requested = back_pending_;
+  back_pending_ = false;
+  return requested;
+}
+
+const UiScreen& CharacterOsdUi::screen() const
+{
+  return screen_;
+}
+
+const CharacterOsdFrame& CharacterOsdUi::frame() const
+{
+  return composer_.frame();
+}
+
+std::size_t CharacterOsdUi::selected_index() const
+{
+  return selected_index_;
+}
+
+std::size_t CharacterOsdUi::scroll_offset() const
+{
+  return scroll_offset_;
+}
+
+bool CharacterOsdUi::editing() const
+{
+  return editing_;
 }
 
 bool UsbSimulator::enter(bool outputs_locked, bool rf_safety_lock)

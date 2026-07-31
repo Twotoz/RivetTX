@@ -115,9 +115,14 @@ watchdog recovery, battery sensor/level, module/link, logging, unsaved model
 and maintenance.
 
 The VRX controller and 30×16 analog OSD compositor are platform-independent.
-They do not access SPI or video hardware themselves. The selected production
-VRX and AT7456E-class device must implement those target interfaces after the
-schematic and pinout are frozen.
+The OSD presentation has a dedicated Home → grouped Menu → Detail flow over
+the shared `UiScreen` model. It owns character-cell selection, twelve-row
+scrolling and transactional editing: ENTER confirms a staged value and BACK
+restores it. It does not instantiate or mirror the OLED renderer.
+
+The compositor does not access SPI or video hardware itself. The selected
+production VRX and AT7456E-class device must implement those target interfaces
+after the schematic and pinout are frozen.
 
 ## Updates and recovery
 
