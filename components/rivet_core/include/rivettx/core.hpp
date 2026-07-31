@@ -183,7 +183,8 @@ class SafetyManager {
                      bool calibration_valid = true);
   void request_enable();
   void request_lock();
-  void report_battery(uint16_t millivolts);
+  void report_battery(uint16_t millivolts,
+                      bool sensing_configured = true);
   void report_battery_fault();
   void report_watchdog_fault();
   void report_module_ready(bool ready);

@@ -841,11 +841,13 @@ void SafetyManager::request_lock()
   status_.reason = SafetyReason::ManualLock;
 }
 
-void SafetyManager::report_battery(uint16_t millivolts)
+void SafetyManager::report_battery(uint16_t millivolts,
+                                   bool sensing_configured)
 {
   const std::lock_guard<std::mutex> lock(mutex_);
   status_.battery_mv = millivolts;
-  if (millivolts != 0 && millivolts < config_.minimum_battery_mv) {
+  if (sensing_configured &&
+      millivolts < config_.minimum_battery_mv) {
     enable_requested_ = false;
     healthy_cycles_ = 0;
     status_.state = SafetyState::Fault;

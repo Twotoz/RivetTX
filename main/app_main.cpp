@@ -193,6 +193,7 @@ struct Application {
   TrimController trim_controls;
   SafetyManager safety{safety_config()};
   BatteryMonitor battery{battery_config()};
+  BatterySnapshotStore battery_snapshot;
   BatteryEstimator battery_estimator{
       battery_config().critical_mv,
       static_cast<uint16_t>(battery_config().low_mv + 700)};
@@ -225,9 +226,6 @@ struct Application {
   ElrsManagerStatus latest_elrs{};
   ElrsFinderStatus latest_finder{};
   SafetyStatus latest_safety{};
-  uint16_t latest_battery_mv = 0;
-  bool latest_battery_sensor_valid = true;
-  BatteryState latest_battery_state = BatteryState::Unknown;
   ModuleState latest_module_state = ModuleState::Starting;
   SafetyState latest_safety_state = SafetyState::Booting;
   portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -436,13 +434,18 @@ void control_task(void*)
     const uint32_t mixer_duration = static_cast<uint32_t>(
         mixed_at >= scheduled_release_us ? mixed_at - scheduled_release_us : 0);
 
-    const BatterySample battery_sample = app.board.sample_battery();
-    const BatteryState battery_state =
-        app.battery.update(battery_sample.millivolts);
-    if (battery_sample.configured && !battery_sample.valid) {
+    const BatterySensorSample battery_sample =
+        app.board.sample_battery();
+    BatteryState battery_state = BatteryState::Unknown;
+    if (battery_sample.configured && battery_sample.valid) {
+      battery_state = app.battery.update(battery_sample.millivolts);
+    }
+    if (battery_sample.sensor_fault()) {
       app.safety.report_battery_fault();
     } else {
-      app.safety.report_battery(app.battery.voltage_mv());
+      app.safety.report_battery(
+          battery_sample.configured ? battery_sample.millivolts : 0,
+          battery_sample.configured);
     }
     app.safety.report_module_ready(
         app.module.status().state == ModuleState::Online);
@@ -504,10 +507,6 @@ void control_task(void*)
     app.latest_telemetry = app.telemetry.entries();
     app.latest_elrs = app.elrs.status();
     app.latest_safety = safety_status;
-    app.latest_battery_mv = app.battery.voltage_mv();
-    app.latest_battery_sensor_valid =
-        !battery_sample.configured || battery_sample.valid;
-    app.latest_battery_state = battery_state;
     app.latest_module_state = app.module.status().state;
     app.latest_safety_state = safety_state;
     app.latest_buttons =
@@ -521,6 +520,13 @@ void control_task(void*)
         16));
     app.latest_encoder_pressed = raw.encoder_pressed;
     taskEXIT_CRITICAL(&app.frame_lock);
+    const uint16_t published_battery_mv =
+        battery_sample.configured && battery_sample.valid
+            ? app.battery.voltage_mv()
+            : static_cast<uint16_t>(0);
+    app.battery_snapshot.publish(
+        {published_battery_mv, battery_state,
+         !battery_sample.sensor_fault(), frame.sequence});
 
     if (watchdog_registered) {
       app.watchdog.kick();
@@ -1044,10 +1050,12 @@ void ui_task(void*)
     ElrsManagerStatus elrs{};
     ElrsFinderStatus finder{};
     SafetyStatus safety{};
-    BatteryState battery_state = BatteryState::Unknown;
+    const BatterySnapshot battery_snapshot =
+        app.battery_snapshot.read();
+    BatteryState battery_state = battery_snapshot.state;
     ModuleState module_state = ModuleState::Starting;
-    uint16_t battery_mv = 0;
-    bool battery_sensor_valid = true;
+    uint16_t battery_mv = battery_snapshot.millivolts;
+    bool battery_sensor_valid = battery_snapshot.sensor_valid;
     uint8_t buttons = 0;
     int8_t encoder_delta = 0;
     bool encoder_pressed = false;
@@ -1059,10 +1067,7 @@ void ui_task(void*)
     elrs = app.latest_elrs;
     finder = app.latest_finder;
     safety = app.latest_safety;
-    battery_state = app.latest_battery_state;
     module_state = app.latest_module_state;
-    battery_mv = app.latest_battery_mv;
-    battery_sensor_valid = app.latest_battery_sensor_valid;
     buttons = app.latest_buttons;
     encoder_delta = app.latest_encoder_delta;
     app.latest_encoder_delta = 0;
@@ -1524,12 +1529,13 @@ void service_task(void*)
       }
     }
     std::array<TelemetryEntry, kMaxTelemetrySensors> telemetry{};
-    BatteryState battery_state = BatteryState::Unknown;
+    const BatterySnapshot battery_snapshot =
+        app.battery_snapshot.read();
+    BatteryState battery_state = battery_snapshot.state;
     ModuleState module_state = ModuleState::Starting;
     SafetyState safety_state = SafetyState::Booting;
     taskENTER_CRITICAL(&app.frame_lock);
     telemetry = app.latest_telemetry;
-    battery_state = app.latest_battery_state;
     module_state = app.latest_module_state;
     safety_state = app.latest_safety_state;
     taskEXIT_CRITICAL(&app.frame_lock);

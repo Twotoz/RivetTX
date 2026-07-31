@@ -39,6 +39,10 @@ initial flashing and recovery. An audible alarm, haptic motor, module power
 switch, current sensor, SD card, charger, and controlled power latch are useful
 later but are not required by the first profile.
 
+When battery sensing is configured, RivetTX treats ADC setup/read failures as
+a diagnosed sensor fault. A successful low or zero reading is a valid critical
+voltage, not an absent sensor; either condition locks channel outputs.
+
 Never power a high-power external module from a development board's 3.3 V pin.
 Use the module manufacturer's voltage and current limits.
 

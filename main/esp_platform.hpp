@@ -24,17 +24,11 @@
 
 namespace rivettx::esp32 {
 
-struct BatterySample {
-  uint16_t millivolts = 0;
-  bool configured = false;
-  bool valid = false;
-};
-
 class EspBoard {
  public:
   bool initialize();
   RawInputs sample_inputs(TimeUs now_us);
-  BatterySample sample_battery();
+  BatterySensorSample sample_battery();
   bool recovery_button_pressed() const;
   uint8_t configured_axis_count() const;
 
