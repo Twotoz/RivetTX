@@ -6,6 +6,7 @@
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
 #include "rivettx/product.hpp"
+#include "rivettx/removable_storage.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
@@ -148,6 +149,17 @@ Amt630aConfig amt630a_config()
   return config;
 }
 
+RemovableStorageConfig removable_storage_config()
+{
+  RemovableStorageConfig config{};
+#if CONFIG_RIVETTX_SDMMC_ENABLED
+  config.detect_debounce_ms = CONFIG_RIVETTX_SD_DETECT_DEBOUNCE_MS;
+  config.initial_clock_khz = CONFIG_RIVETTX_SD_INITIAL_CLOCK_KHZ;
+  config.maximum_clock_khz = CONFIG_RIVETTX_SD_MAX_CLOCK_KHZ;
+#endif
+  return config;
+}
+
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
 extern const uint8_t
     amt_image_start[] asm("_binary_amt630a_openpocket_er_tft050a3_2_bin_start");
@@ -231,6 +243,9 @@ class LuaCrsfMailbox final : public ILuaCrsfSink {
 struct Application {
   EspBoard board;
   EspBoardPowerIo board_power_io;
+  EspRemovableStorageBackend removable_storage_io{board_power_io};
+  RemovableStorageService removable_storage{
+      removable_storage_io, removable_storage_config()};
   BoardPowerController board_power{board_power_io, board_power_config()};
   Amt630aController display_controller{board_power_io, amt630a_config()};
   EspRx5808Io vrx_io{board};
@@ -333,6 +348,7 @@ struct Application {
 #else
       0};
 #endif
+  std::atomic<bool> sd_card_present{false};
   TimeUs safety_chord_started_us = 0;
   bool safety_chord_fired = false;
   SafetyState previous_safety_state = SafetyState::Booting;
@@ -2241,6 +2257,12 @@ void board_io_task(void*)
     const bool controls_valid =
         app.board_power_io.read_expanded_controls(controls);
     app.board.publish_rev_a_controls(controls, current, controls_valid);
+#if CONFIG_RIVETTX_SDMMC_ENABLED
+    app.sd_card_present.store(
+        controls_valid &&
+            (controls & (1UL << CONFIG_RIVETTX_SD_DETECT_EXPANDER_BIT)) != 0,
+        std::memory_order_release);
+#endif
 
     const bool simulator =
         app.usb_simulator_enabled.load(std::memory_order_acquire);
@@ -2303,6 +2325,33 @@ void board_io_task(void*)
     app.latest_display_controller = controller_status;
     taskEXIT_CRITICAL(&app.frame_lock);
     vTaskDelay(pdMS_TO_TICKS(4));
+  }
+}
+#endif
+
+#if CONFIG_RIVETTX_SDMMC_ENABLED
+void removable_storage_task(void*)
+{
+  RemovableStorageState previous = RemovableStorageState::Absent;
+  while (true) {
+    const TimeUs current = now_us();
+    app.removable_storage.set_card_detect(
+        app.sd_card_present.load(std::memory_order_acquire), current);
+    app.removable_storage.tick(current);
+    const auto& status = app.removable_storage.status();
+    if (status.state != previous) {
+      ESP_LOGI(kTag,
+               "microSD state=%u present=%u mounted=%u writable=%u queued=%u",
+               static_cast<unsigned>(status.state),
+               status.card_present ? 1U : 0U,
+               status.mounted ? 1U : 0U,
+               status.writable ? 1U : 0U,
+               static_cast<unsigned>(status.queued));
+      previous = status.state;
+    }
+    // All FatFS/SDMMC calls live only in this low-priority task. At most one
+    // bounded 512-byte request is serviced per tick.
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 #endif
@@ -2515,6 +2564,15 @@ extern "C" void app_main()
 #else
   const BaseType_t board_io_created = pdPASS;
 #endif
+#if CONFIG_RIVETTX_SDMMC_ENABLED
+  const BaseType_t removable_storage_created =
+      board_power_ok
+          ? xTaskCreatePinnedToCore(removable_storage_task, "rivet-sd", 4096,
+                                    nullptr, 2, nullptr, kServiceCore)
+          : pdFAIL;
+#else
+  const BaseType_t removable_storage_created = pdPASS;
+#endif
 #if CONFIG_RIVETTX_RX5808_ENABLED
   const BaseType_t vrx_created =
       app.vrx_initialized
@@ -2556,6 +2614,7 @@ extern "C" void app_main()
                            ui_created == pdPASS &&
                            service_created == pdPASS &&
                            board_io_created == pdPASS &&
+                           removable_storage_created == pdPASS &&
                            vrx_created == pdPASS &&
                            osd_created == pdPASS &&
                            usb_created == pdPASS;

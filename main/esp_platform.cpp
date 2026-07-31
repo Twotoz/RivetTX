@@ -5,12 +5,14 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <sys/stat.h>
 #include <utility>
 #include <vector>
 
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "driver/ledc.h"
+#include "driver/sdmmc_host.h"
 #include "driver/spi_master.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_app_desc.h"
@@ -26,6 +28,8 @@
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
 #include "esp_wifi.h"
+#include "ff.h"
+#include "sdmmc_cmd.h"
 #include "sdkconfig.h"
 #include "wear_levelling.h"
 
@@ -160,9 +164,9 @@ bool validate_pin_configuration()
   const std::array<int, 22> rev_a_pins{
       CONFIG_RIVETTX_BOARD_I2C_SDA_GPIO,
       CONFIG_RIVETTX_BOARD_I2C_SCL_GPIO,
-      CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO,
-      CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO,
-      CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO,
+      CONFIG_RIVETTX_SD_CLK_GPIO,
+      CONFIG_RIVETTX_SD_CMD_GPIO,
+      CONFIG_RIVETTX_SD_D0_GPIO,
       CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO,
       CONFIG_RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO,
       CONFIG_RIVETTX_VBUS_DETECT_GPIO,
@@ -180,6 +184,27 @@ bool validate_pin_configuration()
       CONFIG_RIVETTX_SPEAKER_ENABLE_GPIO,
       19, 20};  // Native USB D-/D+ are reserved by the board.
   for (const int pin : rev_a_pins) add_pin(pin);
+  const std::array<int, 5> expander_bits{
+      CONFIG_RIVETTX_SD_DETECT_EXPANDER_BIT,
+      CONFIG_RIVETTX_SD_POWER_EXPANDER_BIT,
+      CONFIG_RIVETTX_5V_VIDEO_ENABLE_EXPANDER_BIT,
+      CONFIG_RIVETTX_5V_DISPLAY_ENABLE_EXPANDER_BIT,
+      CONFIG_RIVETTX_5V_ELRS_ENABLE_EXPANDER_BIT};
+  for (std::size_t first = 0; first < expander_bits.size(); ++first) {
+    if (expander_bits[first] < 16 || expander_bits[first] >= 32) {
+      ESP_LOGE(kTag, "Revision-A expander bit %d is outside U19",
+               expander_bits[first]);
+      return false;
+    }
+    for (std::size_t second = first + 1;
+         second < expander_bits.size(); ++second) {
+      if (expander_bits[first] == expander_bits[second]) {
+        ESP_LOGE(kTag, "Revision-A expander bit %d is assigned twice",
+                 expander_bits[first]);
+        return false;
+      }
+    }
+  }
 #endif
   for (std::size_t index = 0; index < pin_count; ++index) {
     const int pin = pins[index];
@@ -251,9 +276,9 @@ bool validate_pin_configuration()
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
   output_pins[6] = CONFIG_RIVETTX_BOARD_I2C_SDA_GPIO;
   output_pins[7] = CONFIG_RIVETTX_BOARD_I2C_SCL_GPIO;
-  output_pins[8] = CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO;
-  output_pins[9] = CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO;
-  output_pins[10] = CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO;
+  output_pins[8] = CONFIG_RIVETTX_SD_CLK_GPIO;
+  output_pins[9] = CONFIG_RIVETTX_SD_CMD_GPIO;
+  output_pins[10] = CONFIG_RIVETTX_SD_D0_GPIO;
   output_pins[11] = CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO;
   output_pins[12] = CONFIG_RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO;
   output_pins[13] = CONFIG_RIVETTX_AMT630A_FLASH_CS_GPIO;
@@ -362,9 +387,9 @@ bool validate_rx5808_configuration()
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
       CONFIG_RIVETTX_BOARD_I2C_SDA_GPIO,
       CONFIG_RIVETTX_BOARD_I2C_SCL_GPIO,
-      CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO,
-      CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO,
-      CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO,
+      CONFIG_RIVETTX_SD_CLK_GPIO,
+      CONFIG_RIVETTX_SD_CMD_GPIO,
+      CONFIG_RIVETTX_SD_D0_GPIO,
       CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO,
       CONFIG_RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO,
       -1,
@@ -638,7 +663,7 @@ bool EspBoardPowerIo::read_register(i2c_master_dev_handle_t device,
                                     uint8_t reg, uint8_t* data,
                                     std::size_t size)
 {
-  return initialized_ && device != nullptr && data != nullptr && size != 0 &&
+  return device != nullptr && data != nullptr && size != 0 &&
          i2c_master_transmit_receive(device, &reg, 1, data, size, 10) == ESP_OK;
 }
 
@@ -646,7 +671,7 @@ bool EspBoardPowerIo::write_register(i2c_master_dev_handle_t device,
                                      uint8_t reg, const uint8_t* data,
                                      std::size_t size)
 {
-  if (!initialized_ || device == nullptr || data == nullptr || size == 0 ||
+  if (device == nullptr || data == nullptr || size == 0 ||
       size > kAmt630aFlashPageSize) {
     return false;
   }
@@ -664,10 +689,7 @@ bool EspBoardPowerIo::initialize()
   if (initialized_) {
     return true;
   }
-  const std::array<std::pair<int, int>, 7> safe_outputs{{
-      {CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO, 0},
-      {CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO, 0},
-      {CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO, 0},
+  const std::array<std::pair<int, int>, 4> safe_outputs{{
       {CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO, 0},
       {CONFIG_RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO, 0},
       {CONFIG_RIVETTX_AMT630A_FLASH_MUX_GPIO, 0},
@@ -720,6 +742,35 @@ bool EspBoardPowerIo::initialize()
                   expanders_[1])) {
     return false;
   }
+  // TCA9535 powers up as all-input. Load zero into both output latches before
+  // making the SD and load-switch enables outputs, so no rail glitches on.
+  const std::array<uint8_t, 2> output_latches{0x00, 0x00};
+  const std::array<uint8_t, 2> expander0_directions{0xFF, 0xFF};
+  // U19 P7=SD power and P8..P10=5V_VIDEO/DISPLAY/ELRS. All other pins remain
+  // inputs, including active-low card detect on P6.
+  uint16_t expander1_direction_bits = 0xFFFF;
+  const std::array<int, 4> expander_outputs{
+      CONFIG_RIVETTX_SD_POWER_EXPANDER_BIT,
+      CONFIG_RIVETTX_5V_VIDEO_ENABLE_EXPANDER_BIT,
+      CONFIG_RIVETTX_5V_DISPLAY_ENABLE_EXPANDER_BIT,
+      CONFIG_RIVETTX_5V_ELRS_ENABLE_EXPANDER_BIT};
+  for (const int bit : expander_outputs) {
+    expander1_direction_bits = static_cast<uint16_t>(
+        expander1_direction_bits & ~(1U << (bit - 16)));
+  }
+  const std::array<uint8_t, 2> expander1_directions{
+      static_cast<uint8_t>(expander1_direction_bits),
+      static_cast<uint8_t>(expander1_direction_bits >> 8U)};
+  if (!write_register(expanders_[0], 0x02, output_latches.data(), 2) ||
+      !write_register(expanders_[1], 0x02, output_latches.data(), 2) ||
+      !write_register(expanders_[0], 0x06,
+                      expander0_directions.data(), 2) ||
+      !write_register(expanders_[1], 0x06,
+                      expander1_directions.data(), 2)) {
+    ESP_LOGE(kTag, "Revision-A TCA9535 safe-state setup failed");
+    return false;
+  }
+  expander_outputs_.fill(0);
 
   spi_bus_config_t flash_bus{};
   flash_bus.mosi_io_num = CONFIG_RIVETTX_AMT630A_FLASH_MOSI_GPIO;
@@ -763,7 +814,8 @@ bool EspBoardPowerIo::initialize()
 bool EspBoardPowerIo::set_video_5v(bool enabled)
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  return set_output(CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO, enabled);
+  return set_expander_output(
+      CONFIG_RIVETTX_5V_VIDEO_ENABLE_EXPANDER_BIT, enabled);
 #else
   (void)enabled;
   return false;
@@ -773,7 +825,8 @@ bool EspBoardPowerIo::set_video_5v(bool enabled)
 bool EspBoardPowerIo::set_display_5v(bool enabled)
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  return set_output(CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO, enabled);
+  return set_expander_output(
+      CONFIG_RIVETTX_5V_DISPLAY_ENABLE_EXPANDER_BIT, enabled);
 #else
   (void)enabled;
   return false;
@@ -783,7 +836,45 @@ bool EspBoardPowerIo::set_display_5v(bool enabled)
 bool EspBoardPowerIo::set_elrs_5v(bool enabled)
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  return set_output(CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO, enabled);
+  return set_expander_output(
+      CONFIG_RIVETTX_5V_ELRS_ENABLE_EXPANDER_BIT, enabled);
+#else
+  (void)enabled;
+  return false;
+#endif
+}
+
+bool EspBoardPowerIo::set_expander_output(uint8_t bit, bool enabled)
+{
+#if !CONFIG_RIVETTX_OPENPOCKET_REV_A
+  (void)bit;
+  (void)enabled;
+  return false;
+#else
+  if (!initialized_ || bit < 16 || bit >= 32) return false;
+  const uint8_t local = static_cast<uint8_t>(bit - 16U);
+  const uint16_t mask = static_cast<uint16_t>(1U << local);
+  const std::lock_guard<std::mutex> lock(expander_output_mutex_);
+  const uint16_t previous = expander_outputs_[1];
+  const uint16_t next = enabled
+                            ? static_cast<uint16_t>(previous | mask)
+                            : static_cast<uint16_t>(previous & ~mask);
+  if (next == previous) return true;
+  const uint8_t port = local < 8 ? 0 : 1;
+  const uint8_t value = static_cast<uint8_t>(next >> (port * 8U));
+  if (!write_register(expanders_[1], static_cast<uint8_t>(0x02U + port),
+                      &value, 1)) {
+    return false;
+  }
+  expander_outputs_[1] = next;
+  return true;
+#endif
+}
+
+bool EspBoardPowerIo::set_sd_power(bool enabled)
+{
+#if CONFIG_RIVETTX_SDMMC_ENABLED
+  return set_expander_output(CONFIG_RIVETTX_SD_POWER_EXPANDER_BIT, enabled);
 #else
   (void)enabled;
   return false;
@@ -901,6 +992,260 @@ bool EspBoardPowerIo::read_expanded_controls(uint32_t& active_low_bits)
                        (static_cast<uint32_t>(second[1]) << 24U);
   active_low_bits = ~raw;
   return true;
+}
+
+EspRemovableStorageBackend::EspRemovableStorageBackend(
+    EspBoardPowerIo& power_io)
+    : power_io_(power_io)
+{
+}
+
+bool EspRemovableStorageBackend::set_power(bool enabled)
+{
+#if CONFIG_RIVETTX_SDMMC_ENABLED
+  const bool changed = power_io_.set_sd_power(enabled);
+  if (!enabled) {
+    mounted_ = false;
+    read_only_ = true;
+    card_ = nullptr;
+  }
+  return changed;
+#else
+  (void)enabled;
+  return false;
+#endif
+}
+
+RemovableStorageMediaResult EspRemovableStorageBackend::identify(
+    uint32_t initial_clock_khz, uint32_t maximum_clock_khz)
+{
+#if CONFIG_RIVETTX_SDMMC_ENABLED
+  if (initial_clock_khz < 100 || initial_clock_khz > 1000 ||
+      maximum_clock_khz < initial_clock_khz || maximum_clock_khz > 20000) {
+    return RemovableStorageMediaResult::Unsupported;
+  }
+  initial_clock_khz_ = initial_clock_khz;
+  maximum_clock_khz_ = maximum_clock_khz;
+  return RemovableStorageMediaResult::Ok;
+#else
+  (void)initial_clock_khz;
+  (void)maximum_clock_khz;
+  return RemovableStorageMediaResult::Unsupported;
+#endif
+}
+
+RemovableStorageMediaResult EspRemovableStorageBackend::mount(bool read_only)
+{
+#if !CONFIG_RIVETTX_SDMMC_ENABLED
+  (void)read_only;
+  return RemovableStorageMediaResult::Unsupported;
+#else
+  if (mounted_) return RemovableStorageMediaResult::IoError;
+  sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+  // The ROM/driver card-identification phase starts at the standard safe
+  // frequency. The selected operating ceiling is deliberately capped at
+  // 20 MHz until first-article signal-integrity measurements pass.
+  host.max_freq_khz = static_cast<int>(maximum_clock_khz_);
+  sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+  slot.width = 1;
+  slot.clk = static_cast<gpio_num_t>(CONFIG_RIVETTX_SD_CLK_GPIO);
+  slot.cmd = static_cast<gpio_num_t>(CONFIG_RIVETTX_SD_CMD_GPIO);
+  slot.d0 = static_cast<gpio_num_t>(CONFIG_RIVETTX_SD_D0_GPIO);
+  slot.d1 = GPIO_NUM_NC;
+  slot.d2 = GPIO_NUM_NC;
+  slot.d3 = GPIO_NUM_NC;
+  slot.cd = GPIO_NUM_NC;
+  slot.wp = GPIO_NUM_NC;
+  slot.flags = 0;
+  esp_vfs_fat_sdmmc_mount_config_t mount_config{};
+  mount_config.format_if_mount_failed = false;
+  mount_config.max_files = 6;
+  mount_config.allocation_unit_size = 16U * 1024U;
+  sdmmc_card_t* card = nullptr;
+  const esp_err_t result = esp_vfs_fat_sdmmc_mount(
+      "/sdcard", &host, &slot, &mount_config, &card);
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag, "microSD mount failed: %s", esp_err_to_name(result));
+    if (result == ESP_ERR_NOT_SUPPORTED || result == ESP_ERR_INVALID_ARG) {
+      return RemovableStorageMediaResult::Unsupported;
+    }
+    return result == ESP_FAIL ? RemovableStorageMediaResult::Corrupt
+                              : RemovableStorageMediaResult::IoError;
+  }
+  card_ = card;
+  mounted_ = true;
+  // FatFS itself is mounted normally; read-only is enforced at this backend
+  // boundary until the BPB has passed the FAT32 audit and the service remounts.
+  read_only_ = read_only;
+  return RemovableStorageMediaResult::Ok;
+#endif
+}
+
+RemovableStorageMediaResult EspRemovableStorageBackend::validate_fat32()
+{
+#if !CONFIG_RIVETTX_SDMMC_ENABLED
+  return RemovableStorageMediaResult::Unsupported;
+#else
+  auto* card = static_cast<sdmmc_card_t*>(card_);
+  if (!mounted_ || card == nullptr || !read_only_) {
+    return RemovableStorageMediaResult::IoError;
+  }
+  std::array<uint8_t, 512> sector{};
+  if (sdmmc_read_sectors(card, sector.data(), 0, 1) != ESP_OK) {
+    return RemovableStorageMediaResult::IoError;
+  }
+  const auto little16 = [&sector](std::size_t offset) {
+    return static_cast<uint16_t>(sector[offset] |
+                                 (static_cast<uint16_t>(sector[offset + 1])
+                                  << 8U));
+  };
+  const auto little32 = [&sector](std::size_t offset) {
+    return static_cast<uint32_t>(sector[offset]) |
+           (static_cast<uint32_t>(sector[offset + 1]) << 8U) |
+           (static_cast<uint32_t>(sector[offset + 2]) << 16U) |
+           (static_cast<uint32_t>(sector[offset + 3]) << 24U);
+  };
+  const auto looks_like_bpb = [&sector, &little16, &little32]() {
+    const uint16_t bytes = little16(11);
+    const uint8_t sectors_per_cluster = sector[13];
+    const uint16_t reserved = little16(14);
+    const uint8_t fats = sector[16];
+    const uint32_t total = little16(19) != 0 ? little16(19) : little32(32);
+    return bytes == 512 && sectors_per_cluster != 0 &&
+           (sectors_per_cluster & (sectors_per_cluster - 1U)) == 0 &&
+           reserved != 0 && (fats == 1 || fats == 2) && total != 0;
+  };
+  if (sector[510] != 0x55 || sector[511] != 0xAA) {
+    return RemovableStorageMediaResult::Corrupt;
+  }
+  uint32_t boot_lba = 0;
+  if (!looks_like_bpb()) {
+    boot_lba = little32(454);  // First MBR partition start LBA.
+    if (boot_lba == 0 ||
+        sdmmc_read_sectors(card, sector.data(), boot_lba, 1) != ESP_OK) {
+      return RemovableStorageMediaResult::Corrupt;
+    }
+    if (sector[510] != 0x55 || sector[511] != 0xAA || !looks_like_bpb()) {
+      return RemovableStorageMediaResult::Corrupt;
+    }
+  }
+  const uint16_t bytes_per_sector = little16(11);
+  const uint8_t sectors_per_cluster = sector[13];
+  const uint16_t reserved = little16(14);
+  const uint8_t fat_count = sector[16];
+  const uint16_t root_entries = little16(17);
+  const uint32_t total_sectors =
+      little16(19) != 0 ? little16(19) : little32(32);
+  const uint32_t sectors_per_fat =
+      little16(22) != 0 ? little16(22) : little32(36);
+  if (bytes_per_sector != 512 || sectors_per_cluster == 0 ||
+      (sectors_per_cluster & (sectors_per_cluster - 1U)) != 0 ||
+      reserved == 0 || fat_count == 0 || total_sectors == 0 ||
+      sectors_per_fat == 0) {
+    return RemovableStorageMediaResult::Corrupt;
+  }
+  const uint32_t root_sectors =
+      (static_cast<uint32_t>(root_entries) * 32U + bytes_per_sector - 1U) /
+      bytes_per_sector;
+  const uint32_t overhead = static_cast<uint32_t>(reserved) +
+                            static_cast<uint32_t>(fat_count) *
+                                sectors_per_fat +
+                            root_sectors;
+  if (total_sectors <= overhead) return RemovableStorageMediaResult::Corrupt;
+  const uint32_t clusters =
+      (total_sectors - overhead) / sectors_per_cluster;
+  return clusters >= 65525U ? RemovableStorageMediaResult::Ok
+                            : RemovableStorageMediaResult::Unsupported;
+#endif
+}
+
+bool EspRemovableStorageBackend::ensure_openpocket_directories()
+{
+#if !CONFIG_RIVETTX_SDMMC_ENABLED
+  return false;
+#else
+  if (!mounted_ || read_only_) return false;
+  static constexpr std::array<const char*, 10> directories{{
+      "/sdcard/OPENPOCKET", "/sdcard/OPENPOCKET/AUDIO",
+      "/sdcard/OPENPOCKET/VOICE", "/sdcard/OPENPOCKET/LOGS",
+      "/sdcard/OPENPOCKET/MODELS", "/sdcard/OPENPOCKET/UPDATES",
+      "/sdcard/OPENPOCKET/AMT630A", "/sdcard/OPENPOCKET/ELRS",
+      "/sdcard/OPENPOCKET/CRASH", "/sdcard/OPENPOCKET/DIAGNOSTICS"}};
+  for (const char* directory : directories) {
+    if (mkdir(directory, 0755) != 0 && errno != EEXIST) return false;
+  }
+  return true;
+#endif
+}
+
+bool EspRemovableStorageBackend::unmount()
+{
+#if !CONFIG_RIVETTX_SDMMC_ENABLED
+  return false;
+#else
+  if (!mounted_) return true;
+  auto* card = static_cast<sdmmc_card_t*>(card_);
+  const esp_err_t result = esp_vfs_fat_sdcard_unmount("/sdcard", card);
+  if (result != ESP_OK) return false;
+  card_ = nullptr;
+  mounted_ = false;
+  read_only_ = true;
+  return true;
+#endif
+}
+
+bool EspRemovableStorageBackend::execute(
+    const RemovableStorageRequest& request,
+    RemovableStorageCompletion& completion)
+{
+#if !CONFIG_RIVETTX_SDMMC_ENABLED
+  (void)request;
+  (void)completion;
+  return false;
+#else
+  if (!mounted_ || read_only_ || !valid_openpocket_path(request.path.data()) ||
+      request.size > kRemovableStorageChunkBytes ||
+      request.payload_size > request.payload.size()) {
+    return false;
+  }
+  std::array<char, kRemovableStoragePathCapacity + 8> path{};
+  if (std::snprintf(path.data(), path.size(), "/sdcard%s",
+                    request.path.data()) < 0) {
+    return false;
+  }
+  const bool read_operation =
+      request.operation == RemovableStorageOperation::AudioRead ||
+      request.operation == RemovableStorageOperation::UpdateRead;
+  if (read_operation) {
+    FILE* file = std::fopen(path.data(), "rb");
+    if (file == nullptr) return false;
+    bool ok = std::fseek(file, static_cast<long>(request.offset), SEEK_SET) == 0;
+    const std::size_t bytes =
+        ok ? std::fread(completion.data.data(), 1, request.size, file) : 0;
+    ok = ok && !std::ferror(file);
+    (void)std::fclose(file);
+    completion.bytes = static_cast<uint16_t>(bytes);
+    return ok;
+  }
+
+  const char* mode =
+      request.operation == RemovableStorageOperation::LogRecord ? "ab" :
+                                                                   "r+b";
+  FILE* file = std::fopen(path.data(), mode);
+  if (file == nullptr && mode[0] == 'r') file = std::fopen(path.data(), "wb");
+  if (file == nullptr) return false;
+  bool ok = true;
+  if (request.operation != RemovableStorageOperation::LogRecord) {
+    ok = std::fseek(file, static_cast<long>(request.offset), SEEK_SET) == 0;
+  }
+  const std::size_t written =
+      ok ? std::fwrite(request.payload.data(), 1, request.payload_size, file)
+         : 0;
+  ok = ok && written == request.payload_size && std::fflush(file) == 0;
+  (void)std::fclose(file);
+  completion.bytes = static_cast<uint16_t>(written);
+  return ok;
+#endif
 }
 
 bool EspBoardPowerIo::amt630a_read(uint8_t reg, uint8_t& value)

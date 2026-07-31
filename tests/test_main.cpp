@@ -5,6 +5,7 @@
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
 #include "rivettx/product.hpp"
+#include "rivettx/removable_storage.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/speaker.hpp"
 #include "rivettx/storage.hpp"
@@ -50,6 +51,80 @@ class FakeWatchdog final : public IWatchdog {
     ++count;
   }
   uint32_t count = 0;
+};
+
+class FakeRemovableStorageBackend final : public IRemovableStorageBackend {
+ public:
+  bool set_power(bool enabled) override
+  {
+    powered = enabled;
+    ++power_changes;
+    return power_ok;
+  }
+  RemovableStorageMediaResult identify(uint32_t initial_clock_khz,
+                                        uint32_t maximum_clock_khz) override
+  {
+    initial_clock = initial_clock_khz;
+    maximum_clock = maximum_clock_khz;
+    ++identify_calls;
+    return identify_result;
+  }
+  RemovableStorageMediaResult mount(bool read_only) override
+  {
+    ++mount_calls;
+    last_mount_read_only = read_only;
+    return mount_result;
+  }
+  RemovableStorageMediaResult validate_fat32() override
+  {
+    ++validate_calls;
+    return validate_result;
+  }
+  bool ensure_openpocket_directories() override
+  {
+    ++directory_calls;
+    return directories_ok;
+  }
+  bool unmount() override
+  {
+    ++unmount_calls;
+    return unmount_ok;
+  }
+  bool execute(const RemovableStorageRequest& request,
+               RemovableStorageCompletion& completion) override
+  {
+    last_request = request;
+    ++execute_calls;
+    completion.token = request.token;
+    completion.bytes = execute_ok ? 3 : 0;
+    completion.data[0] = 'O';
+    completion.data[1] = 'K';
+    completion.data[2] = '!';
+    return execute_ok;
+  }
+
+  bool powered = false;
+  bool power_ok = true;
+  bool directories_ok = true;
+  bool unmount_ok = true;
+  bool execute_ok = true;
+  bool last_mount_read_only = false;
+  uint32_t initial_clock = 0;
+  uint32_t maximum_clock = 0;
+  uint32_t power_changes = 0;
+  uint32_t identify_calls = 0;
+  uint32_t mount_calls = 0;
+  uint32_t validate_calls = 0;
+  uint32_t directory_calls = 0;
+  uint32_t unmount_calls = 0;
+  uint32_t execute_calls = 0;
+  RemovableStorageMediaResult identify_result =
+      RemovableStorageMediaResult::Ok;
+  RemovableStorageMediaResult mount_result =
+      RemovableStorageMediaResult::Ok;
+  RemovableStorageMediaResult validate_result =
+      RemovableStorageMediaResult::Ok;
+  RemovableStorageRequest last_request{};
 };
 
 class FakeBoardPowerHardware final : public IBoardPowerHardware {
@@ -1578,6 +1653,146 @@ void test_speaker_service()
   CHECK(!simulator.play_test_tone(1000, 100));
 }
 
+RemovableStorageRequest removable_request(RemovableStorageOperation operation,
+                                           const char* path,
+                                           uint32_t token = 0)
+{
+  RemovableStorageRequest request{};
+  request.operation = operation;
+  std::strncpy(request.path.data(), path, request.path.size() - 1);
+  request.size = 32;
+  request.token = token;
+  return request;
+}
+
+void make_removable_ready(RemovableStorageService& service, TimeUs& now)
+{
+  service.set_card_detect(true, now);
+  now += 80000;
+  service.tick(now);  // Power enabled.
+  now += 10000;
+  service.tick(now);  // Power settled.
+  service.tick(++now);  // Identified and mounted read-only.
+  service.tick(++now);  // Enter validation.
+  service.tick(++now);  // FAT32 accepted and remounted read/write.
+}
+
+void test_removable_storage()
+{
+  CHECK(valid_openpocket_path("/OPENPOCKET/LOGS/session.csv"));
+  CHECK(valid_openpocket_path("/OPENPOCKET/AUDIO/tone.wav"));
+  CHECK(!valid_openpocket_path("/models/active.rvm"));
+  CHECK(!valid_openpocket_path("/OPENPOCKET/../models/active.rvm"));
+  CHECK(!valid_openpocket_path("/OPENPOCKET//LOGS/x"));
+  CHECK(!valid_openpocket_path("/OPENPOCKET/UPDATES/C:evil.bin"));
+
+  RemovableUpdateApproval approval{};
+  CHECK(!removable_update_approved(approval));
+  approval.manifest_signature_or_hash_valid = true;
+  approval.user_confirmed = true;
+  approval.hardware_compatible = true;
+  approval.version_allowed = true;
+  approval.post_write_readback_required = true;
+  CHECK(removable_update_approved(approval));
+  approval.user_confirmed = false;
+  CHECK(!removable_update_approved(approval));
+
+  FakeRemovableStorageBackend backend;
+  RemovableStorageService service(backend);
+  CHECK(service.status().state == RemovableStorageState::Absent);
+  CHECK(!service.enqueue(removable_request(
+      RemovableStorageOperation::LogRecord,
+      "/OPENPOCKET/LOGS/no-card.csv")));
+  CHECK(service.status().dropped_logs == 1);
+
+  TimeUs now = 0;
+  make_removable_ready(service, now);
+  CHECK(service.status().state == RemovableStorageState::Ready);
+  CHECK(service.status().card_present);
+  CHECK(service.status().powered);
+  CHECK(service.status().mounted);
+  CHECK(service.status().writable);
+  CHECK(backend.initial_clock == 400);
+  CHECK(backend.maximum_clock == 20000);
+  CHECK(backend.mount_calls == 2);
+  CHECK(!backend.last_mount_read_only);
+  CHECK(backend.validate_calls == 1);
+  CHECK(backend.directory_calls == 1);
+
+  const auto audio = removable_request(
+      RemovableStorageOperation::AudioRead,
+      "/OPENPOCKET/AUDIO/alert.wav", 42);
+  CHECK(service.enqueue(audio));
+  service.tick(++now);
+  CHECK(backend.execute_calls == 1);
+  CHECK(backend.last_request.token == 42);
+  CHECK(service.status().completed == 1);
+  RemovableStorageCompletion completion{};
+  CHECK(service.take_completion(completion));
+  CHECK(completion.success);
+  CHECK(completion.token == 42);
+  CHECK(completion.bytes == 3);
+  CHECK(completion.data[0] == 'O');
+
+  for (std::size_t index = 0; index < kRemovableStorageQueueDepth; ++index) {
+    CHECK(service.enqueue(removable_request(
+        RemovableStorageOperation::LogRecord,
+        "/OPENPOCKET/LOGS/telemetry.csv",
+        static_cast<uint32_t>(index))));
+  }
+  CHECK(!service.enqueue(removable_request(
+      RemovableStorageOperation::LogRecord,
+      "/OPENPOCKET/LOGS/overflow.csv")));
+  CHECK(service.status().dropped_logs == 2);
+
+  service.set_card_detect(false, ++now);
+  now += 79999;
+  service.tick(now);
+  CHECK(service.status().state == RemovableStorageState::Ready);
+  service.tick(++now);
+  CHECK(service.status().state == RemovableStorageState::Absent);
+  CHECK(!backend.powered);
+  CHECK(service.status().queued == 0);
+  CHECK(service.status().removals == 1);
+
+  FakeRemovableStorageBackend corrupt_backend;
+  corrupt_backend.validate_result = RemovableStorageMediaResult::Corrupt;
+  RemovableStorageService corrupt(corrupt_backend);
+  now = 0;
+  make_removable_ready(corrupt, now);
+  CHECK(corrupt.status().state == RemovableStorageState::Corrupt);
+  CHECK(!corrupt.status().writable);
+  CHECK(!corrupt_backend.powered);
+  CHECK(!corrupt.enqueue(removable_request(
+      RemovableStorageOperation::ModelExport,
+      "/OPENPOCKET/MODELS/export.rvm")));
+
+  FakeRemovableStorageBackend unsupported_backend;
+  unsupported_backend.identify_result =
+      RemovableStorageMediaResult::Unsupported;
+  RemovableStorageService unsupported(unsupported_backend);
+  now = 0;
+  unsupported.set_card_detect(true, now);
+  now += 80000;
+  unsupported.tick(now);
+  now += 10000;
+  unsupported.tick(now);
+  unsupported.tick(++now);
+  CHECK(unsupported.status().state == RemovableStorageState::Unsupported);
+
+  FakeRemovableStorageBackend io_backend;
+  io_backend.execute_ok = false;
+  RemovableStorageService io(io_backend);
+  now = 0;
+  make_removable_ready(io, now);
+  CHECK(io.enqueue(removable_request(
+      RemovableStorageOperation::DiagnosticWrite,
+      "/OPENPOCKET/CRASH/fault.bin")));
+  io.tick(++now);
+  CHECK(io.status().failed == 1);
+  CHECK(io.status().state == RemovableStorageState::Ready);
+}
+
 void test_storage()
 {
   const std::string root =
@@ -3071,6 +3286,7 @@ int main()
   test_elrs_management_and_finder();
   test_audio_alerts();
   test_speaker_service();
+  test_removable_storage();
   test_storage();
   test_ui();
   test_services();

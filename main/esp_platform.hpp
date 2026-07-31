@@ -6,6 +6,7 @@
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
 #include "rivettx/product.hpp"
+#include "rivettx/removable_storage.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/speaker.hpp"
 #include "rivettx/storage.hpp"
@@ -16,6 +17,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -78,6 +80,7 @@ class EspBoardPowerIo final : public IBoardPowerHardware,
   ChargerTelemetry read_charger() override;
   FuelGaugeTelemetry read_fuel_gauge() override;
   bool read_expanded_controls(uint32_t& active_low_bits);
+  bool set_sd_power(bool enabled);
   bool read_identity(uint16_t& identity) override;
   bool acquire_flash(uint32_t& jedec_identity) override;
   bool flash_write_enable() override;
@@ -100,15 +103,40 @@ class EspBoardPowerIo final : public IBoardPowerHardware,
   bool flash_command(uint8_t command);
   bool flash_transfer(const uint8_t* transmit, uint8_t* receive,
                       std::size_t size);
+  bool set_expander_output(uint8_t bit, bool enabled);
 
   i2c_master_bus_handle_t bus_ = nullptr;
   i2c_master_dev_handle_t charger_ = nullptr;
   i2c_master_dev_handle_t gauge_ = nullptr;
   i2c_master_dev_handle_t amt630a_ = nullptr;
   std::array<i2c_master_dev_handle_t, 2> expanders_{};
+  std::array<uint16_t, 2> expander_outputs_{};
+  std::mutex expander_output_mutex_;
   spi_device_handle_t amt_flash_ = nullptr;
   bool flash_owned_ = false;
   bool initialized_ = false;
+};
+
+class EspRemovableStorageBackend final : public IRemovableStorageBackend {
+ public:
+  explicit EspRemovableStorageBackend(EspBoardPowerIo& power_io);
+  bool set_power(bool enabled) override;
+  RemovableStorageMediaResult identify(uint32_t initial_clock_khz,
+                                        uint32_t maximum_clock_khz) override;
+  RemovableStorageMediaResult mount(bool read_only) override;
+  RemovableStorageMediaResult validate_fat32() override;
+  bool ensure_openpocket_directories() override;
+  bool unmount() override;
+  bool execute(const RemovableStorageRequest& request,
+               RemovableStorageCompletion& completion) override;
+
+ private:
+  EspBoardPowerIo& power_io_;
+  void* card_ = nullptr;
+  uint32_t initial_clock_khz_ = 400;
+  uint32_t maximum_clock_khz_ = 20000;
+  bool mounted_ = false;
+  bool read_only_ = true;
 };
 
 class EspRx5808Io final : public IRtc6715Io {

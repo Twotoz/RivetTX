@@ -7,6 +7,7 @@ idf_component_register(
     "crsf.cpp"
     "elrs.cpp"
     "product.cpp"
+    "removable_storage.cpp"
     "rx5808.cpp"
     "services.cpp"
     "speaker.cpp"
