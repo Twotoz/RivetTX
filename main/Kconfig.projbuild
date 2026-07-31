@@ -30,23 +30,76 @@ config RIVETTX_BOARD_I2C_SCL_GPIO
     default 16
     depends on RIVETTX_OPENPOCKET_REV_A
 
-config RIVETTX_5V_VIDEO_ENABLE_GPIO
-    int "5V_VIDEO load-switch enable GPIO"
+config RIVETTX_5V_VIDEO_ENABLE_EXPANDER_BIT
+    int "5V_VIDEO load-switch enable expander bit"
+    range 16 31
+    default 24
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_5V_DISPLAY_ENABLE_EXPANDER_BIT
+    int "5V_DISPLAY load-switch enable expander bit"
+    range 16 31
+    default 25
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_5V_ELRS_ENABLE_EXPANDER_BIT
+    int "5V_ELRS load-switch enable expander bit"
+    range 16 31
+    default 26
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_SDMMC_ENABLED
+    bool "OpenPocket removable microSD storage"
+    default y
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_SD_CLK_GPIO
+    int "SDMMC 1-bit CLK GPIO"
     range 0 48
     default 40
     depends on RIVETTX_OPENPOCKET_REV_A
 
-config RIVETTX_5V_DISPLAY_ENABLE_GPIO
-    int "5V_DISPLAY load-switch enable GPIO"
+config RIVETTX_SD_CMD_GPIO
+    int "SDMMC 1-bit CMD GPIO"
     range 0 48
     default 41
     depends on RIVETTX_OPENPOCKET_REV_A
 
-config RIVETTX_5V_ELRS_ENABLE_GPIO
-    int "5V_ELRS load-switch enable GPIO"
+config RIVETTX_SD_D0_GPIO
+    int "SDMMC 1-bit DAT0 GPIO"
     range 0 48
     default 42
     depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_SD_DETECT_EXPANDER_BIT
+    int "Active-low microSD card-detect expander bit"
+    range 16 31
+    default 22
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_SD_POWER_EXPANDER_BIT
+    int "3V3_SD load-switch enable expander bit"
+    range 16 31
+    default 23
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_SD_INITIAL_CLOCK_KHZ
+    int "Initial SD identification clock (kHz)"
+    range 100 1000
+    default 400
+    depends on RIVETTX_SDMMC_ENABLED
+
+config RIVETTX_SD_MAX_CLOCK_KHZ
+    int "Maximum Revision-A SD clock (kHz)"
+    range 1000 20000
+    default 20000
+    depends on RIVETTX_SDMMC_ENABLED
+
+config RIVETTX_SD_DETECT_DEBOUNCE_MS
+    int "microSD card-detect debounce (milliseconds)"
+    range 20 500
+    default 80
+    depends on RIVETTX_SDMMC_ENABLED
 
 config RIVETTX_BACKLIGHT_PWM_GPIO
     int "TPS61165 backlight PWM GPIO"

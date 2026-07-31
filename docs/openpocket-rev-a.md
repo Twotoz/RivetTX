@@ -54,14 +54,53 @@ resistors. All analog inputs use ADC1.
 | 35 | PCB magnetic-buzzer PWM |
 | 38 | AMT630A active-low reset |
 | 39 / 45 / 46 | NS4168 I2S BCLK / WS / DATA |
-| 40 / 41 / 42 | 5V_VIDEO / 5V_DISPLAY / 5V_ELRS enables |
+| 40 / 41 / 42 | microSD SDMMC CLK / CMD / DAT0 (dedicated 1-bit bus) |
 | 43 / 44 | BQ25895 interrupt / MAX17048 ALERT |
 | 47 / 48 | Backlight PWM / protected VBUS detect |
 
 Two onboard TCA9535 devices at `0x20` and `0x21` handle the slow active-low
 controls, including encoder A/B on flattened bits 20/21 and encoder press on
-bit 11. `board_io_task` samples the expanders and publishes an atomic
-snapshot; the 250 Hz control task never performs I2C traffic.
+bit 11. U19 flattened bit 22 is active-low microSD card detect; bits 23–26 are
+the default-off `3V3_SD`, `5V_VIDEO`, `5V_DISPLAY`, and `5V_ELRS` enables.
+`board_io_task` samples the expanders and publishes an atomic snapshot; the
+250 Hz control task never performs I2C traffic.
+
+## Removable microSD
+
+Revision A uses the ESP32-S3 SDMMC peripheral in dedicated 1-bit mode, not the
+AT7456E SPI bus or AMT630A flash bus. Initialization uses the standard 400 kHz
+identification phase and is capped at 20 MHz after identification. The socket
+has external 10 kΩ pull-ups on CMD and DAT0–DAT3; DAT1–DAT3 are deliberately
+not routed to the ESP32. Card detect is debounced for 80 ms and is active low.
+
+All removable-media activity runs in the low-priority `rivet-sd` task. Its
+fixed queues contain sixteen requests and four completions, and each operation
+is limited to 512 bytes. Queue pressure drops/coalesces non-critical logging;
+it never waits in the 250 Hz control task, CRSF path, safety code, or an ISR.
+Insertion powers `3V3_SD`, identifies the card, mounts without allowing writes,
+validates the FAT32 BPB, remounts read/write, and then creates:
+
+```text
+/OPENPOCKET/AUDIO/       /OPENPOCKET/VOICE/
+/OPENPOCKET/LOGS/        /OPENPOCKET/MODELS/
+/OPENPOCKET/UPDATES/     /OPENPOCKET/AMT630A/
+/OPENPOCKET/ELRS/        /OPENPOCKET/CRASH/
+/OPENPOCKET/DIAGNOSTICS/
+```
+
+Paths are bounded and confined below `/OPENPOCKET`; traversal, control
+characters, drive prefixes, and oversized operations are rejected. Removable
+updates additionally require a signed or hash-verified manifest, explicit user
+confirmation, board-compatibility and version approval, and post-write
+readback. The presence of a file never triggers flashing. Internal ESP32 flash
+remains authoritative for models, calibration, safety settings, boot and the
+approved AMT recovery image.
+
+No card, unreadable media, unsupported FAT variants, corrupt metadata, and I/O
+failure leave radio control operational. Removal unmounts, powers down the card
+and discards queued removable-media work after debounce. Revision A claims
+FAT32 support only. The first-article test matrix covers reputable 8 GB, 16 GB,
+and 32 GB cards; exFAT and universal card compatibility are not claimed.
 
 ## Power and simulator policy
 
@@ -84,7 +123,8 @@ keeps the TFT backlight disabled until the controller reports ready.
 
 Native tests cover delayed RX5808 startup, safe power-state logic, bounded
 AMT630A recovery-flash sequencing including erase/program/readback/checksum/
-boot failures, non-blocking prioritized buzzer alerts, and bounded I2S DMA.
+boot failures, non-blocking prioritized buzzer alerts, bounded I2S DMA, and
+microSD absence/corruption/removal/queue-overload/update gates.
 The merged profile is an engineering prototype: RX5808, AT7456E, AMT630A,
 ER-TFT050A3-2, charger, rail, USB, RF-coexistence, and propeller-off HIL evidence
 is recorded only after first-article boards exist.
