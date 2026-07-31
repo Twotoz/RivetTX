@@ -23,9 +23,53 @@ AudioAlertScheduler::AudioAlertScheduler(IToneOutput& output)
 {
 }
 
+bool validate_audio_settings(AudioSettings& settings)
+{
+  if (settings.version != AudioSettings::kVersion) return false;
+  settings.intensity_percent = clamp<uint8_t>(10, settings.intensity_percent,
+                                               100);
+  return true;
+}
+
+bool AudioAlertScheduler::configure(AudioSettings settings)
+{
+  if (!validate_audio_settings(settings)) return false;
+  settings_ = settings;
+  (void)output_.set_intensity(settings_.intensity_percent);
+  if (settings_.full_mute && tone_active_) {
+    output_.stop_tone();
+    tone_active_ = false;
+    current_ = AudioAlert::Count;
+    pending_.store(0, std::memory_order_release);
+  }
+  return true;
+}
+
+bool AudioAlertScheduler::permitted(AudioAlert alert) const
+{
+  if (settings_.full_mute) return false;
+  const bool critical = alert == AudioAlert::SafetyFault ||
+                        alert == AudioAlert::BatteryCritical ||
+                        alert == AudioAlert::LinkCritical ||
+                        alert == AudioAlert::Failsafe;
+  if (critical) return true;
+  if (!settings_.master_enabled) return false;
+  if (alert == AudioAlert::Startup ||
+      alert == AudioAlert::InitializationSuccess) {
+    return settings_.startup_enabled && !settings_.silent_mode;
+  }
+  if (alert == AudioAlert::CustomTone ||
+      alert == AudioAlert::MenuConfirmation ||
+      alert == AudioAlert::MenuInvalid ||
+      alert == AudioAlert::ScanCompleted) {
+    return settings_.ui_enabled && !settings_.silent_mode;
+  }
+  return settings_.warnings_enabled;
+}
+
 void AudioAlertScheduler::notify(AudioAlert alert)
 {
-  if (alert < AudioAlert::Count) {
+  if (alert < AudioAlert::Count && permitted(alert)) {
     pending_.fetch_or(alert_bit(alert), std::memory_order_release);
   }
 }
@@ -51,6 +95,27 @@ AudioAlertScheduler::Pattern AudioAlertScheduler::pattern_for(
     case AudioAlert::Startup:
       set({{650, 70, 50}, {900, 70, 50}, {1200, 100, 0}});
       break;
+    case AudioAlert::InitializationSuccess:
+      set({{900, 60, 35}, {1350, 100, 0}});
+      break;
+    case AudioAlert::ShutdownRequest:
+      set({{1000, 70, 40}, {700, 70, 40}, {450, 120, 0}});
+      break;
+    case AudioAlert::MenuConfirmation:
+      set({{1100, 45, 0}});
+      break;
+    case AudioAlert::MenuInvalid:
+      set({{350, 80, 0}});
+      break;
+    case AudioAlert::ScanCompleted:
+      set({{800, 55, 30}, {1050, 55, 30}, {1350, 90, 0}});
+      break;
+    case AudioAlert::UpdateSuccess:
+      set({{700, 70, 35}, {1000, 70, 35}, {1450, 130, 0}});
+      break;
+    case AudioAlert::FactoryPass:
+      set({{1000, 80, 40}, {1500, 160, 0}});
+      break;
     case AudioAlert::OutputsEnabled:
       set({{700, 90, 50}, {1100, 130, 0}});
       break;
@@ -75,6 +140,21 @@ AudioAlertScheduler::Pattern AudioAlertScheduler::pattern_for(
     case AudioAlert::TelemetryWarning:
       set({{780, 100, 80}, {780, 100, 0}});
       break;
+    case AudioAlert::ThrottleWarning:
+      set({{620, 100, 55}, {620, 100, 55}, {900, 160, 0}});
+      break;
+    case AudioAlert::ArmWarning:
+      set({{1200, 90, 45}, {450, 180, 0}});
+      break;
+    case AudioAlert::SwitchPositionWarning:
+      set({{520, 100, 45}, {780, 100, 45}, {520, 150, 0}});
+      break;
+    case AudioAlert::UpdateFailure:
+      set({{800, 90, 50}, {400, 230, 0}});
+      break;
+    case AudioAlert::FactoryFail:
+      set({{350, 180, 80}, {350, 180, 80}, {350, 300, 0}});
+      break;
     case AudioAlert::SafetyFault:
       set({{280, 180, 80}, {280, 180, 80}, {280, 260, 0}});
       break;
@@ -93,6 +173,10 @@ AudioAlertScheduler::Pattern AudioAlertScheduler::pattern_for(
     case AudioAlert::LinkCritical:
       set({{1250, 70, 45}, {1250, 70, 45}, {1250, 70, 45},
            {1250, 140, 0}});
+      break;
+    case AudioAlert::Failsafe:
+      set({{2730, 240, 80}, {2730, 240, 80}, {2730, 240, 80},
+           {2730, 450, 0}});
       break;
     case AudioAlert::Count:
       break;

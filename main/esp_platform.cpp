@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "driver/gpio.h"
+#include "driver/i2s_std.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -156,7 +157,7 @@ bool validate_pin_configuration()
   add_pin(CONFIG_RIVETTX_I2C_SCL);
 #endif
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  const std::array<int, 13> rev_a_pins{
+  const std::array<int, 22> rev_a_pins{
       CONFIG_RIVETTX_BOARD_I2C_SDA_GPIO,
       CONFIG_RIVETTX_BOARD_I2C_SCL_GPIO,
       CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO,
@@ -168,6 +169,15 @@ bool validate_pin_configuration()
       CONFIG_RIVETTX_CONTROL_EXPANDER_INT_GPIO,
       CONFIG_RIVETTX_CHARGER_INT_GPIO,
       CONFIG_RIVETTX_FUEL_GAUGE_ALERT_GPIO,
+      CONFIG_RIVETTX_AMT630A_FLASH_CS_GPIO,
+      CONFIG_RIVETTX_AMT630A_FLASH_CLK_GPIO,
+      CONFIG_RIVETTX_AMT630A_FLASH_MOSI_GPIO,
+      CONFIG_RIVETTX_AMT630A_FLASH_MISO_GPIO,
+      CONFIG_RIVETTX_AMT630A_FLASH_MUX_GPIO,
+      CONFIG_RIVETTX_SPEAKER_I2S_BCLK_GPIO,
+      CONFIG_RIVETTX_SPEAKER_I2S_WS_GPIO,
+      CONFIG_RIVETTX_SPEAKER_I2S_DATA_GPIO,
+      CONFIG_RIVETTX_SPEAKER_ENABLE_GPIO,
       19, 20};  // Native USB D-/D+ are reserved by the board.
   for (const int pin : rev_a_pins) add_pin(pin);
 #endif
@@ -181,6 +191,13 @@ bool validate_pin_configuration()
                CONFIG_IDF_TARGET);
       return false;
     }
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+    // ESP32-S3-MINI-1U does not expose GPIO22-25 or GPIO27-32 at its pads.
+    if ((pin >= 22 && pin <= 25) || (pin >= 27 && pin <= 32)) {
+      ESP_LOGE(kTag, "GPIO %d is not bonded out on ESP32-S3-MINI-1U", pin);
+      return false;
+    }
+#endif
     for (std::size_t other = index + 1; other < pin_count; ++other) {
       if (pins[other] == pin) {
         ESP_LOGE(kTag, "GPIO %d is assigned more than once", pin);
@@ -218,9 +235,10 @@ bool validate_pin_configuration()
     return false;
   }
 
-  std::array<int, 16> output_pins{
-      CONFIG_RIVETTX_CRSF_TX, CONFIG_RIVETTX_BUZZER_GPIO,
-      -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+  std::array<int, 24> output_pins{};
+  output_pins.fill(-1);
+  output_pins[0] = CONFIG_RIVETTX_CRSF_TX;
+  output_pins[1] = CONFIG_RIVETTX_BUZZER_GPIO;
 #if CONFIG_RIVETTX_OPENPOCKET_OSD
   output_pins[2] = CONFIG_RIVETTX_AT7456E_SCLK_GPIO;
   output_pins[3] = CONFIG_RIVETTX_AT7456E_MOSI_GPIO;
@@ -238,6 +256,14 @@ bool validate_pin_configuration()
   output_pins[10] = CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO;
   output_pins[11] = CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO;
   output_pins[12] = CONFIG_RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO;
+  output_pins[13] = CONFIG_RIVETTX_AMT630A_FLASH_CS_GPIO;
+  output_pins[14] = CONFIG_RIVETTX_AMT630A_FLASH_CLK_GPIO;
+  output_pins[15] = CONFIG_RIVETTX_AMT630A_FLASH_MOSI_GPIO;
+  output_pins[16] = CONFIG_RIVETTX_AMT630A_FLASH_MUX_GPIO;
+  output_pins[17] = CONFIG_RIVETTX_SPEAKER_I2S_BCLK_GPIO;
+  output_pins[18] = CONFIG_RIVETTX_SPEAKER_I2S_WS_GPIO;
+  output_pins[19] = CONFIG_RIVETTX_SPEAKER_I2S_DATA_GPIO;
+  output_pins[20] = CONFIG_RIVETTX_SPEAKER_ENABLE_GPIO;
 #endif
   for (const int pin : output_pins) {
     if (pin >= 0 && !GPIO_IS_VALID_OUTPUT_GPIO(pin)) {
@@ -621,10 +647,10 @@ bool EspBoardPowerIo::write_register(i2c_master_dev_handle_t device,
                                      std::size_t size)
 {
   if (!initialized_ || device == nullptr || data == nullptr || size == 0 ||
-      size > kTw8836IspBlockSize) {
+      size > kAmt630aFlashPageSize) {
     return false;
   }
-  std::array<uint8_t, kTw8836IspBlockSize + 1> transfer{};
+  std::array<uint8_t, kAmt630aFlashPageSize + 1> transfer{};
   transfer[0] = reg;
   std::copy_n(data, size, transfer.begin() + 1);
   return i2c_master_transmit(device, transfer.data(), size + 1, 10) == ESP_OK;
@@ -638,12 +664,14 @@ bool EspBoardPowerIo::initialize()
   if (initialized_) {
     return true;
   }
-  const std::array<std::pair<int, int>, 5> safe_outputs{{
+  const std::array<std::pair<int, int>, 7> safe_outputs{{
       {CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO, 0},
       {CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO, 0},
       {CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO, 0},
       {CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO, 0},
       {CONFIG_RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO, 0},
+      {CONFIG_RIVETTX_AMT630A_FLASH_MUX_GPIO, 0},
+      {CONFIG_RIVETTX_SPEAKER_ENABLE_GPIO, 0},
   }};
   for (const auto& output : safe_outputs) {
     if (!configure_output(output.first, output.second)) {
@@ -685,11 +713,30 @@ bool EspBoardPowerIo::initialize()
     return i2c_master_bus_add_device(bus_, &config, &device) == ESP_OK;
   };
   if (!add_device(0x6A, charger_) || !add_device(0x36, gauge_) ||
-      !add_device(CONFIG_RIVETTX_TW8836_I2C_ADDRESS, tw8836_) ||
+      !add_device(CONFIG_RIVETTX_AMT630A_I2C_ADDRESS, amt630a_) ||
       !add_device(CONFIG_RIVETTX_CONTROL_EXPANDER0_ADDRESS,
                   expanders_[0]) ||
       !add_device(CONFIG_RIVETTX_CONTROL_EXPANDER1_ADDRESS,
                   expanders_[1])) {
+    return false;
+  }
+
+  spi_bus_config_t flash_bus{};
+  flash_bus.mosi_io_num = CONFIG_RIVETTX_AMT630A_FLASH_MOSI_GPIO;
+  flash_bus.miso_io_num = CONFIG_RIVETTX_AMT630A_FLASH_MISO_GPIO;
+  flash_bus.sclk_io_num = CONFIG_RIVETTX_AMT630A_FLASH_CLK_GPIO;
+  flash_bus.quadwp_io_num = -1;
+  flash_bus.quadhd_io_num = -1;
+  flash_bus.max_transfer_sz = kAmt630aFlashPageSize + 4;
+  if (spi_bus_initialize(SPI3_HOST, &flash_bus, SPI_DMA_CH_AUTO) != ESP_OK) {
+    return false;
+  }
+  spi_device_interface_config_t flash_device{};
+  flash_device.mode = 0;
+  flash_device.clock_speed_hz = 8000000;
+  flash_device.spics_io_num = CONFIG_RIVETTX_AMT630A_FLASH_CS_GPIO;
+  flash_device.queue_size = 1;
+  if (spi_bus_add_device(SPI3_HOST, &flash_device, &amt_flash_) != ESP_OK) {
     return false;
   }
 
@@ -856,64 +903,42 @@ bool EspBoardPowerIo::read_expanded_controls(uint32_t& active_low_bits)
   return true;
 }
 
-bool EspBoardPowerIo::tw8836_select_page(uint8_t page)
+bool EspBoardPowerIo::amt630a_read(uint8_t reg, uint8_t& value)
 {
-  if (!initialized_ || tw8836_ == nullptr) return false;
-  const std::array<uint8_t, 2> command{0xff, page};
-  if (i2c_master_transmit(tw8836_, command.data(), command.size(), 10) !=
-      ESP_OK) {
+  return read_register(amt630a_, reg, &value, 1);
+}
+
+bool EspBoardPowerIo::flash_transfer(const uint8_t* transmit,
+                                     uint8_t* receive,
+                                     std::size_t size)
+{
+  if (!initialized_ || !flash_owned_ || amt_flash_ == nullptr ||
+      transmit == nullptr || size == 0 ||
+      size > kAmt630aFlashPageSize + 4) {
     return false;
   }
-  tw8836_page_ = page;
-  return true;
+  spi_transaction_t transfer{};
+  transfer.length = size * 8U;
+  transfer.tx_buffer = transmit;
+  transfer.rx_buffer = receive;
+  return spi_device_transmit(amt_flash_, &transfer) == ESP_OK;
 }
 
-bool EspBoardPowerIo::tw8836_read(uint16_t reg, uint8_t& value)
+bool EspBoardPowerIo::flash_command(uint8_t command)
 {
-  return tw8836_select_page(static_cast<uint8_t>(reg >> 8U)) &&
-         read_register(tw8836_, static_cast<uint8_t>(reg), &value, 1);
-}
-
-bool EspBoardPowerIo::tw8836_write(uint16_t reg, uint8_t value)
-{
-  return tw8836_select_page(static_cast<uint8_t>(reg >> 8U)) &&
-         write_register(tw8836_, static_cast<uint8_t>(reg), &value, 1);
-}
-
-bool EspBoardPowerIo::tw8836_dma(uint16_t xram, uint32_t flash,
-                                 uint32_t size, uint8_t control,
-                                 uint8_t command, uint8_t busy)
-{
-  if (size > 0xffffffU || flash > 0xffffffU ||
-      flash + size > kTw8836FlashSize) {
-    return false;
-  }
-  const std::array<uint8_t, 12> configuration{
-      control,
-      0x00,
-      static_cast<uint8_t>(size >> 16U),
-      static_cast<uint8_t>(xram >> 8U),
-      static_cast<uint8_t>(xram),
-      static_cast<uint8_t>(size >> 8U),
-      static_cast<uint8_t>(size),
-      command,
-      static_cast<uint8_t>(flash >> 16U),
-      static_cast<uint8_t>(flash >> 8U),
-      static_cast<uint8_t>(flash),
-      0x00,
-  };
-  return tw8836_select_page(4) &&
-         write_register(tw8836_, 0xf3, configuration.data(),
-                        configuration.size()) &&
-         tw8836_write(0x040a, 0x00) && tw8836_write(0x04f4, busy);
+  return flash_transfer(&command, nullptr, 1);
 }
 
 bool EspBoardPowerIo::read_identity(uint16_t& identity)
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  uint8_t product = 0;
-  if (!tw8836_read(0x0000, product)) return false;
-  identity = product == 0x36 ? kTw8836ExpectedIdentity : product;
+  // AMT630A has no documented immutable product-ID register. A successful
+  // read from its fixed global-register I2C target is the non-destructive
+  // presence probe; the signed OpenPocket firmware signature is checked by
+  // read_runtime_status after boot.
+  uint8_t probe = 0;
+  if (!amt630a_read(0x00, probe)) return false;
+  identity = kAmt630aExpectedIdentity;
   return true;
 #else
   (void)identity;
@@ -921,29 +946,50 @@ bool EspBoardPowerIo::read_identity(uint16_t& identity)
 #endif
 }
 
-bool EspBoardPowerIo::enter_isp()
+bool EspBoardPowerIo::acquire_flash(uint32_t& jedec_identity)
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  return tw8836_write(0x04ed, 0x55) && tw8836_write(0x04ed, 0xaa) &&
-         tw8836_write(0x04ec, 0x00);
+  if (!initialized_ || flash_owned_ ||
+      gpio_set_level(static_cast<gpio_num_t>(
+                         CONFIG_RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO),
+                     0) != ESP_OK) {
+    return false;
+  }
+  esp_rom_delay_us(10);
+  if (gpio_set_level(static_cast<gpio_num_t>(
+                         CONFIG_RIVETTX_AMT630A_FLASH_MUX_GPIO),
+                     1) != ESP_OK) {
+    return false;
+  }
+  flash_owned_ = true;
+  std::array<uint8_t, 4> tx{0x9f, 0, 0, 0};
+  std::array<uint8_t, 4> rx{};
+  if (!flash_transfer(tx.data(), rx.data(), tx.size())) {
+    (void)release_flash_and_reset();
+    return false;
+  }
+  jedec_identity = (static_cast<uint32_t>(rx[1]) << 16U) |
+                   (static_cast<uint32_t>(rx[2]) << 8U) | rx[3];
+  return true;
+#else
+  jedec_identity = 0;
+  return false;
+#endif
+}
+
+bool EspBoardPowerIo::flash_write_enable()
+{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  return flash_command(0x06);
 #else
   return false;
 #endif
 }
 
-bool EspBoardPowerIo::write_enable()
+bool EspBoardPowerIo::flash_chip_erase()
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  return tw8836_dma(0x0400, 0, 0, 0xc1, 0x06, 0x03);
-#else
-  return false;
-#endif
-}
-
-bool EspBoardPowerIo::start_erase()
-{
-#if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  return tw8836_dma(0x0400, 0, 0, 0xc1, 0xc7, 0x07);
+  return flash_command(0xc7);
 #else
   return false;
 #endif
@@ -952,9 +998,10 @@ bool EspBoardPowerIo::start_erase()
 bool EspBoardPowerIo::flash_busy(bool& busy)
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  uint8_t status = 0;
-  if (!tw8836_read(0x04f4, status)) return false;
-  busy = (status & 0x01U) != 0;
+  const std::array<uint8_t, 2> tx{0x05, 0};
+  std::array<uint8_t, 2> rx{};
+  if (!flash_transfer(tx.data(), rx.data(), tx.size())) return false;
+  busy = (rx[1] & 0x01U) != 0;
   return true;
 #else
   busy = false;
@@ -962,108 +1009,100 @@ bool EspBoardPowerIo::flash_busy(bool& busy)
 #endif
 }
 
-bool EspBoardPowerIo::load_xram_block(const uint8_t* data,
-                                      std::size_t size)
+bool EspBoardPowerIo::flash_program_page(uint32_t address,
+                                         const uint8_t* data,
+                                         std::size_t size)
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  if (data == nullptr || size == 0 || size > kTw8836IspBlockSize ||
-      !tw8836_write(0x04db, 0x04) || !tw8836_write(0x04dc, 0x00) ||
-      !tw8836_write(0x04c2, 0x01)) {
+  if (data == nullptr || size == 0 || size > kAmt630aFlashPageSize ||
+      address + size > kAmt630aFlashSize ||
+      (address / kAmt630aFlashPageSize) !=
+          ((address + size - 1) / kAmt630aFlashPageSize)) {
     return false;
   }
-  uint8_t access = 0;
-  if (!tw8836_read(0x04c2, access) || (access & 0x02U) == 0 ||
-      !tw8836_write(0x0006, 0x20) || !tw8836_select_page(4) ||
-      !write_register(tw8836_, 0xdd, data, size)) {
-    return false;
-  }
-  return tw8836_write(0x04c2, 0x00) && tw8836_write(0x0006, 0x00);
+  std::array<uint8_t, kAmt630aFlashPageSize + 4> tx{};
+  tx[0] = 0x02;
+  tx[1] = static_cast<uint8_t>(address >> 16U);
+  tx[2] = static_cast<uint8_t>(address >> 8U);
+  tx[3] = static_cast<uint8_t>(address);
+  std::copy_n(data, size, tx.begin() + 4);
+  return flash_transfer(tx.data(), nullptr, size + 4);
 #else
+  (void)address;
   (void)data;
   (void)size;
   return false;
 #endif
 }
 
-bool EspBoardPowerIo::start_program_flash_block(uint32_t address,
-                                                std::size_t size)
+bool EspBoardPowerIo::flash_read(uint32_t address, uint8_t* data,
+                                 std::size_t size)
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  return size != 0 && size <= kTw8836IspBlockSize &&
-         tw8836_dma(0x0400, address, size, 0xc4, 0x02, 0x07);
-#else
-  (void)address;
-  (void)size;
-  return false;
-#endif
-}
-
-bool EspBoardPowerIo::begin_read_flash_block(uint32_t address,
-                                             std::size_t size)
-{
-#if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  return size != 0 && size <= kTw8836IspBlockSize &&
-         tw8836_dma(0x0400, address, size, 0xe4, 0x03, 0x05);
-#else
-  (void)address;
-  (void)size;
-  return false;
-#endif
-}
-
-bool EspBoardPowerIo::read_xram_block(uint8_t* data, std::size_t size)
-{
-#if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  if (data == nullptr || size == 0 || size > kTw8836IspBlockSize ||
-      !tw8836_write(0x04db, 0x04) || !tw8836_write(0x04dc, 0x00) ||
-      !tw8836_write(0x04c2, 0x01)) {
+  if (data == nullptr || size == 0 || size > kAmt630aFlashPageSize ||
+      address + size > kAmt630aFlashSize) {
     return false;
   }
-  uint8_t access = 0;
-  const uint8_t data_register = 0xdd;
-  if (!tw8836_read(0x04c2, access) || (access & 0x02U) == 0 ||
-      !tw8836_write(0x0006, 0x20) || !tw8836_select_page(4) ||
-      i2c_master_transmit_receive(tw8836_, &data_register, 1, data, size,
-                                  10) != ESP_OK) {
-    return false;
-  }
-  return tw8836_write(0x04c2, 0x00) && tw8836_write(0x0006, 0x00);
+  std::array<uint8_t, kAmt630aFlashPageSize + 4> tx{};
+  std::array<uint8_t, kAmt630aFlashPageSize + 4> rx{};
+  tx[0] = 0x03;
+  tx[1] = static_cast<uint8_t>(address >> 16U);
+  tx[2] = static_cast<uint8_t>(address >> 8U);
+  tx[3] = static_cast<uint8_t>(address);
+  if (!flash_transfer(tx.data(), rx.data(), size + 4)) return false;
+  std::copy_n(rx.begin() + 4, size, data);
+  return true;
 #else
+  (void)address;
   (void)data;
   (void)size;
   return false;
 #endif
 }
 
-bool EspBoardPowerIo::exit_isp_and_reset()
+bool EspBoardPowerIo::release_flash_and_reset()
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  return tw8836_write(0x04ed, 0x55) && tw8836_write(0x04ed, 0xaa) &&
-         tw8836_write(0x04ec, 0x01);
+  const bool mux_ok =
+      gpio_set_level(static_cast<gpio_num_t>(
+                         CONFIG_RIVETTX_AMT630A_FLASH_MUX_GPIO),
+                     0) == ESP_OK;
+  flash_owned_ = false;
+  esp_rom_delay_us(10);
+  const bool reset_ok =
+      gpio_set_level(static_cast<gpio_num_t>(
+                         CONFIG_RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO),
+                     1) == ESP_OK;
+  return mux_ok && reset_ok;
 #else
   return false;
 #endif
 }
 
-bool EspBoardPowerIo::read_runtime_status(Tw8836RuntimeStatus& status)
+bool EspBoardPowerIo::read_runtime_status(Amt630aRuntimeStatus& status)
 {
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
   uint8_t signature = 0;
   uint8_t flags = 0;
   uint8_t standard = 0;
-  if (!tw8836_read(0x00e0, signature) || signature != 0xa5 ||
-      !tw8836_read(0x00e1, flags) || !tw8836_read(0x00e2, standard)) {
+  uint8_t major = 0;
+  uint8_t minor = 0;
+  if (!amt630a_read(0x00, signature) || signature != 0xa5 ||
+      !amt630a_read(0x01, flags) || !amt630a_read(0x02, standard) ||
+      !amt630a_read(0x03, major) || !amt630a_read(0x04, minor)) {
     return false;
   }
   status.booted = (flags & 0x01U) != 0;
   status.panel_timing_active = (flags & 0x02U) != 0;
   status.video_present = (flags & 0x04U) != 0;
+  status.firmware_major = major;
+  status.firmware_minor = minor;
   switch (standard) {
-    case 1: status.standard = Tw8836VideoStandard::Ntsc; break;
-    case 2: status.standard = Tw8836VideoStandard::Pal; break;
-    case 3: status.standard = Tw8836VideoStandard::Secam; break;
-    case 4: status.standard = Tw8836VideoStandard::Unstable; break;
-    default: status.standard = Tw8836VideoStandard::None; break;
+    case 1: status.standard = Amt630aVideoStandard::Ntsc; break;
+    case 2: status.standard = Amt630aVideoStandard::Pal; break;
+    case 3: status.standard = Amt630aVideoStandard::Secam; break;
+    case 4: status.standard = Amt630aVideoStandard::Unstable; break;
+    default: status.standard = Amt630aVideoStandard::None; break;
   }
   return true;
 #else
@@ -1245,6 +1284,11 @@ RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
     inputs.encoder_delta = encoder_decoder_.update(
         active_low_input(CONFIG_RIVETTX_ENCODER_A_GPIO),
         active_low_input(CONFIG_RIVETTX_ENCODER_B_GPIO));
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  } else {
+    inputs.encoder_delta = encoder_decoder_.update(expanded_input(20),
+                                                   expanded_input(21));
+#endif
   }
   inputs.encoder_pressed =
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
@@ -1477,8 +1521,7 @@ bool EspToneOutput::play_tone(uint16_t frequency_hz,
   if (!initialized_ || frequency_hz < 100 || duration_ms == 0) {
     return false;
   }
-  const uint32_t duty =
-      1023U * CONFIG_RIVETTX_BUZZER_VOLUME / 100U;
+  const uint32_t duty = 1023U * intensity_percent_ / 100U;
   (void)esp_timer_stop(stop_timer_);
   if (ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0,
                     std::min<uint16_t>(frequency_hz, 5000)) == 0 ||
@@ -1501,6 +1544,71 @@ void EspToneOutput::stop_tone()
 bool EspToneOutput::available() const
 {
   return initialized_;
+}
+
+bool EspToneOutput::set_intensity(uint8_t percent)
+{
+  intensity_percent_ = std::max<uint8_t>(10, std::min<uint8_t>(100, percent));
+  return initialized_;
+}
+
+bool EspPcmOutput::initialize(uint32_t sample_rate_hz)
+{
+#if !CONFIG_RIVETTX_OPENPOCKET_REV_A
+  (void)sample_rate_hz;
+  return false;
+#else
+  if (initialized_) return true;
+  i2s_chan_config_t channel_config =
+      I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+  channel_config.dma_desc_num = 4;
+  channel_config.dma_frame_num = 128;
+  if (i2s_new_channel(&channel_config, &channel_, nullptr) != ESP_OK) {
+    return false;
+  }
+  i2s_std_config_t config{};
+  config.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate_hz);
+  config.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+      I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
+  config.gpio_cfg.mclk = I2S_GPIO_UNUSED;
+  config.gpio_cfg.bclk = static_cast<gpio_num_t>(
+      CONFIG_RIVETTX_SPEAKER_I2S_BCLK_GPIO);
+  config.gpio_cfg.ws = static_cast<gpio_num_t>(
+      CONFIG_RIVETTX_SPEAKER_I2S_WS_GPIO);
+  config.gpio_cfg.dout = static_cast<gpio_num_t>(
+      CONFIG_RIVETTX_SPEAKER_I2S_DATA_GPIO);
+  config.gpio_cfg.din = I2S_GPIO_UNUSED;
+  config.gpio_cfg.invert_flags = {};
+  initialized_ = i2s_channel_init_std_mode(channel_, &config) == ESP_OK &&
+                 i2s_channel_enable(channel_) == ESP_OK;
+  return initialized_;
+#endif
+}
+
+bool EspPcmOutput::set_amplifier_enabled(bool enabled)
+{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  return initialized_ &&
+         gpio_set_level(static_cast<gpio_num_t>(
+                            CONFIG_RIVETTX_SPEAKER_ENABLE_GPIO),
+                        enabled ? 1 : 0) == ESP_OK;
+#else
+  (void)enabled;
+  return false;
+#endif
+}
+
+bool EspPcmOutput::write_nonblocking(const int16_t* samples,
+                                     std::size_t count,
+                                     std::size_t& written)
+{
+  written = 0;
+  if (!initialized_ || samples == nullptr || count == 0) return false;
+  std::size_t bytes = 0;
+  const esp_err_t result = i2s_channel_write(
+      channel_, samples, count * sizeof(*samples), &bytes, 0);
+  written = bytes / sizeof(*samples);
+  return result == ESP_OK || result == ESP_ERR_TIMEOUT;
 }
 
 bool EspOtaBackend::running_image_pending_verification() const

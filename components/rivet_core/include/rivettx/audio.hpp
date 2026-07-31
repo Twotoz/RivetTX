@@ -13,6 +13,13 @@ namespace rivettx {
 enum class AudioAlert : uint8_t {
   CustomTone,
   Startup,
+  InitializationSuccess,
+  ShutdownRequest,
+  MenuConfirmation,
+  MenuInvalid,
+  ScanCompleted,
+  UpdateSuccess,
+  FactoryPass,
   OutputsEnabled,
   OutputsLocked,
   TelemetryRecovered,
@@ -21,20 +28,41 @@ enum class AudioAlert : uint8_t {
   ModuleRecovered,
   BatteryLow,
   TelemetryWarning,
+  ThrottleWarning,
+  ArmWarning,
+  SwitchPositionWarning,
+  UpdateFailure,
+  FactoryFail,
   SafetyFault,
   LinkWeak,
   ModuleOffline,
   TelemetryLost,
   BatteryCritical,
   LinkCritical,
+  Failsafe,
   Count,
 };
+
+struct AudioSettings {
+  static constexpr uint16_t kVersion = 1;
+  uint16_t version = kVersion;
+  bool master_enabled = true;
+  bool ui_enabled = true;
+  bool warnings_enabled = true;
+  bool startup_enabled = true;
+  bool silent_mode = false;
+  bool full_mute = false;
+  uint8_t intensity_percent = 60;
+};
+
+bool validate_audio_settings(AudioSettings& settings);
 
 class AudioAlertScheduler final : public IToneOutput {
  public:
   explicit AudioAlertScheduler(IToneOutput& output);
 
   void notify(AudioAlert alert);
+  bool configure(AudioSettings settings);
   void tick(TimeUs now_us);
   bool play_tone(uint16_t frequency_hz,
                  uint16_t duration_ms) override;
@@ -56,6 +84,7 @@ class AudioAlertScheduler final : public IToneOutput {
 
   static Pattern pattern_for(AudioAlert alert, uint16_t custom_frequency,
                              uint16_t custom_duration);
+  bool permitted(AudioAlert alert) const;
   AudioAlert take_highest_pending();
   void begin(AudioAlert alert, TimeUs now_us);
 
@@ -68,6 +97,7 @@ class AudioAlertScheduler final : public IToneOutput {
   uint8_t note_index_ = 0;
   bool tone_active_ = false;
   TimeUs next_transition_us_ = 0;
+  AudioSettings settings_{};
 };
 
 struct AudioWarningConfig {

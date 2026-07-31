@@ -7,8 +7,9 @@
 #include "rivettx/elrs.hpp"
 #include "rivettx/product.hpp"
 #include "rivettx/services.hpp"
+#include "rivettx/speaker.hpp"
 #include "rivettx/storage.hpp"
-#include "rivettx/tw8836.hpp"
+#include "rivettx/amt630a.hpp"
 #include "rivettx/ui.hpp"
 
 #include <array>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include "driver/i2c_master.h"
+#include "driver/i2s_std.h"
 #include "driver/spi_master.h"
 #include "driver/uart.h"
 #include "esp_adc/adc_cali.h"
@@ -64,7 +66,7 @@ class EspBoard {
 };
 
 class EspBoardPowerIo final : public IBoardPowerHardware,
-                              public ITw8836Hardware {
+                              public IAmt630aHardware {
  public:
   bool initialize() override;
   bool set_video_5v(bool enabled) override;
@@ -77,18 +79,16 @@ class EspBoardPowerIo final : public IBoardPowerHardware,
   FuelGaugeTelemetry read_fuel_gauge() override;
   bool read_expanded_controls(uint32_t& active_low_bits);
   bool read_identity(uint16_t& identity) override;
-  bool enter_isp() override;
-  bool write_enable() override;
-  bool start_erase() override;
+  bool acquire_flash(uint32_t& jedec_identity) override;
+  bool flash_write_enable() override;
+  bool flash_chip_erase() override;
   bool flash_busy(bool& busy) override;
-  bool load_xram_block(const uint8_t* data, std::size_t size) override;
-  bool start_program_flash_block(uint32_t address,
-                                 std::size_t size) override;
-  bool begin_read_flash_block(uint32_t address,
-                              std::size_t size) override;
-  bool read_xram_block(uint8_t* data, std::size_t size) override;
-  bool exit_isp_and_reset() override;
-  bool read_runtime_status(Tw8836RuntimeStatus& status) override;
+  bool flash_program_page(uint32_t address, const uint8_t* data,
+                          std::size_t size) override;
+  bool flash_read(uint32_t address, uint8_t* data,
+                  std::size_t size) override;
+  bool release_flash_and_reset() override;
+  bool read_runtime_status(Amt630aRuntimeStatus& status) override;
 
  private:
   bool set_output(int gpio, bool enabled);
@@ -96,18 +96,18 @@ class EspBoardPowerIo final : public IBoardPowerHardware,
                      uint8_t* data, std::size_t size);
   bool write_register(i2c_master_dev_handle_t device, uint8_t reg,
                       const uint8_t* data, std::size_t size);
-  bool tw8836_select_page(uint8_t page);
-  bool tw8836_read(uint16_t reg, uint8_t& value);
-  bool tw8836_write(uint16_t reg, uint8_t value);
-  bool tw8836_dma(uint16_t xram, uint32_t flash, uint32_t size,
-                  uint8_t control, uint8_t command, uint8_t busy);
+  bool amt630a_read(uint8_t reg, uint8_t& value);
+  bool flash_command(uint8_t command);
+  bool flash_transfer(const uint8_t* transmit, uint8_t* receive,
+                      std::size_t size);
 
   i2c_master_bus_handle_t bus_ = nullptr;
   i2c_master_dev_handle_t charger_ = nullptr;
   i2c_master_dev_handle_t gauge_ = nullptr;
-  i2c_master_dev_handle_t tw8836_ = nullptr;
+  i2c_master_dev_handle_t amt630a_ = nullptr;
   std::array<i2c_master_dev_handle_t, 2> expanders_{};
-  uint8_t tw8836_page_ = 0xff;
+  spi_device_handle_t amt_flash_ = nullptr;
+  bool flash_owned_ = false;
   bool initialized_ = false;
 };
 
@@ -188,11 +188,25 @@ class EspToneOutput final : public IToneOutput {
                  uint16_t duration_ms) override;
   void stop_tone() override;
   bool available() const override;
+  bool set_intensity(uint8_t percent) override;
 
  private:
   static void stop_callback(void* context);
 
   esp_timer_handle_t stop_timer_ = nullptr;
+  bool initialized_ = false;
+  uint8_t intensity_percent_ = 60;
+};
+
+class EspPcmOutput final : public IPcmOutput {
+ public:
+  bool initialize(uint32_t sample_rate_hz) override;
+  bool set_amplifier_enabled(bool enabled) override;
+  bool write_nonblocking(const int16_t* samples, std::size_t count,
+                         std::size_t& written) override;
+
+ private:
+  i2s_chan_handle_t channel_ = nullptr;
   bool initialized_ = false;
 };
 

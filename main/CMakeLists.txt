@@ -19,6 +19,7 @@ idf_component_register(
     esp_adc
     esp_driver_gpio
     esp_driver_i2c
+    esp_driver_i2s
     esp_driver_ledc
     esp_driver_spi
     esp_driver_uart
@@ -32,3 +33,8 @@ idf_component_register(
   PRIV_REQUIRES
     ${rivettx_private_requires}
 )
+
+if(CONFIG_RIVETTX_OPENPOCKET_REV_A)
+  target_add_binary_data(${COMPONENT_LIB}
+    "firmware/amt630a-openpocket-er-tft050a3-2.bin" BINARY)
+endif()

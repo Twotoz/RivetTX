@@ -6,8 +6,9 @@
 #include "rivettx/elrs.hpp"
 #include "rivettx/product.hpp"
 #include "rivettx/services.hpp"
+#include "rivettx/speaker.hpp"
 #include "rivettx/storage.hpp"
-#include "rivettx/tw8836.hpp"
+#include "rivettx/amt630a.hpp"
 #include "rivettx/ui.hpp"
 #include "virtual_hardware.hpp"
 
@@ -76,7 +77,7 @@ class FakeBoardPowerHardware final : public IBoardPowerHardware {
   FuelGaugeTelemetry gauge{BoardSensorState::Valid, 3890, 67, false};
 };
 
-class FakeTw8836Hardware final : public ITw8836Hardware {
+class FakeAmt630aHardware final : public IAmt630aHardware {
  public:
   bool initialize() override { initialized = true; return calls_ok; }
   bool read_identity(uint16_t& value) override
@@ -84,16 +85,22 @@ class FakeTw8836Hardware final : public ITw8836Hardware {
     value = identity;
     return calls_ok;
   }
-  bool enter_isp() override { entered_isp = true; return calls_ok; }
-  bool write_enable() override
+  bool acquire_flash(uint32_t& jedec) override
+  {
+    entered_isp = true;
+    jedec = flash_jedec;
+    return calls_ok;
+  }
+  bool flash_write_enable() override
   {
     if (!calls_ok) return false;
     program_busy_polls = busy_polls;
     return true;
   }
-  bool start_erase() override
+  bool flash_chip_erase() override
   {
     if (!calls_ok) return false;
+    ++erase_count;
     std::fill(flash.begin(), flash.end(), 0xff);
     erase_busy_polls = busy_polls;
     return true;
@@ -112,47 +119,28 @@ class FakeTw8836Hardware final : public ITw8836Hardware {
     }
     return true;
   }
-  bool load_xram_block(const uint8_t* data, std::size_t size) override
+  bool flash_program_page(uint32_t address, const uint8_t* data,
+                          std::size_t size) override
   {
-    if (!calls_ok || data == nullptr || size > xram.size()) {
+    if (!calls_ok || data == nullptr || address + size > flash.size()) {
       return false;
     }
-    std::copy(data, data + size, xram.begin());
-    xram_size = size;
-    return true;
-  }
-  bool start_program_flash_block(uint32_t address,
-                                 std::size_t size) override
-  {
-    if (!calls_ok || size != xram_size || address + size > flash.size()) {
-      return false;
-    }
-    std::copy(xram.begin(), xram.begin() + size, flash.begin() + address);
+    std::copy(data, data + size, flash.begin() + address);
     programmed_addresses.push_back(address);
     program_busy_polls = busy_polls;
     return true;
   }
-  bool begin_read_flash_block(uint32_t address, std::size_t size) override
-  {
-    if (!calls_ok || readback_fails || address + size > flash.size()) {
-      return false;
-    }
-    readback_address = address;
-    readback_size = size;
-    program_busy_polls = busy_polls;
-    return true;
-  }
-  bool read_xram_block(uint8_t* data, std::size_t size) override
+  bool flash_read(uint32_t address, uint8_t* data,
+                  std::size_t size) override
   {
     if (!calls_ok || readback_fails || data == nullptr ||
-        size != readback_size) {
+        address + size > flash.size()) {
       return false;
     }
-    std::copy(flash.begin() + readback_address,
-              flash.begin() + readback_address + size, data);
+    std::copy(flash.begin() + address, flash.begin() + address + size, data);
     return true;
   }
-  bool exit_isp_and_reset() override
+  bool release_flash_and_reset() override
   {
     if (!calls_ok) return false;
     entered_isp = false;
@@ -160,7 +148,7 @@ class FakeTw8836Hardware final : public ITw8836Hardware {
     runtime.panel_timing_active = true;
     return true;
   }
-  bool read_runtime_status(Tw8836RuntimeStatus& value) override
+  bool read_runtime_status(Amt630aRuntimeStatus& value) override
   {
     value = runtime;
     return calls_ok;
@@ -170,16 +158,15 @@ class FakeTw8836Hardware final : public ITw8836Hardware {
   bool calls_ok = true;
   bool entered_isp = false;
   bool readback_fails = false;
-  uint16_t identity = kTw8836ExpectedIdentity;
+  uint16_t identity = kAmt630aExpectedIdentity;
+  uint32_t flash_jedec = kAmt630aExpectedFlashJedec;
   uint8_t busy_polls = 1;
   uint8_t erase_busy_polls = 0;
   uint8_t program_busy_polls = 0;
-  uint32_t readback_address = 0;
-  std::size_t readback_size = 0;
-  Tw8836RuntimeStatus runtime{true, true, true, Tw8836VideoStandard::Pal};
-  std::array<uint8_t, 2048> flash{};
-  std::array<uint8_t, kTw8836IspBlockSize> xram{};
-  std::size_t xram_size = 0;
+  uint32_t erase_count = 0;
+  Amt630aRuntimeStatus runtime{true, true, true, 1, 0,
+                               Amt630aVideoStandard::Pal};
+  std::array<uint8_t, kAmt630aFlashSize> flash{};
   std::vector<uint32_t> programmed_addresses{};
 };
 
@@ -523,6 +510,33 @@ class FakeToneOutput final : public IToneOutput {
   uint16_t last_duration = 0;
   uint32_t plays = 0;
   uint32_t stops = 0;
+};
+
+class FakePcmOutput final : public IPcmOutput {
+ public:
+  bool initialize(uint32_t sample_rate_hz) override
+  {
+    sample_rate = sample_rate_hz;
+    return available;
+  }
+  bool set_amplifier_enabled(bool value) override
+  {
+    enabled = value;
+    return available;
+  }
+  bool write_nonblocking(const int16_t* samples, std::size_t count,
+                         std::size_t& written) override
+  {
+    if (!available || samples == nullptr) return false;
+    written = accept_samples ? count : 0;
+    submitted += written;
+    return true;
+  }
+  bool available = true;
+  bool enabled = false;
+  bool accept_samples = true;
+  uint32_t sample_rate = 0;
+  std::size_t submitted = 0;
 };
 
 class FakeDisplay final : public IDisplaySink {
@@ -1517,6 +1531,51 @@ void test_audio_alerts()
   }
   CHECK(module_audio.current_alert() == AudioAlert::ModuleRecovered ||
         module_audio.current_alert() == AudioAlert::Count);
+
+  FakeToneOutput mute_tones;
+  AudioAlertScheduler mute_audio(mute_tones);
+  CHECK(mute_audio.configure(
+      {AudioSettings::kVersion, true, true, true, true, true, false, 60}));
+  mute_audio.notify(AudioAlert::MenuConfirmation);
+  mute_audio.tick(1);
+  CHECK(mute_audio.current_alert() == AudioAlert::Count);
+  mute_audio.notify(AudioAlert::BatteryCritical);
+  mute_audio.tick(2);
+  CHECK(mute_audio.current_alert() == AudioAlert::BatteryCritical);
+  CHECK(mute_audio.configure(
+      {AudioSettings::kVersion, true, true, true, true, false, true, 60}));
+  mute_audio.notify(AudioAlert::Failsafe);
+  mute_audio.tick(3);
+  CHECK(mute_audio.current_alert() == AudioAlert::Count);
+}
+
+void test_speaker_service()
+{
+  FakePcmOutput output;
+  SpeakerService speaker(output);
+  CHECK(speaker.initialize(false, {true, 50}));
+  CHECK(output.enabled);
+  CHECK(output.sample_rate == 16000);
+  CHECK(speaker.play_test_tone(1000, 100));
+  for (int index = 0; index < 20 && speaker.status().playing; ++index) {
+    speaker.tick(static_cast<TimeUs>(index) * 4000U);
+  }
+  CHECK(!speaker.status().playing);
+  CHECK(speaker.status().completed_tones == 1);
+  CHECK(output.submitted == 1600);
+
+  CHECK(speaker.play_test_tone(2730, 100));
+  CHECK(!speaker.play_test_tone(400, 100));
+  CHECK(speaker.status().rejected_tones == 1);
+  speaker.stop();
+  CHECK(speaker.configure({false, 80}));
+  CHECK(!output.enabled);
+
+  FakePcmOutput simulator_output;
+  SpeakerService simulator(simulator_output);
+  CHECK(simulator.initialize(true, {false, 50}));
+  CHECK(!simulator.status().available);
+  CHECK(!simulator.play_test_tone(1000, 100));
 }
 
 void test_storage()
@@ -2600,7 +2659,7 @@ void test_openpocket_board_power()
   CHECK(power.request_display(false));
 }
 
-void test_tw8836_isp_controller()
+void test_amt630a_flash_controller()
 {
   static constexpr std::array<uint8_t, 3> abc{'a', 'b', 'c'};
   const std::array<uint8_t, 32> abc_sha{
@@ -2608,29 +2667,29 @@ void test_tw8836_isp_controller()
       0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
       0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
       0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
-  CHECK(tw8836_sha256(abc.data(), abc.size()) == abc_sha);
+  CHECK(amt630a_sha256(abc.data(), abc.size()) == abc_sha);
 
   std::array<uint8_t, 700> image{};
   for (std::size_t index = 0; index < image.size(); ++index) {
     image[index] = static_cast<uint8_t>((index * 29U + 7U) & 0xffU);
   }
-  const auto digest = tw8836_sha256(image.data(), image.size());
-  FakeTw8836Hardware hardware;
-  Tw8836Controller controller(hardware, {1000, 20});
+  const auto digest = amt630a_sha256(image.data(), image.size());
+  FakeAmt630aHardware hardware;
+  Amt630aController controller(hardware, {1000, 20});
   TimeUs now = 100;
   CHECK(controller.initialize(now));
-  CHECK(controller.status().state == Tw8836State::Detecting);
+  CHECK(controller.status().state == Amt630aState::Detecting);
   controller.tick(now);
-  CHECK(controller.status().state == Tw8836State::Ready);
-  CHECK(controller.status().identity == kTw8836ExpectedIdentity);
+  CHECK(controller.status().state == Amt630aState::Ready);
+  CHECK(controller.status().identity == kAmt630aExpectedIdentity);
   CHECK(controller.start_program(image.data(), image.size(), digest, now));
   for (std::size_t ticks = 0; ticks < 100 &&
-       controller.status().state != Tw8836State::Complete; ++ticks) {
+       controller.status().state != Amt630aState::Complete; ++ticks) {
     now += 1000;
     controller.tick(now);
   }
-  CHECK(controller.status().state == Tw8836State::Complete);
-  CHECK(controller.status().fault == Tw8836Fault::None);
+  CHECK(controller.status().state == Amt630aState::Complete);
+  CHECK(controller.status().fault == Amt630aFault::None);
   CHECK(controller.status().progress_percent == 100);
   CHECK(controller.status().runtime.panel_timing_active);
   CHECK(hardware.programmed_addresses.size() == 3);
@@ -2639,39 +2698,62 @@ void test_tw8836_isp_controller()
   CHECK(hardware.programmed_addresses[2] == 512);
   CHECK(std::equal(image.begin(), image.end(), hardware.flash.begin()));
 
-  FakeTw8836Hardware identity_fault;
+  FakeAmt630aHardware current_flash;
+  std::copy(image.begin(), image.end(), current_flash.flash.begin());
+  Amt630aController ensure_current(current_flash, {1000, 20});
+  CHECK(ensure_current.ensure_program(image.data(), image.size(), digest, 0));
+  for (std::size_t ticks = 0; ticks < 20 &&
+       ensure_current.status().state != Amt630aState::Complete; ++ticks) {
+    ensure_current.tick(static_cast<TimeUs>(ticks + 1) * 1000U);
+  }
+  CHECK(ensure_current.status().state == Amt630aState::Complete);
+  CHECK(current_flash.erase_count == 0);
+  CHECK(current_flash.programmed_addresses.empty());
+
+  FakeAmt630aHardware corrupt_flash;
+  Amt630aController ensure_corrupt(corrupt_flash, {1000, 20});
+  CHECK(ensure_corrupt.ensure_program(image.data(), image.size(), digest, 0));
+  for (std::size_t ticks = 0; ticks < 120 &&
+       ensure_corrupt.status().state != Amt630aState::Complete; ++ticks) {
+    ensure_corrupt.tick(static_cast<TimeUs>(ticks + 1) * 1000U);
+  }
+  CHECK(ensure_corrupt.status().state == Amt630aState::Complete);
+  CHECK(corrupt_flash.erase_count == 1);
+  CHECK(std::equal(image.begin(), image.end(), corrupt_flash.flash.begin()));
+
+  FakeAmt630aHardware identity_fault;
   identity_fault.identity = 0x1234;
-  Tw8836Controller bad_identity(identity_fault);
+  Amt630aController bad_identity(identity_fault);
   CHECK(bad_identity.initialize(0));
   bad_identity.tick(0);
-  CHECK(bad_identity.status().fault == Tw8836Fault::Identity);
-  identity_fault.identity = kTw8836ExpectedIdentity;
+  CHECK(bad_identity.status().fault == Amt630aFault::Identity);
+  identity_fault.identity = kAmt630aExpectedIdentity;
   CHECK(bad_identity.recover(1000));
   bad_identity.tick(1000);
-  CHECK(bad_identity.status().state == Tw8836State::Ready);
+  CHECK(bad_identity.status().state == Amt630aState::Ready);
 
-  FakeTw8836Hardware bad_readback;
-  Tw8836Controller verify_fault(bad_readback, {1000, 20});
+  FakeAmt630aHardware bad_readback;
+  Amt630aController verify_fault(bad_readback, {1000, 20});
   CHECK(verify_fault.initialize(0));
   verify_fault.tick(0);
   CHECK(verify_fault.start_program(image.data(), image.size(), digest, 0));
   bad_readback.readback_fails = true;
   for (std::size_t ticks = 0; ticks < 30 &&
-       verify_fault.status().state != Tw8836State::Fault; ++ticks) {
+       verify_fault.status().state != Amt630aState::Fault; ++ticks) {
     verify_fault.tick(static_cast<TimeUs>(ticks + 1) * 1000U);
   }
-  CHECK(verify_fault.status().fault == Tw8836Fault::Readback);
+  CHECK(verify_fault.status().fault == Amt630aFault::Readback);
 
-  FakeTw8836Hardware timeout_hardware;
+  FakeAmt630aHardware timeout_hardware;
   timeout_hardware.busy_polls = 255;
-  Tw8836Controller timeout(timeout_hardware, {100, 20});
+  Amt630aController timeout(timeout_hardware, {100, 20});
   CHECK(timeout.initialize(0));
   timeout.tick(0);
   CHECK(timeout.start_program(image.data(), image.size(), digest, 0));
   timeout.tick(1000);    // enter ISP
   timeout.tick(2000);    // start erase
   timeout.tick(101000);  // bounded timeout
-  CHECK(timeout.status().fault == Tw8836Fault::Timeout);
+  CHECK(timeout.status().fault == Amt630aFault::Timeout);
 }
 
 void test_complete_openpocket_menu()
@@ -2988,13 +3070,14 @@ int main()
   test_virtual_elrs_module();
   test_elrs_management_and_finder();
   test_audio_alerts();
+  test_speaker_service();
   test_storage();
   test_ui();
   test_services();
   test_module_update_backup_and_calibration();
   test_rx5808_backend();
   test_openpocket_board_power();
-  test_tw8836_isp_controller();
+  test_amt630a_flash_controller();
   test_openpocket_product_services();
   test_complete_openpocket_menu();
   test_at7456e_backend();
