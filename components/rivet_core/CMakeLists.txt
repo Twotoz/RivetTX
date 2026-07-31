@@ -6,6 +6,7 @@ idf_component_register(
     "crsf.cpp"
     "elrs.cpp"
     "product.cpp"
+    "rx5808.cpp"
     "services.cpp"
     "storage.cpp"
     "ui.cpp"

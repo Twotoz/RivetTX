@@ -10,6 +10,7 @@ CORE := \
 	components/rivet_core/crsf.cpp \
 	components/rivet_core/elrs.cpp \
 	components/rivet_core/product.cpp \
+	components/rivet_core/rx5808.cpp \
 	components/rivet_core/services.cpp \
 	components/rivet_core/storage.cpp \
 	components/rivet_core/ui.cpp

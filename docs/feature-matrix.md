@@ -22,7 +22,7 @@ hardware evidence.
 | battery/power | synchronized validated ADC snapshot, calibrated divider scaling, fail-closed sensor faults, hysteresis, voltage-based percentage fallback, alarms and inactivity/shutdown policy | native policy/fault tests; real charger, fuel gauge, latch and divider validation pending |
 | backup/recovery | locked-only Wi-Fi page for active-model export/verified restore, boot-failure counter, held-button recovery | codec/library tests; complete web configurator and portal hardware pending |
 | USB simulator | native ESP32-S3 TinyUSB HID gamepad, four gimbals plus four analog controls and switch buttons, output lock and per-model RF lock; C3 explicitly unsupported | host policy tests and S3 CI build; Windows/Linux/macOS and simulator compatibility pending |
-| OpenPocket VRX/video OSD | non-blocking 6×8 frequency controller and scan state machine, minimal 30×16 flying HUD with all essential content in rows 0–12, centered persistent startup/critical warnings, four-second normal notifications, ENTER menu access, global BACK/Home escape, seven menu groups, all 20 Detail routes, selection, ten-row scrolling, transactional EDIT, editable VRX band/channel/scan scene, and physical AT7456E frame output | native tests cover PAL, NTSC, HUD/warnings, every menu route, changed-cell writes, glyph upload, video loss/recovery, standard change, SPI failure and timeout; deterministic renders cover all HUD/menu states; VRX hardware and target composite HIL remain pending |
+| OpenPocket VRX/video OSD | non-blocking 6×8 frequency controller and scan state machine; ESP32-C3/S3 RX5808/RTC6715 25-bit DATA/CLK/LE backend; strict table validation; immediate manual/model tuning; bounded scan/cancel/restore; calibrated filtered RSSI with valid/stale/unavailable/fault states; AT7456E-only sync state; existing 30×16 HUD/menu compositor and physical AT7456E frame output | native fake-GPIO/ADC tests cover all 48 channels, exact representative synthesizer frames, invalid input/configuration, manual/startup/model tuning, scan dwell/cancel/best selection, RSSI filtering/faults, sync independence, transport failure/recovery, PAL/NTSC, UI and OSD failures; target RX5808 + AT7456E + composite LCD HIL remains open and software tests are not hardware validation |
 | onboarding | automatic missing-calibration entry and bounded first-run state machine for calibration, ARM/AUX, ELRS, optional video, battery and CH5-low preview | native state-machine tests; the post-calibration UI flow remains to be connected |
 | update/boot | ESP-IDF bootloader, A/B OTA, HTTPS, manifest gates, post-boot self-test, rollback, Secure Boot V2 production config | mock OTA tests; signed-device drill pending |
 | development | deterministic virtual hardware simulator, JSON report, PBM outputs, strict-warning tests, ASan/UBSan, dual ESP-IDF target builds with firmware headroom gates | host, ESP32-C3, and ESP32-S3 CI verified |
@@ -40,7 +40,9 @@ hardware evidence.
 - The pass-through and update services have safe core/platform APIs, but a
   production product should choose its authenticated USB or maintenance UI
   workflow after the PCB is fixed.
-- The VRX scanner and analog character compositor remain hardware-independent.
-  Native AT7456E register tests are not proof of analog signal integrity; a
-  product claim still requires the exact tuner, OSD revision, routing and
-  target-PCB PAL/NTSC HIL evidence.
+- The VRX scan/selection state machine, frequency table, and analog character
+  compositor remain hardware-independent. The ESP32 backend only supplies a
+  bounded RTC6715 serial transport and RSSI ADC. Native RTC6715/AT7456E
+  register tests are not proof of RF tuning, analog signal integrity, or
+  recovery timing; a product claim still requires the exact modified tuner,
+  OSD revision, routing, LCD controller, and target-PCB PAL/NTSC HIL evidence.

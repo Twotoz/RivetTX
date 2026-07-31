@@ -29,6 +29,8 @@ namespace rivettx::esp32 {
 class EspBoard {
  public:
   bool initialize();
+  bool configure_vrx_rssi(int gpio);
+  bool read_vrx_rssi(int& value) const;
   RawInputs sample_inputs(TimeUs now_us);
   BatterySensorSample sample_battery();
   bool recovery_button_pressed() const;
@@ -48,8 +50,24 @@ class EspBoard {
   adc_cali_handle_t adc_calibration_ = nullptr;
   std::array<AdcInput, kMaxAxes> axes_{};
   AdcInput battery_{};
+  AdcInput vrx_rssi_{};
   uint8_t configured_axis_count_ = 4;
   RotaryEncoderDecoder encoder_decoder_{};
+};
+
+class EspRx5808Io final : public IRtc6715Io {
+ public:
+  explicit EspRx5808Io(EspBoard& board);
+
+  bool initialize() override;
+  bool set_data(bool high) override;
+  bool set_clock(bool high) override;
+  bool set_latch(bool high) override;
+  bool read_rssi(int& raw_adc) override;
+
+ private:
+  EspBoard& board_;
+  bool initialized_ = false;
 };
 
 class EspCrsfTransport final : public ICrsfTransport {
@@ -190,6 +208,7 @@ class WifiBackupPortal {
 
 bool mount_model_filesystem(bool format_if_mount_failed = false);
 bool validate_pin_configuration();
+bool validate_rx5808_configuration();
 TimeUs now_us();
 
 }  // namespace rivettx::esp32

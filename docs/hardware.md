@@ -88,6 +88,88 @@ the [MAX7456 reference data sheet](https://www.analog.com/media/en/technical-doc
 but the populated AT7456E vendor data sheet and module schematic remain the
 authority for electrical limits.
 
+## OpenPocket RX5808 / RTC6715 wiring
+
+Enable `Physical RX5808 / RTC6715 receiver` under
+`Component config -> RivetTX hardware`. Configure four separate pins for
+DATA, CLK, LE/latch enable, and RSSI ADC. The ESP32-C3 and ESP32-S3 backends
+use a bounded GPIO state machine for the RTC6715's 25-bit, LSB-first,
+mode-0-compatible serial write. It does not use delays or execute in the
+250 Hz control task.
+
+The supported hardware is an RX5808-class module with the RTC6715
+three-wire programming interface actually enabled and exposed. Many stock
+RX5808 modules ship in fixed channel-pin mode. They require the known
+RX5808 SPI modification: the exact module schematic must be checked, its
+RTC6715 `SPI_SE` function must be asserted, and the former channel-select
+pads must be converted to DATA, LE, and CLK. Resistor locations and pad names
+vary by module revision, so RivetTX does not publish one photograph as a
+universal modification recipe. Verify continuity and logic levels before
+connecting the ESP32.
+
+Complete receiver path:
+
+```text
+regulated, filtered 5 V -------------------------- RX5808 +5V
+common ground ------------------------------------ RX5808 GND
+5.8 GHz antenna ---------------------------------- RX5808 RF IN
+
+ESP32 configured DATA ---------------------------> RX5808 DATA
+ESP32 configured CLK ----------------------------> RX5808 CLK
+ESP32 configured LE -----------------------------> RX5808 LE / SELECT
+ESP32 configured ADC1 input <--- scale/filter ---- RX5808 RSSI
+
+RX5808 VIDEO OUT ---> AT7456E VIDEO IN / VIN
+AT7456E VIDEO OUT ---> composite LCD controller CVBS IN
+
+ESP32 GND ----------+
+RX5808 GND ---------+---- common digital and video reference
+AT7456E GND --------+
+LCD controller GND -+
+```
+
+| Connection | Requirement |
+|---|---|
+| RX5808 +5V | use a regulated rail sized from the exact module; add local 100 nF ceramic and at least 10 uF low-ESR bulk capacitance |
+| RX5808 GND | short common reference to the ESP32 digital ground and AT7456E video ground; keep regulator and RF return current out of the composite return |
+| VIDEO OUT | route once to AT7456E VIN through the module/reference coupling network; never drive an ESP32 GPIO and do not tee a second terminated LCD path |
+| DATA | dedicated 3.3 V output GPIO to the SPI-enabled RTC6715 DATA net |
+| CLK | dedicated 3.3 V output GPIO to the SPI-enabled RTC6715 CLK net |
+| LE / SELECT | dedicated 3.3 V output GPIO to the RTC6715 latch net; idle high |
+| RSSI | dedicated ADC1-capable GPIO; add an RC filter and scale/clamp only if measurement proves the module output can exceed the ESP32 ADC limit |
+
+Place a ferrite bead or suitably rated low-noise filter between a noisy shared
+5 V converter and the receiver rail, followed by local bulk and ceramic
+decoupling. Keep DATA/CLK/LE edges, the ESP32 clock, and DC/DC switch node away
+from RF input and composite video. Do not power the module from an unverified
+development-board rail.
+
+The frequency table remains in the platform-independent controller. Every
+requested value is checked against that 6x8 table before the physical backend
+generates Synthesizer Register B and its 25-bit write frame. Tuning, settle
+time, scan dwell, RSSI sample interval, and tune/stale timeouts are bounded and
+configurable. A low-priority VRX task advances only a small fixed number of
+GPIO transitions per tick.
+
+RSSI calibration uses menuconfig minimum/noise and maximum-signal ADC values.
+RivetTX applies an integer IIR filter and displayed-percent hysteresis, and
+reports RSSI as valid, stale, unavailable, or sensor-faulted. It never turns a
+failed ADC read into a plausible percentage. RSSI strength and composite sync
+are separate: the RX5808 provides RSSI, while only the AT7456E status register
+provides PAL/NTSC sync and no-signal state.
+
+An RTC6715 write-only interface cannot prove RF operation or detect every
+disconnected wire. `available` means that the configured GPIO transfer
+completed; real receiver presence still requires RSSI, video-sync, and HIL
+evidence. A failed VRX initialization, tune, or ADC read disables/degrades only
+the receiver display state. It does not stop CRSF, the control task, telemetry,
+or safety processing.
+
+RTC6715 framing and synthesizer calculations follow the
+[RTC6715 data sheet](https://cdn.ozdisan.com/ETicaret_Dosya/582271_6664727.PDF).
+The physical RX5808 modification must follow the schematic and continuity of
+the exact populated module.
+
 ## Minimum standalone transmitter
 
 RivetTX generates channel data and sends it over CRSF to ExpressLRS firmware

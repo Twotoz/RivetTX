@@ -100,3 +100,31 @@ jobs:
           path: firmware/
           if-no-files-found: error
           retention-days: 30
+
+  openpocket-esp:
+    name: OpenPocket ${{ matrix.name }} firmware
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: esp32c3
+            name: ESP32-C3
+            defaults: sdkconfig.ci-openpocket-esp32c3.defaults
+          - target: esp32s3
+            name: ESP32-S3
+            defaults: sdkconfig.ci-openpocket-esp32s3.defaults
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Build OpenPocket RX5808 and AT7456E profile
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.2
+          target: ${{ matrix.target }}
+          path: "."
+          command: >-
+            idf.py
+            -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;${{ matrix.defaults }}"
+            build

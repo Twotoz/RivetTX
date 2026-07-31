@@ -98,6 +98,35 @@ AudioWarningConfig audio_warning_config()
   return config;
 }
 
+Rtc6715Config rtc6715_config()
+{
+  Rtc6715Config config{};
+#if CONFIG_RIVETTX_RX5808_ENABLED
+  config.transition_interval_us =
+      CONFIG_RIVETTX_RX5808_TRANSITION_INTERVAL_US;
+  config.tune_timeout_ms = CONFIG_RIVETTX_RX5808_TUNE_TIMEOUT_MS;
+#endif
+  return config;
+}
+
+VrxControllerConfig vrx_controller_config()
+{
+  VrxControllerConfig config{};
+#if CONFIG_RIVETTX_RX5808_ENABLED
+  config.scan_dwell_ms = CONFIG_RIVETTX_RX5808_SCAN_DWELL_MS;
+  config.tune_timeout_ms = CONFIG_RIVETTX_RX5808_TUNE_TIMEOUT_MS;
+  config.rssi_sample_interval_ms =
+      CONFIG_RIVETTX_RX5808_RSSI_SAMPLE_INTERVAL_MS;
+  config.rssi_stale_ms = CONFIG_RIVETTX_RX5808_RSSI_STALE_MS;
+  config.rssi_min_adc = CONFIG_RIVETTX_RX5808_RSSI_MIN_ADC;
+  config.rssi_max_adc = CONFIG_RIVETTX_RX5808_RSSI_MAX_ADC;
+  config.rssi_filter_shift = CONFIG_RIVETTX_RX5808_RSSI_FILTER_SHIFT;
+  config.rssi_hysteresis_percent =
+      CONFIG_RIVETTX_RX5808_RSSI_HYSTERESIS_PERCENT;
+#endif
+  return config;
+}
+
 class SpecialActionMailbox final : public ISpecialActionHandler {
  public:
   void execute(SpecialAction action, int16_t parameter,
@@ -168,6 +197,9 @@ class LuaCrsfMailbox final : public ILuaCrsfSink {
 
 struct Application {
   EspBoard board;
+  EspRx5808Io vrx_io{board};
+  Rtc6715Backend vrx_hardware{vrx_io, rtc6715_config()};
+  VrxController vrx{vrx_hardware, vrx_controller_config()};
   EspCrsfTransport transport;
   CrsfTransmitGate rf_transport{transport};
   Ssd1306Display display;
@@ -236,6 +268,13 @@ struct Application {
   ModuleState latest_module_state = ModuleState::Starting;
   SafetyState latest_safety_state = SafetyState::Booting;
   portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
+  VrxStatus latest_vrx{};
+  portMUX_TYPE vrx_command_lock = portMUX_INITIALIZER_UNLOCKED;
+  uint8_t vrx_command = 0;
+  uint8_t vrx_command_band = 0;
+  uint8_t vrx_command_channel = 0;
+  std::atomic<int16_t> vrx_scan_result{-1};
+  bool vrx_initialized = false;
   CharacterOsdFrame pending_osd_frame{};
   portMUX_TYPE osd_frame_lock = portMUX_INITIALIZER_UNLOCKED;
   std::atomic<uint32_t> osd_frame_generation{0};
@@ -279,6 +318,41 @@ struct Application {
 };
 
 Application app;
+
+#if CONFIG_RIVETTX_RX5808_ENABLED
+enum class VrxCommand : uint8_t {
+  None,
+  Tune,
+  StartScan,
+  CancelScan,
+};
+
+void queue_vrx_command(VrxCommand command, uint8_t band = 0,
+                       uint8_t channel = 0)
+{
+  taskENTER_CRITICAL(&app.vrx_command_lock);
+  app.vrx_command = static_cast<uint8_t>(command);
+  app.vrx_command_band = band;
+  app.vrx_command_channel = channel;
+  taskEXIT_CRITICAL(&app.vrx_command_lock);
+}
+
+bool take_vrx_command(VrxCommand& command, uint8_t& band,
+                      uint8_t& channel)
+{
+  bool pending = false;
+  taskENTER_CRITICAL(&app.vrx_command_lock);
+  if (app.vrx_command != static_cast<uint8_t>(VrxCommand::None)) {
+    command = static_cast<VrxCommand>(app.vrx_command);
+    band = app.vrx_command_band;
+    channel = app.vrx_command_channel;
+    app.vrx_command = static_cast<uint8_t>(VrxCommand::None);
+    pending = true;
+  }
+  taskEXIT_CRITICAL(&app.vrx_command_lock);
+  return pending;
+}
+#endif
 
 void queue_crash_snapshot(uint32_t reason)
 {
@@ -336,6 +410,10 @@ void control_task(void*)
       app.trim_controls.reset();
       app.special_functions.reset();
       app.module.set_model_id(app.model.model_id, started);
+#if CONFIG_RIVETTX_RX5808_ENABLED
+      queue_vrx_command(VrxCommand::Tune, app.model.vrx_band,
+                        app.model.vrx_channel);
+#endif
       app.model_activation_state.store(2, std::memory_order_release);
     }
     const RawInputs raw = app.board.sample_inputs(started);
@@ -1230,6 +1308,9 @@ void ui_task(void*)
     ElrsManagerStatus elrs{};
     ElrsFinderStatus finder{};
     SafetyStatus safety{};
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+    VrxStatus vrx_status{};
+#endif
     const BatterySnapshot battery_snapshot =
         app.battery_snapshot.read();
     BatteryState battery_state = battery_snapshot.state;
@@ -1247,12 +1328,31 @@ void ui_task(void*)
     elrs = app.latest_elrs;
     finder = app.latest_finder;
     safety = app.latest_safety;
+#if CONFIG_RIVETTX_RX5808_ENABLED
+    vrx_status = app.latest_vrx;
+#endif
     module_state = app.latest_module_state;
     buttons = app.latest_buttons;
     encoder_delta = app.latest_encoder_delta;
     app.latest_encoder_delta = 0;
     encoder_pressed = app.latest_encoder_pressed;
     taskEXIT_CRITICAL(&app.frame_lock);
+
+#if CONFIG_RIVETTX_RX5808_ENABLED
+    const int16_t scan_result = app.vrx_scan_result.exchange(
+        -1, std::memory_order_acq_rel);
+    if (scan_result >= 0 &&
+        scan_result <
+            static_cast<int16_t>(kVrxBandCount * kVrxChannelsPerBand)) {
+      app.edit_model.vrx_band = static_cast<uint8_t>(
+          scan_result / static_cast<int16_t>(kVrxChannelsPerBand));
+      app.edit_model.vrx_channel = static_cast<uint8_t>(
+          scan_result % static_cast<int16_t>(kVrxChannelsPerBand));
+      model_dirty = true;
+      force_screen_rebuild = true;
+      dirty_since_us = now_us();
+    }
+#endif
 
     const uint8_t pressed =
         static_cast<uint8_t>(buttons & ~previous_buttons);
@@ -1561,6 +1661,39 @@ void ui_task(void*)
         }
         continue;
       }
+#if CONFIG_RIVETTX_RX5808_ENABLED
+      if (change.screen_id == "video") {
+        bool changed_channel = false;
+        if (change.field_id == "band" && change.value >= 1 &&
+            change.value <= static_cast<int32_t>(kVrxBandCount)) {
+          app.edit_model.vrx_band =
+              static_cast<uint8_t>(change.value - 1);
+          changed_channel = true;
+        } else if (change.field_id == "channel" &&
+                   change.value >= 1 &&
+                   change.value <=
+                       static_cast<int32_t>(kVrxChannelsPerBand)) {
+          app.edit_model.vrx_channel =
+              static_cast<uint8_t>(change.value - 1);
+          changed_channel = true;
+        } else if (change.field_id == "scan") {
+          queue_vrx_command(vrx_status.scanning
+                                ? VrxCommand::CancelScan
+                                : VrxCommand::StartScan);
+          force_screen_rebuild = true;
+          continue;
+        }
+        if (changed_channel) {
+          queue_vrx_command(VrxCommand::Tune,
+                            app.edit_model.vrx_band,
+                            app.edit_model.vrx_channel);
+          model_dirty = true;
+          force_screen_rebuild = true;
+          dirty_since_us = now_us();
+          continue;
+        }
+      }
+#endif
       const bool maintenance =
           !app.backup_portal.running() &&
           app.safety.maintenance_allowed();
@@ -1660,11 +1793,20 @@ void ui_task(void*)
     openpocket_screens.battery_state = battery_state;
     openpocket_screens.battery_mv = battery_mv;
     openpocket_screens.battery_sensor_valid = battery_sensor_valid;
+#if CONFIG_RIVETTX_RX5808_ENABLED
+    openpocket_screens.vrx = vrx_status;
+    openpocket_screens.vrx.signal_fresh =
+        app.osd_healthy.load(std::memory_order_acquire);
+    openpocket_screens.vrx.video_signal = home.video_signal;
+#else
     openpocket_screens.vrx.available = false;
     openpocket_screens.vrx.signal_fresh = true;
     openpocket_screens.vrx.video_signal = home.video_signal;
     openpocket_screens.vrx.band = app.edit_model.vrx_band;
     openpocket_screens.vrx.channel = app.edit_model.vrx_channel;
+    openpocket_screens.vrx.frequency_mhz = vrx_frequency_mhz(
+        app.edit_model.vrx_band, app.edit_model.vrx_channel);
+#endif
     if (!openpocket_started) {
       openpocket_ui.start(home, render_time);
       openpocket_started = true;
@@ -1842,6 +1984,110 @@ void service_task(void*)
   }
 }
 
+#if CONFIG_RIVETTX_RX5808_ENABLED
+const char* vrx_failure_name(VrxFailure failure)
+{
+  switch (failure) {
+    case VrxFailure::None: return "none";
+    case VrxFailure::InvalidFrequency: return "invalid frequency";
+    case VrxFailure::TuneRejected: return "tune rejected";
+    case VrxFailure::TuneTimeout: return "tune timeout";
+    case VrxFailure::Communication: return "GPIO communication";
+    case VrxFailure::RssiCalibration: return "RSSI calibration";
+  }
+  return "unknown";
+}
+
+void vrx_task(void*)
+{
+  VrxFailure previous_failure = VrxFailure::None;
+  VrxRssiState previous_rssi_state = VrxRssiState::Unavailable;
+  bool previous_available = false;
+  bool previous_scanning = false;
+  while (true) {
+    const TimeUs current = now_us();
+    VrxCommand command = VrxCommand::None;
+    uint8_t band = 0;
+    uint8_t channel = 0;
+    if (take_vrx_command(command, band, channel)) {
+      switch (command) {
+        case VrxCommand::Tune:
+          if (!app.vrx.select(band, channel, current)) {
+            ESP_LOGE(kTag, "RX5808 tune rejected band=%u channel=%u",
+                     static_cast<unsigned>(band + 1),
+                     static_cast<unsigned>(channel + 1));
+          }
+          break;
+        case VrxCommand::StartScan:
+          if (!app.vrx.begin_scan(current)) {
+            ESP_LOGW(kTag, "RX5808 scan start rejected");
+          } else {
+            ESP_LOGI(kTag, "RX5808 scan started");
+          }
+          break;
+        case VrxCommand::CancelScan:
+          if (app.vrx.cancel_scan(current)) {
+            ESP_LOGI(kTag, "RX5808 scan cancelled; restoring channel");
+          } else {
+            ESP_LOGW(kTag, "RX5808 scan cancellation ignored");
+          }
+          break;
+        case VrxCommand::None:
+          break;
+      }
+    }
+
+    app.vrx.set_video_signal(
+        app.osd_video_present.load(std::memory_order_acquire),
+        app.osd_healthy.load(std::memory_order_acquire));
+    app.vrx.tick(current);
+    uint8_t result_band = 0;
+    uint8_t result_channel = 0;
+    if (app.vrx.take_scan_result(result_band, result_channel)) {
+      app.vrx_scan_result.store(
+          static_cast<int16_t>(result_band * kVrxChannelsPerBand +
+                               result_channel),
+          std::memory_order_release);
+      ESP_LOGI(kTag,
+               "RX5808 scan selected band=%u channel=%u frequency=%uMHz",
+               static_cast<unsigned>(result_band + 1),
+               static_cast<unsigned>(result_channel + 1),
+               static_cast<unsigned>(
+                   vrx_frequency_mhz(result_band, result_channel)));
+    }
+
+    const VrxStatus status = app.vrx.status();
+    if (status.failure != VrxFailure::None &&
+        status.failure != previous_failure) {
+      ESP_LOGE(kTag, "RX5808 failure: %s frequency=%uMHz",
+               vrx_failure_name(status.failure),
+               static_cast<unsigned>(status.frequency_mhz));
+    }
+    if (status.rssi_state == VrxRssiState::SensorFault &&
+        previous_rssi_state != VrxRssiState::SensorFault) {
+      ESP_LOGE(kTag, "RX5808 RSSI ADC sensor fault");
+    }
+    if (status.available && !previous_available &&
+        status.failure == VrxFailure::None) {
+      ESP_LOGI(kTag, "RX5808 tuned to %uMHz",
+               static_cast<unsigned>(status.frequency_mhz));
+    }
+    if (previous_scanning && !status.scanning &&
+        status.failure != VrxFailure::None) {
+      ESP_LOGW(kTag, "RX5808 scan stopped after failure");
+    }
+    previous_failure = status.failure;
+    previous_rssi_state = status.rssi_state;
+    previous_available = status.available;
+    previous_scanning = status.scanning;
+    taskENTER_CRITICAL(&app.frame_lock);
+    app.latest_vrx = status;
+    taskEXIT_CRITICAL(&app.frame_lock);
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+#endif
+
 #if CONFIG_RIVETTX_OPENPOCKET_OSD
 void osd_task(void*)
 {
@@ -2012,6 +2258,31 @@ extern "C" void app_main()
       startup_inputs.switches[0] && startup_inputs.switches[1] &&
       startup_inputs.switches[3];
   bool storage_ok = initialize_storage(storage_format_requested);
+#if CONFIG_RIVETTX_RX5808_ENABLED
+  const bool vrx_config_ok = validate_rx5808_configuration();
+  app.vrx_initialized = inputs_ok && vrx_config_ok &&
+                        app.vrx_hardware.initialize();
+  if (app.vrx_initialized &&
+      !app.vrx.select(app.model.vrx_band, app.model.vrx_channel, now_us())) {
+    ESP_LOGE(kTag, "RX5808 startup tune request failed");
+    app.vrx_initialized = false;
+  }
+  if (!app.vrx_initialized) {
+    ESP_LOGW(kTag,
+             "RX5808 unavailable; control and CRSF will continue without VRX");
+  }
+  VrxStatus startup_vrx = app.vrx.status();
+  if (!app.vrx_initialized) {
+    startup_vrx.band = app.model.vrx_band;
+    startup_vrx.channel = app.model.vrx_channel;
+    startup_vrx.frequency_mhz =
+        vrx_frequency_mhz(app.model.vrx_band, app.model.vrx_channel);
+    startup_vrx.failure = VrxFailure::TuneRejected;
+  }
+  taskENTER_CRITICAL(&app.frame_lock);
+  app.latest_vrx = startup_vrx;
+  taskEXIT_CRITICAL(&app.frame_lock);
+#endif
 #if CONFIG_RIVETTX_OPENPOCKET_OSD
   const bool display_ok = pins_ok && app.osd_spi.initialize();
 #else
@@ -2063,6 +2334,15 @@ extern "C" void app_main()
           : pdFAIL;
   const BaseType_t service_created = xTaskCreatePinnedToCore(
       service_task, "rivet-service", 5120, nullptr, 3, nullptr, kServiceCore);
+#if CONFIG_RIVETTX_RX5808_ENABLED
+  const BaseType_t vrx_created =
+      app.vrx_initialized
+          ? xTaskCreatePinnedToCore(vrx_task, "rivet-vrx", 3072, nullptr, 4,
+                                    nullptr, kServiceCore)
+          : pdPASS;
+#else
+  const BaseType_t vrx_created = pdPASS;
+#endif
 #if CONFIG_RIVETTX_OPENPOCKET_OSD
   const BaseType_t osd_created =
       display_ok
@@ -2089,6 +2369,7 @@ extern "C" void app_main()
   self_test.control_task = control_created == pdPASS &&
                            ui_created == pdPASS &&
                            service_created == pdPASS &&
+                           vrx_created == pdPASS &&
                            osd_created == pdPASS &&
                            usb_created == pdPASS;
   ModuleState runtime_module_state = ModuleState::Starting;

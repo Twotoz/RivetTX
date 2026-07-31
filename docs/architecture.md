@@ -114,7 +114,14 @@ throttle, ARM switch, other required switch positions, mixer deadline,
 watchdog recovery, battery sensor/level, module/link, logging, unsaved model
 and maintenance.
 
-The VRX controller and 30×16 analog OSD compositor are platform-independent.
+The VRX controller, 6×8 frequency table, scan state machine, RSSI policy, and
+30×16 analog OSD compositor are platform-independent. On ESP32-C3/S3, a
+low-priority RX5808 backend advances the RTC6715 DATA/CLK/LE transfer through
+a bounded GPIO state machine and samples RSSI on ADC1. Manual/model changes
+and scan commands cross into that task through a bounded mailbox; no VRX GPIO
+or ADC operation runs in the 250 Hz control task. AT7456E status remains the
+only source of composite sync/no-signal state, independent of RSSI.
+
 OpenPocket Home is a flying HUD: battery and link quality occupy the upper
 corners, ARM state and VRX band/channel occupy row 12, and the
 center remains clear during normal flight. The controller prioritizes startup
