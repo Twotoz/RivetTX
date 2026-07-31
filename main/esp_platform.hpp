@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rivettx/core.hpp"
+#include "rivettx/at7456e.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
 #include "rivettx/product.hpp"
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "driver/i2c_master.h"
+#include "driver/spi_master.h"
 #include "driver/uart.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_oneshot.h"
@@ -73,6 +75,20 @@ class Ssd1306Display final : public IDisplaySink {
   i2c_master_bus_handle_t bus_ = nullptr;
   i2c_master_dev_handle_t device_ = nullptr;
   DisplayCapabilities capabilities_{};
+};
+
+class EspAt7456eSpi final : public IAt7456eSpi {
+ public:
+  bool initialize();
+  bool queue(const uint8_t* transmit, uint8_t* receive,
+             std::size_t size) override;
+  At7456eTransferState poll() override;
+  void abort() override;
+
+ private:
+  spi_device_handle_t device_ = nullptr;
+  spi_transaction_t transaction_{};
+  bool queued_ = false;
 };
 
 class EspWatchdog final : public IWatchdog {

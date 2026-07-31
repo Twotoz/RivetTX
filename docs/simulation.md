@@ -47,12 +47,20 @@ telemetry values, receive-queue bounds, and the final safety/module state.
 The UI is rendered at 128×64, 240×135, and 480×320 to verify that screen data
 is independent of a single panel size. The resulting PBM files can be opened
 with common image viewers. The OpenPocket profile writes
-`build/sim-openpocket-osd.txt`, containing deterministic 30×16 Home, grouped
-Menu, all detail pages, EDIT, clipping and error frames. Unit tests exhaust
-every menu route and drive selection, scrolling, conventional BACK,
-direct Home, confirm/cancel and clipping in addition to the virtual module's
+`build/sim-openpocket-osd.txt`, containing deterministic 30×16 clear HUD,
+timed notification, persistent critical warning, resolved warning,
+BACK/HOME return, grouped Menu, all detail pages, EDIT and clipping frames.
+Unit tests exhaust every menu route and drive HUD corner layout, centered
+warning priority and timeout, selection, scrolling, global BACK/Home,
+confirm/cancel and clipping in addition to the virtual module's
 discovered power and mode fields, bind and Wi-Fi commands, offline recovery,
 and Finder RSSI/audio behavior.
+
+The same native test binary drives the physical-backend state machine through
+a fake asynchronous SPI bus. It checks 30×16 PAL, 30×13 NTSC, changed-cell-only
+writes, custom-character programming, missing video, PAL/NTSC changes,
+recovery, queue errors and a stalled transaction. These are register-level
+tests; they do not synthesize an analog composite waveform.
 
 Run the same tests under AddressSanitizer and UndefinedBehaviorSanitizer with:
 

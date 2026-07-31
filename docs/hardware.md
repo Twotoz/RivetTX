@@ -9,11 +9,84 @@ RivetTX supports one presentation path per product build:
 - An OpenPocket product uses the analog character OSD for its menu and status
   display. It does not also initialize or mirror the menu on an OLED.
 
-The current physical firmware backend is the standalone OLED profile. The
-OpenPocket core provides its separate interactive 30×16 home, grouped menu,
-all shared detail routes, bounded navigation stack and edit presentation, but
-its exact VRX, OSD silicon, SPI backend and target-PCB validation remain
-product hardware work.
+The OpenPocket profile has a physical AT7456E/MAX7456-compatible SPI backend.
+It autodetects PAL/NTSC from the chip status register, drives all 30×16 cells
+in PAL and the safe 30×13 region in NTSC, and retries chip communication
+without running SPI in the control task. Target-PCB signal-integrity and
+composite-video HIL are still required before flight.
+
+## OpenPocket AT7456E wiring
+
+Select `Use OpenPocket AT7456E analog OSD instead of SSD1306` under
+`Component config -> RivetTX hardware`, then assign SCLK, MOSI/SDIN,
+MISO/SDOUT, active-low CS and optional active-low RESET. There are deliberately
+no default OSD GPIOs: the correct pins depend on the exact ESP32 module's
+flash, PSRAM, USB, ADC and board routing. The SPI clock is configurable up to
+the chip's 10 MHz limit; 8 MHz with one setup and one hold cycle is the
+default. The firmware uses SPI mode 0 and the ESP32 SPI2 peripheral.
+
+Complete signal path:
+
+```text
+antenna -> VRX -> VRX CVBS OUT -> AT7456E VIN
+                                      |
+ESP32 SPI2 -> level shifting -> AT7456E SPI/control
+                                      |
+composite LCD CVBS IN <- AT7456E VOUT-+
+
+VRX GND ---------+
+ESP32 GND -------+--- AT7456E AGND/DGND --- LCD video GND
+5 V video rail ------ AT7456E AVDD/DVDD
+3.3 V rail ---------- ESP32 (and 3.3 V side of translators)
+```
+
+| ESP32 / board net | AT7456E module net | Direction and requirement |
+|---|---|---|
+| configured SCLK | SCLK | ESP32 to OSD, SPI mode 0 |
+| configured MOSI | SDIN / MOSI | ESP32 to OSD |
+| configured MISO | SDOUT / MISO | OSD to ESP32; level-shift to 3.3 V |
+| configured CS | CS | ESP32 to OSD, active low; add a pull-up so it stays deselected during boot |
+| optional RESET | RESET | active low; use a 5 V-safe open-drain stage or translator and a pull-up at the OSD |
+| VRX CVBS OUT | VIDEO IN / VIN | one composite path through the OSD, AC-coupled as required by the module/reference circuit |
+| VIDEO OUT / VOUT | LCD CVBS IN | AC-coupled composite output; LCD is the single 75 ohm load |
+| common video ground | AGND, DGND, module GND | low-impedance common reference; do not route video return through RF or digital switching current |
+| regulated 5 V | AVDD, DVDD, module +5V | local 100 nF at each supply pin plus at least 10 uF bulk at the OSD module |
+
+For a ready-made AT7456E OSD module, use its `VIDEO IN` and `VIDEO OUT` pins;
+the module must already contain the 27 MHz clock, supply decoupling, video
+coupling and SAG/COUT network. For a bare IC, copy the oscillator, VIN/VOUT,
+SAG/COUT, clamp/bias and decoupling network from the exact AT7456E vendor
+reference schematic. Do not substitute the similarly programmed MAX7456
+reference values without checking the chosen AT7456E package and revision.
+
+The AT7456E video rail is normally 5 V. Do not assume its digital pins are
+3.3 V-safe. A robust bare-chip design uses 3.3-to-5 V AHCT-family buffers for
+SCLK, SDIN and CS, and a 5-to-3.3 V unidirectional translator (or a calculated
+divider at the selected SPI rate) for SDOUT. RESET is simplest as an
+open-drain transistor. Some modules include this translation; verify the
+schematic rather than the product label.
+
+The LCD input, not the OSD output, should provide the one 75 ohm termination.
+Do not tee an independently terminated direct VRX-to-LCD path around the OSD,
+and do not connect baseband composite to an LCD's audio or power pin. Power
+the VRX and LCD from rails sized for their peak loads, keep their noisy supply
+returns out of the video return, and add ESD protection where video leaves
+the PCB.
+
+The driver reads LOS/PAL/NTSC status every 100 ms. On loss it leaves video
+pass-through and the last safe standard configured, reports `VIDEO NO SIGNAL`,
+and keeps controls running. A recovered or changed standard invalidates the
+shadow screen and redraws it. Display RAM writes are run-based and include
+only changed cells. Custom characters are 54-byte glyphs; uploads disable only
+the OSD overlay while the chip programs NVM and are staged one bounded SPI
+operation at a time. Because character NVM has finite endurance, provision
+icons, selection markers and warning glyphs during setup or maintenance, not
+on every boot.
+
+Register behavior and the required external video network are compatible with
+the [MAX7456 reference data sheet](https://www.analog.com/media/en/technical-documentation/data-sheets/max7456.pdf),
+but the populated AT7456E vendor data sheet and module schematic remain the
+authority for electrical limits.
 
 ## Minimum standalone transmitter
 
@@ -141,6 +214,10 @@ The defaults are examples, not a PCB design:
 | battery ADC | disabled | disabled |
 | passive piezo buzzer | disabled | disabled |
 
+OpenPocket SCLK, MOSI, MISO, CS and RESET all default to disabled (`-1`) and
+must be assigned for the actual PCB. Pin validation rejects a missing required
+SPI signal, duplicate assignment, or a non-output-capable SCLK/MOSI/CS pin.
+
 Battery low/critical voltage and ELRS weak/critical LQ thresholds are also
 configured in this menu. The default battery values assume a one-cell
 development supply and must be changed for other pack configurations.
@@ -178,7 +255,8 @@ are used immediately and persisted through the normal model-save path. See the
 
 - Hold UP+DOWN during boot to enter stick calibration.
 - During calibration, ENTER advances and BACK cancels.
-- ENTER on Home opens the main menu; BACK returns Detail → Menu → Home.
+- On OpenPocket, ENTER on the minimal flying HUD opens the full menu. BACK or
+  HOME from anywhere in that menu returns immediately to the HUD.
 - UP/DOWN select a field; ENTER enters or leaves edit mode.
 - In edit mode UP/DOWN changes the value.
 - `EDIT` is shown at the top-right for as long as a value is being changed.

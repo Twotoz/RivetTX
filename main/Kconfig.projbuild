@@ -1,5 +1,66 @@
 menu "RivetTX hardware"
 
+config RIVETTX_OPENPOCKET_OSD
+    bool "Use OpenPocket AT7456E analog OSD instead of SSD1306"
+    default n
+    help
+        Select exactly one presentation owner. When enabled, RivetTX uses
+        the 30x16 OpenPocket character compositor and AT7456E video overlay;
+        it does not initialize the SSD1306 OLED.
+
+config RIVETTX_AT7456E_SCLK_GPIO
+    int "AT7456E SPI clock GPIO"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    depends on RIVETTX_OPENPOCKET_OSD
+
+config RIVETTX_AT7456E_MOSI_GPIO
+    int "AT7456E SPI MOSI / SDIN GPIO"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    depends on RIVETTX_OPENPOCKET_OSD
+
+config RIVETTX_AT7456E_MISO_GPIO
+    int "AT7456E SPI MISO / SDOUT GPIO"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    depends on RIVETTX_OPENPOCKET_OSD
+
+config RIVETTX_AT7456E_CS_GPIO
+    int "AT7456E active-low chip-select GPIO"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    depends on RIVETTX_OPENPOCKET_OSD
+
+config RIVETTX_AT7456E_RESET_GPIO
+    int "AT7456E active-low reset GPIO (-1 uses software reset)"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    depends on RIVETTX_OPENPOCKET_OSD
+
+config RIVETTX_AT7456E_SPI_CLOCK_HZ
+    int "AT7456E SPI clock (Hz)"
+    range 100000 10000000
+    default 8000000
+    depends on RIVETTX_OPENPOCKET_OSD
+
+config RIVETTX_AT7456E_CS_SETUP_CYCLES
+    int "AT7456E CS setup time (SPI clock cycles)"
+    range 1 16
+    default 1
+    depends on RIVETTX_OPENPOCKET_OSD
+
+config RIVETTX_AT7456E_CS_HOLD_CYCLES
+    int "AT7456E CS hold time (SPI clock cycles)"
+    range 1 16
+    default 1
+    depends on RIVETTX_OPENPOCKET_OSD
+
 config RIVETTX_I2C_SDA
     int "OLED I2C SDA GPIO"
     range 0 21 if IDF_TARGET_ESP32C3

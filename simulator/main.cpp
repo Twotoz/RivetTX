@@ -593,9 +593,38 @@ bool render_openpocket_osd(const Options& options, const Model& model,
 
   SimulatorOpenPocketScreens screens(model, home, channels, vrx);
   OpenPocketMenuController menu(screens);
-  menu.start(home);
+  constexpr TimeUs hud_start_us = 1000000;
+  menu.start(home, hud_start_us);
   (void)menu.render(vrx);
-  write_frame("HOME", menu.frame());
+  write_frame("HUD CLEAR", menu.frame());
+
+  UiHomeStatus notification_home = home;
+  notification_home.warning_count = 1;
+  notification_home.warnings[0] = UiWarningCode::BatteryLow;
+  menu.refresh(notification_home, hud_start_us);
+  (void)menu.render(vrx);
+  write_frame("HUD NOTIFICATION", menu.frame());
+
+  menu.refresh(notification_home,
+               hud_start_us + kOpenPocketNotificationDurationUs);
+  (void)menu.render(vrx);
+  write_frame("HUD NOTIFICATION EXPIRED", menu.frame());
+
+  UiHomeStatus critical_home = home;
+  critical_home.warning_count = 2;
+  critical_home.warnings[0] = UiWarningCode::VideoNoSignal;
+  critical_home.warnings[1] = UiWarningCode::BatteryCritical;
+  menu.refresh(critical_home, hud_start_us + 5000000);
+  (void)menu.render(vrx);
+  write_frame("HUD CRITICAL", menu.frame());
+
+  menu.refresh(critical_home, hud_start_us + 15000000);
+  (void)menu.render(vrx);
+  write_frame("HUD CRITICAL STILL ACTIVE", menu.frame());
+
+  menu.refresh(home, hud_start_us + 15000001);
+  (void)menu.render(vrx);
+  write_frame("HUD WARNING RESOLVED", menu.frame());
 
   (void)menu.handle({UiEventType::Enter});
   (void)menu.render(vrx);
@@ -614,6 +643,16 @@ bool render_openpocket_osd(const Options& options, const Model& model,
   (void)menu.handle({UiEventType::Rotate, 2});
   (void)menu.render(vrx);
   write_frame("MODEL EDIT", menu.frame());
+
+  (void)menu.handle({UiEventType::Back});
+  (void)menu.render(vrx);
+  write_frame("BACK TO HUD", menu.frame());
+
+  (void)menu.handle({UiEventType::Enter});
+  (void)menu.handle({UiEventType::Enter});
+  (void)menu.handle({UiEventType::Home});
+  (void)menu.render(vrx);
+  write_frame("HOME TO HUD", menu.frame());
 
   CharacterOsdUi page_ui;
   const std::array<std::pair<OpenPocketMenuGroup, const char*>, 7> groups{{

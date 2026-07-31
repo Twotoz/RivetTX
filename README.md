@@ -135,8 +135,9 @@ build/sim-screen-large.pbm
 build/sim-openpocket-osd.txt
 ```
 
-The OpenPocket text artifact contains every grouped menu and detail page plus
-representative edit, clipping and fault states.
+The OpenPocket text artifact contains the minimal flying HUD, centered
+persistent and timed warnings, BACK/HOME returns, every grouped menu and
+detail page, and representative edit and clipping states.
 
 Run one focused case or display profile with:
 
@@ -188,7 +189,7 @@ The reference profiles are intentionally focused:
 | up to four extra analog axes | scroll wheels, pots, or sliders on CH9-CH12 |
 | four maintained switches | two-position ARM/AUX1; AUX2-AUX4 may be two- or three-position |
 | eight optional trim contacts | negative/positive trim for AIL, ELE, THR, and RUD |
-| SSD1306 128×64 OLED | first physical display backend |
+| SSD1306 128×64 OLED or AT7456E composite OSD | mutually exclusive standalone/OpenPocket presentation |
 | four buttons | UP, DOWN, ENTER, and BACK/recovery |
 | optional pressable rotary encoder | menu navigation and field editing |
 | suitable regulator | must tolerate the chosen TX module's peak current |

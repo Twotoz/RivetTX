@@ -1,4 +1,5 @@
 #include "rivettx/audio.hpp"
+#include "rivettx/at7456e.hpp"
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
@@ -70,6 +71,130 @@ class FakeVrxHardware final : public IVrxHardware {
   uint16_t tuned = 0;
   uint32_t tunes = 0;
   bool available = true;
+};
+
+class FakeAt7456eSpi final : public IAt7456eSpi {
+ public:
+  bool queue(const uint8_t* transmit, uint8_t* receive,
+             std::size_t size) override
+  {
+    if (queued || fail_next_queue) {
+      fail_next_queue = false;
+      return false;
+    }
+    last.assign(transmit, transmit + size);
+    transactions.push_back(last);
+    receive_ = receive;
+    receive_size_ = size;
+    queued = true;
+    busy_polls_remaining = busy_polls;
+    return true;
+  }
+
+  At7456eTransferState poll() override
+  {
+    if (!queued) {
+      return At7456eTransferState::Failed;
+    }
+    if (busy_polls_remaining != 0) {
+      --busy_polls_remaining;
+      return At7456eTransferState::Busy;
+    }
+    queued = false;
+    if (fail_next_poll) {
+      fail_next_poll = false;
+      return At7456eTransferState::Failed;
+    }
+    if (last.size() == 2 && last[0] == 0xA0 && receive_size_ >= 2) {
+      receive_[1] = status_register;
+    } else if (last.size() == 2 && last[0] == 0x80 &&
+               receive_size_ >= 2) {
+      receive_[1] = vm0;
+    } else {
+      apply(last);
+    }
+    return At7456eTransferState::Complete;
+  }
+
+  void abort() override
+  {
+    if (queued) {
+      queued = false;
+      ++aborts;
+    }
+  }
+
+  std::size_t display_write_transactions() const
+  {
+    return static_cast<std::size_t>(std::count_if(
+        transactions.begin(), transactions.end(),
+        [](const std::vector<uint8_t>& transaction) {
+          return transaction.size() == 2 && transaction[0] == 0x04 &&
+                 (transaction[1] & 0x01U) != 0;
+        }));
+  }
+
+  void apply(const std::vector<uint8_t>& transaction)
+  {
+    if (transaction.size() == 1) {
+      const uint8_t value = transaction[0];
+      if (auto_increment && value == 0xFF) {
+        auto_increment = false;
+      } else if (auto_increment) {
+        if (display_address < display.size()) {
+          display[display_address] = value;
+          display_touched[display_address] = true;
+        }
+        ++display_address;
+      }
+      return;
+    }
+    for (std::size_t offset = 0; offset + 1 < transaction.size();
+         offset += 2) {
+      const uint8_t address = transaction[offset];
+      const uint8_t value = transaction[offset + 1];
+      if (address == 0x00) {
+        vm0 = value;
+      } else if (address == 0x05) {
+        display_address = static_cast<uint16_t>(
+            (display_address & 0xFFU) | ((value & 1U) << 8));
+      } else if (address == 0x06) {
+        display_address = static_cast<uint16_t>(
+            (display_address & 0x100U) | value);
+      } else if (address == 0x04) {
+        auto_increment = (value & 0x01U) != 0;
+      } else if (address == 0x09) {
+        glyph_address = value;
+      } else if (address == 0x0A) {
+        glyph_byte = value;
+      } else if (address == 0x0B && glyph_byte < kAt7456eGlyphBytes) {
+        glyph_memory[glyph_address][glyph_byte] = value;
+      } else if (address == 0x08 && (value & 0xF0U) == 0xA0U) {
+        ++glyph_commits;
+      }
+    }
+  }
+
+  uint8_t status_register = 0x02;
+  uint8_t vm0 = 0;
+  std::array<uint8_t, kOsdColumns * kOsdRows> display{};
+  std::array<bool, kOsdColumns * kOsdRows> display_touched{};
+  std::array<std::array<uint8_t, kAt7456eGlyphBytes>, 256> glyph_memory{};
+  std::vector<std::vector<uint8_t>> transactions;
+  std::vector<uint8_t> last;
+  uint8_t* receive_ = nullptr;
+  std::size_t receive_size_ = 0;
+  uint16_t display_address = 0;
+  uint8_t glyph_address = 0;
+  uint8_t glyph_byte = 0;
+  uint32_t glyph_commits = 0;
+  uint32_t busy_polls = 0;
+  uint32_t busy_polls_remaining = 0;
+  uint32_t aborts = 0;
+  bool queued = false;
+  bool auto_increment = false;
+  bool fail_next_queue = false;
+  bool fail_next_poll = false;
 };
 
 class FakeOpenPocketScreens final : public IOpenPocketScreenProvider {
@@ -1780,13 +1905,13 @@ void test_openpocket_product_services()
   home.video_signal = true;
   CharacterOsdComposer osd;
   osd.compose(model, home, vrx.status());
-  CHECK(osd.frame().at(0, 0) == 'D');
-  CHECK(osd_row(osd.frame(), 3).find("ELRS  ONLINE") == 0);
-  CHECK(osd_row(osd.frame(), 5).find("TX BAT 3900") == 0);
-  CHECK(osd_row(osd.frame(), 7).find("VRX B4 CH4 5800MHZ") == 0);
-  CHECK(osd_row(osd.frame(), 8).find("VIDEO SIGNAL OK") == 0);
-  CHECK(osd_row(osd.frame(), 13).find("ARM CH5  LOW") == 0);
-  CHECK(osd_row(osd.frame(), 15).find("ENTER MENU") == 0);
+  CHECK(osd_row(osd.frame(), 0).find("BAT 75%") == 0);
+  CHECK(osd_row(osd.frame(), 0).find("LQ 92%") == 24);
+  for (std::size_t row = 1; row < 12; ++row) {
+    CHECK(osd_row(osd.frame(), row) == std::string(kOsdColumns, ' '));
+  }
+  CHECK(osd_row(osd.frame(), 12).find("DISARMED") == 0);
+  CHECK(osd_row(osd.frame(), 12).find("VRX B4 CH4") == 20);
 
   UiHomeStatus warning_home = home;
   warning_home.warning_count = 2;
@@ -1795,14 +1920,13 @@ void test_openpocket_product_services()
   VrxStatus no_signal = vrx.status();
   no_signal.video_signal = false;
   osd.compose(model, warning_home, no_signal);
-  CHECK(osd_row(osd.frame(), 8).find("VIDEO NO SIGNAL") == 0);
-  CHECK(osd_row(osd.frame(), 10).find("WARNING  BATTERY CRITICAL") == 0);
-  CHECK(osd_row(osd.frame(), 11).find("         +1  MORE") == 0);
+  CHECK(osd_row(osd.frame(), 7).find("! BATTERY CRITICAL !") == 5);
+  CHECK(osd_row(osd.frame(), 8).find("+1 MORE") == 11);
 
   CharacterOsdUi osd_ui;
   osd_ui.set_screen(make_openpocket_home_screen(model, home));
   CHECK(osd_ui.render(vrx.status()));
-  CHECK(osd_row(osd_ui.frame(), 0).find("Default") == 0);
+  CHECK(osd_row(osd_ui.frame(), 0).find("BAT 75%") == 0);
   CHECK(osd_ui.handle({UiEventType::Enter}));
   osd_ui.set_screen(make_openpocket_home_screen(model, home));
   UiChange osd_change{};
@@ -1829,9 +1953,9 @@ void test_openpocket_product_services()
   osd_ui.set_screen(make_main_menu_screen());
   CHECK(osd_ui.handle({UiEventType::Rotate, 13}));
   CHECK(osd_ui.selected_index() == 13);
-  CHECK(osd_ui.scroll_offset() == 2);
+  CHECK(osd_ui.scroll_offset() == 4);
   CHECK(osd_ui.render(vrx.status()));
-  CHECK(osd_ui.frame().at(0, 13) == '>');
+  CHECK(osd_ui.frame().at(0, 11) == '>');
   CHECK(osd_ui.handle({UiEventType::Enter}));
   CHECK(osd_ui.take_change(osd_change));
   CHECK(osd_change.screen_id == "menu");
@@ -1968,8 +2092,9 @@ void test_complete_openpocket_menu()
   }};
 
   OpenPocketMenuController menu(screens);
-  for (std::size_t group_index = 0;
-       group_index < expectations.size(); ++group_index) {
+  const auto navigate_to = [&menu, &screens, &expectations](
+                               std::size_t group_index,
+                               std::size_t detail_index) {
     menu.start(screens.home);
     CHECK(menu.page() == OpenPocketPage::Home);
     CHECK(menu.depth() == 0);
@@ -1983,15 +2108,19 @@ void test_complete_openpocket_menu()
     CHECK(menu.handle({UiEventType::Enter}));
     CHECK(menu.page() == expectations[group_index].group);
     CHECK(menu.depth() == 2);
+    if (detail_index != 0) {
+      CHECK(menu.handle(
+          {UiEventType::Rotate, static_cast<int16_t>(detail_index)}));
+    }
+    CHECK(menu.handle({UiEventType::Enter}));
+  };
 
+  for (std::size_t group_index = 0;
+       group_index < expectations.size(); ++group_index) {
     for (std::size_t detail_index = 0;
          detail_index < expectations[group_index].details.size();
          ++detail_index) {
-      if (detail_index != 0) {
-        CHECK(menu.handle(
-            {UiEventType::Rotate, static_cast<int16_t>(detail_index)}));
-      }
-      CHECK(menu.handle({UiEventType::Enter}));
+      navigate_to(group_index, detail_index);
       CHECK(menu.page() ==
             expectations[group_index].details[detail_index]);
       CHECK(menu.depth() == 3);
@@ -1999,33 +2128,25 @@ void test_complete_openpocket_menu()
             expectations[group_index].details[detail_index]);
       CHECK(menu.render(screens.vrx));
       CHECK(menu.handle({UiEventType::Back}));
-      CHECK(menu.page() == expectations[group_index].group);
-      CHECK(menu.depth() == 2);
+      CHECK(menu.page() == OpenPocketPage::Home);
+      CHECK(menu.depth() == 0);
     }
-    CHECK(menu.handle({UiEventType::Back}));
-    CHECK(menu.page() == OpenPocketPage::MainMenu);
-    CHECK(menu.handle({UiEventType::Back}));
-    CHECK(menu.page() == OpenPocketPage::Home);
-    CHECK(menu.depth() == 0);
   }
 
-  menu.start(screens.home);
-  CHECK(menu.handle({UiEventType::Enter}));
-  CHECK(menu.handle({UiEventType::Enter}));
-  CHECK(menu.handle({UiEventType::Rotate, 1}));
-  CHECK(menu.handle({UiEventType::Enter}));
+  navigate_to(0, 1);
   CHECK(menu.page() == OpenPocketPage::ModelSetup);
   const int32_t original_model_id = menu.screen().fields[0].value;
   CHECK(menu.handle({UiEventType::Enter}));
   CHECK(menu.editing());
   CHECK(menu.handle({UiEventType::Rotate, 3}));
   CHECK(menu.handle({UiEventType::Back}));
-  CHECK(menu.page() == OpenPocketPage::ModelSetup);
+  CHECK(menu.page() == OpenPocketPage::Home);
+  CHECK(menu.depth() == 0);
   CHECK(!menu.editing());
-  CHECK(menu.screen().fields[0].value == original_model_id);
   UiChange change{};
   CHECK(!menu.take_change(change));
 
+  navigate_to(0, 1);
   CHECK(menu.handle({UiEventType::Enter}));
   CHECK(menu.handle({UiEventType::Rotate, 2}));
   CHECK(menu.handle({UiEventType::Enter}));
@@ -2039,7 +2160,197 @@ void test_complete_openpocket_menu()
   CHECK(menu.page() == OpenPocketPage::Home);
   CHECK(menu.depth() == 0);
   CHECK(menu.render(screens.vrx));
-  CHECK(menu.frame().at(0, 15) == 'E');
+  CHECK(menu.frame().at(0, 12) == 'D');
+
+  menu.start(screens.home);
+  CHECK(menu.handle({UiEventType::Enter}));
+  CHECK(menu.page() == OpenPocketPage::MainMenu);
+  CHECK(menu.handle({UiEventType::Back}));
+  CHECK(menu.page() == OpenPocketPage::Home);
+
+  const auto osd_row = [](const CharacterOsdFrame& frame,
+                          std::size_t row) {
+    const auto begin =
+        frame.cells.begin() + static_cast<std::ptrdiff_t>(row * kOsdColumns);
+    return std::string(begin, begin + kOsdColumns);
+  };
+  UiHomeStatus notice_home = screens.home;
+  notice_home.warning_count = 1;
+  notice_home.warnings[0] = UiWarningCode::BatteryLow;
+  constexpr TimeUs notice_start = 1000000;
+  menu.start(notice_home, notice_start);
+  CHECK(menu.render(screens.vrx));
+  CHECK(osd_row(menu.frame(), 7).find("! BATTERY LOW !") !=
+        std::string::npos);
+  menu.refresh(notice_home,
+               notice_start + kOpenPocketNotificationDurationUs - 1);
+  CHECK(menu.render(screens.vrx));
+  CHECK(osd_row(menu.frame(), 7).find("! BATTERY LOW !") !=
+        std::string::npos);
+  menu.refresh(notice_home,
+               notice_start + kOpenPocketNotificationDurationUs);
+  CHECK(menu.render(screens.vrx));
+  CHECK(osd_row(menu.frame(), 7) == std::string(kOsdColumns, ' '));
+
+  UiHomeStatus critical_home = screens.home;
+  critical_home.warning_count = 2;
+  critical_home.warnings[0] = UiWarningCode::VideoNoSignal;
+  critical_home.warnings[1] = UiWarningCode::LinkCritical;
+  menu.refresh(critical_home, notice_start + 10000000);
+  CHECK(menu.render(screens.vrx));
+  CHECK(osd_row(menu.frame(), 7).find("! LINK CRITICAL !") !=
+        std::string::npos);
+  menu.refresh(critical_home, notice_start + 20000000);
+  CHECK(menu.render(screens.vrx));
+  CHECK(osd_row(menu.frame(), 7).find("! LINK CRITICAL !") !=
+        std::string::npos);
+
+  UiHomeStatus startup_home = screens.home;
+  startup_home.warning_count = 1;
+  startup_home.warnings[0] = UiWarningCode::ThrottleHigh;
+  menu.refresh(startup_home, notice_start + 30000000);
+  CHECK(menu.render(screens.vrx));
+  CHECK(osd_row(menu.frame(), 7).find("! THROTTLE HIGH !") !=
+        std::string::npos);
+  menu.refresh(startup_home, notice_start + 40000000);
+  CHECK(menu.render(screens.vrx));
+  CHECK(osd_row(menu.frame(), 7).find("! THROTTLE HIGH !") !=
+        std::string::npos);
+
+  menu.refresh(screens.home, notice_start + 40000001);
+  CHECK(menu.render(screens.vrx));
+  CHECK(osd_row(menu.frame(), 7) == std::string(kOsdColumns, ' '));
+  CHECK(openpocket_warning_is_persistent(UiWarningCode::ThrottleHigh));
+  CHECK(openpocket_warning_is_persistent(UiWarningCode::BatteryCritical));
+  CHECK(openpocket_warning_is_persistent(UiWarningCode::LinkLost));
+  CHECK(!openpocket_warning_is_persistent(UiWarningCode::BatteryLow));
+  CHECK(!openpocket_warning_is_persistent(UiWarningCode::VideoNoSignal));
+}
+
+void test_at7456e_backend()
+{
+  const auto pump = [](At7456eDriver& driver, TimeUs& now_us,
+                       std::size_t ticks) {
+    for (std::size_t tick = 0; tick < ticks; ++tick) {
+      driver.tick(now_us);
+      now_us += 1000;
+    }
+  };
+  const auto settle = [&pump](At7456eDriver& driver, TimeUs& now_us) {
+    for (std::size_t tick = 0;
+         tick < 2000 && driver.status().pending_characters != 0; ++tick) {
+      pump(driver, now_us, 1);
+    }
+  };
+
+  FakeAt7456eSpi pal_spi;
+  At7456eDriver pal(pal_spi);
+  CharacterOsdFrame frame{};
+  frame.cells.fill(' ');
+  frame.cells[0] = 'P';
+  frame.cells[kOsdColumns * 15 + 29] = 'Z';
+  TimeUs pal_now = 0;
+  pal.submit(frame);
+  pal.start(pal_now);
+  pump(pal, pal_now, 10);
+  settle(pal, pal_now);
+  CHECK(pal.status().initialized);
+  CHECK(pal.status().healthy);
+  CHECK(pal.status().video_present);
+  CHECK(pal.status().standard == At7456eVideoStandard::Pal);
+  CHECK(pal.status().visible_rows == 16);
+  CHECK(pal.status().pending_characters == 0);
+  CHECK(pal_spi.display[0] == 'P');
+  CHECK(pal_spi.display[kOsdColumns * 15 + 29] == 'Z');
+
+  const std::size_t writes_before = pal_spi.display_write_transactions();
+  pal.submit(frame);
+  pump(pal, pal_now, 50);
+  CHECK(pal_spi.display_write_transactions() == writes_before);
+  frame.cells[7] = 'X';
+  pal.submit(frame);
+  settle(pal, pal_now);
+  CHECK(pal_spi.display[7] == 'X');
+  CHECK(pal_spi.display_write_transactions() == writes_before + 1);
+
+  FakeAt7456eSpi ntsc_spi;
+  ntsc_spi.status_register = 0x01;
+  At7456eDriver ntsc(ntsc_spi);
+  CharacterOsdFrame ntsc_frame{};
+  ntsc_frame.cells.fill(' ');
+  ntsc_frame.cells[kOsdColumns * 12] = 'N';
+  ntsc_frame.cells[kOsdColumns * 13] = 'H';
+  TimeUs ntsc_now = 0;
+  ntsc.submit(ntsc_frame);
+  ntsc.start(ntsc_now);
+  pump(ntsc, ntsc_now, 10);
+  settle(ntsc, ntsc_now);
+  CHECK(ntsc.status().standard == At7456eVideoStandard::Ntsc);
+  CHECK(ntsc.status().visible_rows == kAt7456eNtscRows);
+  CHECK(ntsc_spi.display[kOsdColumns * 12] == 'N');
+  CHECK(!ntsc_spi.display_touched[kOsdColumns * 13]);
+
+  pal_spi.status_register = 0x01;
+  pump(pal, pal_now, 150);
+  settle(pal, pal_now);
+  CHECK(pal.status().standard == At7456eVideoStandard::Ntsc);
+  CHECK(pal.status().visible_rows == kAt7456eNtscRows);
+
+  pal_spi.status_register = 0x04;
+  pump(pal, pal_now, 150);
+  CHECK(!pal.status().video_present);
+  CHECK(pal.status().standard == At7456eVideoStandard::Unknown);
+  CHECK(pal.status().healthy);
+  pal_spi.status_register = 0x02;
+  pump(pal, pal_now, 150);
+  settle(pal, pal_now);
+  CHECK(pal.status().video_present);
+  CHECK(pal.status().standard == At7456eVideoStandard::Pal);
+  CHECK(pal.status().pending_characters == 0);
+
+  FakeAt7456eSpi missing_spi;
+  missing_spi.status_register = 0x04;
+  At7456eDriver missing(missing_spi);
+  TimeUs missing_now = 0;
+  missing.start(missing_now);
+  pump(missing, missing_now, 20);
+  CHECK(missing.status().initialized);
+  CHECK(missing.status().healthy);
+  CHECK(!missing.status().video_present);
+  CHECK(missing.status().visible_rows == kOsdRows);
+
+  At7456eCustomCharacter warning{};
+  warning.index = 0xF1;
+  for (std::size_t index = 0; index < warning.pixels.size(); ++index) {
+    warning.pixels[index] = static_cast<uint8_t>(index ^ 0x5A);
+  }
+  CHECK(pal.upload(warning));
+  pump(pal, pal_now, 300);
+  CHECK(!pal.status().character_upload_active);
+  CHECK(pal_spi.glyph_commits == 1);
+  CHECK(pal_spi.glyph_memory[warning.index] == warning.pixels);
+  CHECK(pal.status().healthy);
+
+  FakeAt7456eSpi failing_spi;
+  At7456eDriver failing(failing_spi);
+  TimeUs failing_now = 0;
+  failing.start(failing_now);
+  failing_spi.fail_next_queue = true;
+  failing.tick(failing_now);
+  CHECK(!failing.status().healthy);
+  CHECK(failing.status().communication_failures == 1);
+  failing_now += 100001;
+  pump(failing, failing_now, 20);
+  CHECK(failing.status().healthy);
+
+  FakeAt7456eSpi stalled_spi;
+  stalled_spi.busy_polls = 100;
+  At7456eDriver stalled(stalled_spi);
+  TimeUs stalled_now = 0;
+  stalled.start(stalled_now);
+  pump(stalled, stalled_now, 25);
+  CHECK(stalled_spi.aborts == 1);
+  CHECK(stalled.status().communication_failures == 1);
 }
 
 }  // namespace
@@ -2061,6 +2372,7 @@ int main()
   test_module_update_backup_and_calibration();
   test_openpocket_product_services();
   test_complete_openpocket_menu();
+  test_at7456e_backend();
 
   if (failures != 0) {
     std::cerr << failures << " of " << checks << " checks failed\n";

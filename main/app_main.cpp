@@ -171,6 +171,8 @@ struct Application {
   EspCrsfTransport transport;
   CrsfTransmitGate rf_transport{transport};
   Ssd1306Display display;
+  EspAt7456eSpi osd_spi;
+  At7456eDriver osd{osd_spi};
   EspToneOutput tones;
   EspUsbGamepad usb_gamepad;
   AudioAlertScheduler audio{tones};
@@ -215,7 +217,12 @@ struct Application {
   ScriptSupervisor scripts{lua, service_diagnostics};
   UiController ui{display, canvas};
   BootManager boot{
-      ota, boot_diagnostics, BootProductProfile::StandaloneOled};
+      ota, boot_diagnostics,
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+      BootProductProfile::OpenPocketOsd};
+#else
+      BootProductProfile::StandaloneOled};
+#endif
   Model model = make_default_model();
   Model edit_model = make_default_model();
   std::array<StoredModelSummary, kMaximumStoredModels> model_summaries{};
@@ -229,6 +236,13 @@ struct Application {
   ModuleState latest_module_state = ModuleState::Starting;
   SafetyState latest_safety_state = SafetyState::Booting;
   portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
+  CharacterOsdFrame pending_osd_frame{};
+  portMUX_TYPE osd_frame_lock = portMUX_INITIALIZER_UNLOCKED;
+  std::atomic<uint32_t> osd_frame_generation{0};
+  std::atomic<bool> osd_healthy{false};
+  std::atomic<bool> osd_video_present{false};
+  std::atomic<uint8_t> osd_video_standard{
+      static_cast<uint8_t>(At7456eVideoStandard::Unknown)};
   uint8_t latest_buttons = 0;
   int8_t latest_encoder_delta = 0;
   bool latest_encoder_pressed = false;
@@ -556,7 +570,12 @@ UiHomeStatus current_home_status(
   home.outputs_enabled = safety.state == SafetyState::Enabled;
   home.module_online = module_state == ModuleState::Online;
   home.logging = app.logging_active.load(std::memory_order_acquire);
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  home.video_signal =
+      app.osd_video_present.load(std::memory_order_acquire);
+#else
   home.video_signal = true;
+#endif
   home.vrx_band = app.edit_model.vrx_band;
   home.vrx_channel = app.edit_model.vrx_channel;
 
@@ -670,6 +689,11 @@ UiHomeStatus current_home_status(
   if (model_dirty) {
     add_warning(UiWarningCode::ModelUnsaved);
   }
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  if (!home.video_signal) {
+    add_warning(UiWarningCode::VideoNoSignal);
+  }
+#endif
   if (app.backup_portal.running() || home.logging ||
       app.usb_simulator_enabled.load(std::memory_order_acquire) ||
       app.model_activation_state.load(std::memory_order_acquire) != 0) {
@@ -928,10 +952,146 @@ UiScreen current_screen(
   return make_oled_home_screen(app.edit_model, home);
 }
 
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+class LiveOpenPocketScreens final : public IOpenPocketScreenProvider {
+ public:
+  UiScreen screen(OpenPocketPage page) override
+  {
+    if (page == OpenPocketPage::Home) {
+      return make_openpocket_home_screen(app.edit_model, home);
+    }
+    if (page == OpenPocketPage::Video) {
+      return make_openpocket_video_screen(vrx);
+    }
+    AppScreen target = AppScreen::Home;
+    switch (page) {
+      case OpenPocketPage::Warnings:
+        target = AppScreen::Warnings;
+        break;
+      case OpenPocketPage::Models:
+        target = AppScreen::Models;
+        break;
+      case OpenPocketPage::Outputs:
+        target = AppScreen::Outputs;
+        break;
+      case OpenPocketPage::ModelSetup:
+        target = AppScreen::ModelSetup;
+        break;
+      case OpenPocketPage::Inputs:
+        target = AppScreen::Inputs;
+        break;
+      case OpenPocketPage::Mixes:
+        target = AppScreen::Mixes;
+        break;
+      case OpenPocketPage::Limits:
+        target = AppScreen::Limits;
+        break;
+      case OpenPocketPage::FlightModes:
+        target = AppScreen::FlightModes;
+        break;
+      case OpenPocketPage::Curves:
+        target = AppScreen::Curves;
+        break;
+      case OpenPocketPage::LogicalSwitches:
+        target = AppScreen::Logical;
+        break;
+      case OpenPocketPage::SpecialFunctions:
+        target = AppScreen::Special;
+        break;
+      case OpenPocketPage::Timers:
+        target = AppScreen::Timers;
+        break;
+      case OpenPocketPage::Elrs:
+        target = AppScreen::Elrs;
+        break;
+      case OpenPocketPage::Finder:
+        target = AppScreen::Finder;
+        break;
+      case OpenPocketPage::Usb:
+        target = AppScreen::Usb;
+        break;
+      case OpenPocketPage::Web:
+        target = AppScreen::Web;
+        break;
+      case OpenPocketPage::Telemetry:
+        target = AppScreen::Telemetry;
+        break;
+      case OpenPocketPage::Power:
+        target = AppScreen::Power;
+        break;
+      case OpenPocketPage::System:
+        target = AppScreen::System;
+        break;
+      case OpenPocketPage::Video:
+      case OpenPocketPage::Home:
+      case OpenPocketPage::MainMenu:
+      case OpenPocketPage::ModelMenu:
+      case OpenPocketPage::RadioMenu:
+      case OpenPocketPage::ElrsMenu:
+      case OpenPocketPage::VideoMenu:
+      case OpenPocketPage::UsbMenu:
+      case OpenPocketPage::DiagnosticsMenu:
+      case OpenPocketPage::SystemMenu:
+        return {};
+    }
+    return current_screen(target, frame, timers, telemetry, elrs, finder,
+                          safety, battery_state, battery_mv,
+                          battery_sensor_valid, home);
+  }
+
+  ControlInputs controls{};
+  ChannelFrame frame{};
+  std::array<TimerState, kMaxTimers> timers{};
+  std::array<TelemetryEntry, kMaxTelemetrySensors> telemetry{};
+  ElrsManagerStatus elrs{};
+  ElrsFinderStatus finder{};
+  SafetyStatus safety{};
+  UiHomeStatus home{};
+  VrxStatus vrx{};
+  BatteryState battery_state = BatteryState::Unknown;
+  uint16_t battery_mv = 0;
+  bool battery_sensor_valid = false;
+};
+
+AppScreen app_screen_for(OpenPocketPage page)
+{
+  switch (page) {
+    case OpenPocketPage::Warnings: return AppScreen::Warnings;
+    case OpenPocketPage::Models: return AppScreen::Models;
+    case OpenPocketPage::Outputs: return AppScreen::Outputs;
+    case OpenPocketPage::ModelSetup: return AppScreen::ModelSetup;
+    case OpenPocketPage::Inputs: return AppScreen::Inputs;
+    case OpenPocketPage::Mixes: return AppScreen::Mixes;
+    case OpenPocketPage::Limits: return AppScreen::Limits;
+    case OpenPocketPage::FlightModes: return AppScreen::FlightModes;
+    case OpenPocketPage::Curves: return AppScreen::Curves;
+    case OpenPocketPage::LogicalSwitches: return AppScreen::Logical;
+    case OpenPocketPage::SpecialFunctions: return AppScreen::Special;
+    case OpenPocketPage::Timers: return AppScreen::Timers;
+    case OpenPocketPage::Elrs: return AppScreen::Elrs;
+    case OpenPocketPage::Finder: return AppScreen::Finder;
+    case OpenPocketPage::Usb: return AppScreen::Usb;
+    case OpenPocketPage::Web: return AppScreen::Web;
+    case OpenPocketPage::Telemetry: return AppScreen::Telemetry;
+    case OpenPocketPage::Power: return AppScreen::Power;
+    case OpenPocketPage::System: return AppScreen::System;
+    case OpenPocketPage::Video: return AppScreen::Menu;
+    case OpenPocketPage::Home: return AppScreen::Home;
+    default: return AppScreen::Menu;
+  }
+}
+#endif
+
 bool run_startup_calibration()
 {
   CalibrationWizard wizard;
   wizard.begin(app.board.configured_axis_count());
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  CharacterOsdComposer calibration_osd;
+  UiHomeStatus calibration_home{};
+  VrxStatus calibration_vrx{};
+  app.osd.start(now_us());
+#endif
   bool previous_enter = false;
   bool previous_back = false;
   bool buttons_released = false;
@@ -962,9 +1122,17 @@ bool run_startup_calibration()
             : (step == CalibrationStep::MoveExtremes
                    ? 60
                    : (step == CalibrationStep::Review ? 90 : 100));
-    app.ui.set_screen(
-        make_calibration_screen(static_cast<uint8_t>(step), progress));
+    const UiScreen calibration_screen =
+        make_calibration_screen(static_cast<uint8_t>(step), progress);
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+    calibration_osd.compose(calibration_screen, calibration_home,
+                            calibration_vrx, 0, 0, false);
+    app.osd.submit(calibration_osd.frame());
+    app.osd.tick(now_us());
+#else
+    app.ui.set_screen(calibration_screen);
     (void)app.ui.render();
+#endif
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 
@@ -1028,6 +1196,11 @@ bool parse_slot_action(const std::string& id, const char* prefix,
 void ui_task(void*)
 {
   AppScreen screen = AppScreen::Home;
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  LiveOpenPocketScreens openpocket_screens;
+  OpenPocketMenuController openpocket_ui(openpocket_screens);
+  bool openpocket_started = false;
+#endif
   uint8_t previous_buttons = 0;
   bool previous_encoder_pressed = false;
   bool model_dirty = false;
@@ -1036,11 +1209,18 @@ void ui_task(void*)
   bool runtime_update_during_activation = false;
   bool runtime_update_requires_activation = false;
   bool usb_maintenance = false;
+#if !CONFIG_RIVETTX_OPENPOCKET_OSD
   bool screen_rendered = false;
   bool display_failed = false;
+#endif
   bool force_screen_rebuild = true;
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  (void)force_screen_rebuild;
+#endif
+#if !CONFIG_RIVETTX_OPENPOCKET_OSD
   AppScreen rendered_screen = AppScreen::Home;
   TimeUs next_live_refresh_us = 0;
+#endif
   TimeUs dirty_since_us = 0;
   while (true) {
     ControlInputs controls{};
@@ -1166,20 +1346,35 @@ void ui_task(void*)
     }
     if ((buttons & 0x0CU) != 0x0CU) {
       if ((pressed & 0x01U) != 0) {
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+        (void)openpocket_ui.handle({UiEventType::Up});
+#else
         (void)app.ui.handle({UiEventType::Up});
+#endif
       }
       if ((pressed & 0x02U) != 0) {
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+        (void)openpocket_ui.handle({UiEventType::Down});
+#else
         (void)app.ui.handle({UiEventType::Down});
+#endif
       }
       if ((pressed & 0x04U) != 0) {
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+        (void)openpocket_ui.handle({UiEventType::Enter});
+#else
         if (screen == AppScreen::Home) {
           screen = AppScreen::Menu;
           force_screen_rebuild = true;
         } else {
           (void)app.ui.handle({UiEventType::Enter});
         }
+#endif
       }
       if ((pressed & 0x08U) != 0) {
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+        (void)openpocket_ui.handle({UiEventType::Back});
+#else
         if (app.ui.editing()) {
           (void)app.ui.handle({UiEventType::Back});
         } else if (screen == AppScreen::Menu) {
@@ -1189,24 +1384,42 @@ void ui_task(void*)
           screen = AppScreen::Menu;
           force_screen_rebuild = true;
         }
+#endif
       }
     }
     if (encoder_delta != 0) {
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+      (void)openpocket_ui.handle({UiEventType::Rotate, encoder_delta});
+#else
       (void)app.ui.handle({UiEventType::Rotate, encoder_delta});
+#endif
     }
     if (encoder_press) {
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+      (void)openpocket_ui.handle({UiEventType::Enter});
+#else
       if (screen == AppScreen::Home) {
         screen = AppScreen::Menu;
         force_screen_rebuild = true;
       } else {
         (void)app.ui.handle({UiEventType::Enter});
       }
+#endif
     }
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+    screen = app_screen_for(openpocket_ui.page());
+#endif
     app.finder_enabled.store(
         screen == AppScreen::Finder, std::memory_order_release);
 
     UiChange change{};
-    while (app.ui.take_change(change)) {
+    while (
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+        openpocket_ui.take_change(change)
+#else
+        app.ui.take_change(change)
+#endif
+    ) {
       if (change.screen_id == "menu" &&
           menu_target(change.field_id, screen)) {
         force_screen_rebuild = true;
@@ -1435,6 +1648,39 @@ void ui_task(void*)
     const UiHomeStatus home = current_home_status(
         controls, frame, telemetry, safety, battery_state, battery_mv,
         battery_sensor_valid, module_state, model_dirty);
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+    openpocket_screens.controls = controls;
+    openpocket_screens.frame = frame;
+    openpocket_screens.timers = timers;
+    openpocket_screens.telemetry = telemetry;
+    openpocket_screens.elrs = elrs;
+    openpocket_screens.finder = finder;
+    openpocket_screens.safety = safety;
+    openpocket_screens.home = home;
+    openpocket_screens.battery_state = battery_state;
+    openpocket_screens.battery_mv = battery_mv;
+    openpocket_screens.battery_sensor_valid = battery_sensor_valid;
+    openpocket_screens.vrx.available = false;
+    openpocket_screens.vrx.signal_fresh = true;
+    openpocket_screens.vrx.video_signal = home.video_signal;
+    openpocket_screens.vrx.band = app.edit_model.vrx_band;
+    openpocket_screens.vrx.channel = app.edit_model.vrx_channel;
+    if (!openpocket_started) {
+      openpocket_ui.start(home, render_time);
+      openpocket_started = true;
+    } else {
+      openpocket_ui.refresh(home, render_time);
+    }
+    (void)openpocket_ui.render(openpocket_screens.vrx);
+    taskENTER_CRITICAL(&app.osd_frame_lock);
+    app.pending_osd_frame = openpocket_ui.frame();
+    taskEXIT_CRITICAL(&app.osd_frame_lock);
+    app.osd_frame_generation.fetch_add(1, std::memory_order_release);
+    screen = app_screen_for(openpocket_ui.page());
+    app.finder_enabled.store(
+        screen == AppScreen::Finder, std::memory_order_release);
+    force_screen_rebuild = false;
+#else
     const bool screen_changed =
         !screen_rendered || rendered_screen != screen;
     bool rebuild = force_screen_rebuild || screen_changed;
@@ -1472,11 +1718,17 @@ void ui_task(void*)
       ESP_LOGI(kTag, "display refresh recovered");
     }
     display_failed = !rendered;
+#endif
     if (app.screenshot_requested.exchange(false,
                                           std::memory_order_acq_rel) &&
         app.safety.begin_maintenance()) {
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+      const auto& cells = openpocket_ui.frame().cells;
+      const std::vector<uint8_t> image(cells.begin(), cells.end());
+#else
       const auto& buffer = app.canvas.buffer();
       const std::vector<uint8_t> image(buffer.begin(), buffer.end());
+#endif
       if (!app.files.write("screenshot.mono", image) ||
           !app.files.sync("screenshot.mono")) {
         ESP_LOGE(kTag, "screenshot write or sync failed");
@@ -1589,6 +1841,42 @@ void service_task(void*)
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
+
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+void osd_task(void*)
+{
+  uint32_t rendered_generation = 0;
+  bool previous_healthy = false;
+  app.osd.start(now_us());
+  while (true) {
+    const uint32_t generation =
+        app.osd_frame_generation.load(std::memory_order_acquire);
+    if (generation != 0 && generation != rendered_generation) {
+      CharacterOsdFrame frame{};
+      taskENTER_CRITICAL(&app.osd_frame_lock);
+      frame = app.pending_osd_frame;
+      taskEXIT_CRITICAL(&app.osd_frame_lock);
+      app.osd.submit(frame);
+      rendered_generation = generation;
+    }
+    app.osd.tick(now_us());
+    const At7456eStatus& status = app.osd.status();
+    app.osd_healthy.store(status.healthy, std::memory_order_release);
+    app.osd_video_present.store(status.video_present,
+                                std::memory_order_release);
+    app.osd_video_standard.store(
+        static_cast<uint8_t>(status.standard), std::memory_order_release);
+    if (status.healthy != previous_healthy) {
+      ESP_LOGI(kTag, "AT7456E %s (video=%s, standard=%u)",
+               status.healthy ? "ready" : "unavailable",
+               status.video_present ? "present" : "missing",
+               static_cast<unsigned>(status.standard));
+      previous_healthy = status.healthy;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+#endif
 
 void usb_task(void*)
 {
@@ -1724,7 +2012,11 @@ extern "C" void app_main()
       startup_inputs.switches[0] && startup_inputs.switches[1] &&
       startup_inputs.switches[3];
   bool storage_ok = initialize_storage(storage_format_requested);
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  const bool display_ok = pins_ok && app.osd_spi.initialize();
+#else
   const bool display_ok = pins_ok && app.display.initialize();
+#endif
   const bool usb_ok =
       !app.usb_gamepad.supported() || app.usb_gamepad.initialize();
   if (pins_ok) {
@@ -1771,6 +2063,15 @@ extern "C" void app_main()
           : pdFAIL;
   const BaseType_t service_created = xTaskCreatePinnedToCore(
       service_task, "rivet-service", 5120, nullptr, 3, nullptr, kServiceCore);
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  const BaseType_t osd_created =
+      display_ok
+          ? xTaskCreatePinnedToCore(osd_task, "rivet-osd", 3072, nullptr, 4,
+                                    nullptr, kServiceCore)
+          : pdFAIL;
+#else
+  const BaseType_t osd_created = pdPASS;
+#endif
   const BaseType_t usb_created =
       app.usb_gamepad.supported()
           ? (usb_ok
@@ -1788,6 +2089,7 @@ extern "C" void app_main()
   self_test.control_task = control_created == pdPASS &&
                            ui_created == pdPASS &&
                            service_created == pdPASS &&
+                           osd_created == pdPASS &&
                            usb_created == pdPASS;
   ModuleState runtime_module_state = ModuleState::Starting;
   if (self_test.control_task) {
@@ -1802,6 +2104,10 @@ extern "C" void app_main()
       vTaskDelay(pdMS_TO_TICKS(20));
     }
   }
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  self_test.display = self_test.display &&
+                      app.osd_healthy.load(std::memory_order_acquire);
+#endif
   self_test.control_runtime =
       app.healthy_control_cycles.load(std::memory_order_relaxed) >= 20;
   switch (runtime_module_state) {

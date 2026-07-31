@@ -115,21 +115,33 @@ watchdog recovery, battery sensor/level, module/link, logging, unsaved model
 and maintenance.
 
 The VRX controller and 30×16 analog OSD compositor are platform-independent.
-The OSD presentation has a dedicated Home → grouped Menu → Detail flow over
-the shared `UiScreen` model. It owns character-cell selection, twelve-row
-scrolling and transactional editing: ENTER confirms a staged value and BACK
-restores it. It does not instantiate or mirror the OLED renderer.
+OpenPocket Home is a flying HUD: battery and link quality occupy the upper
+corners, ARM state and VRX band/channel occupy row 12, and the
+center remains clear during normal flight. The controller prioritizes startup
+and critical warnings in the center until their live cause resolves. A normal
+notification is centered for four seconds and is then suppressed until it
+resolves or changes. This timing state belongs only to OpenPocket and does not
+alter the OLED warning presentation.
+
+ENTER opens the grouped Menu → Detail flow over the shared `UiScreen` model.
+It owns character-cell selection, ten-row scrolling and transactional
+editing. BACK and `Home` are global escape actions that discard the menu stack
+and return immediately to the flying HUD. It does not instantiate or mirror
+the OLED renderer.
 
 The fixed-capacity OpenPocket navigation stack exposes all Model, Radio,
 ExpressLRS, Video, USB, Diagnostics and System detail routes. Encoder rotation
-and UP/DOWN move the same selection; ENTER opens or confirms. BACK cancels an
-active edit, otherwise it pops one level. A `Home` event clears the stack and
-returns directly to status; target hardware may map that event to a dedicated
-key or documented long press.
+and UP/DOWN move the same selection; ENTER opens or confirms. BACK and `Home`
+clear the stack and return directly to the HUD; target hardware may map Home
+to a dedicated key or documented long press.
 
-The compositor does not access SPI or video hardware itself. The selected
-production VRX and AT7456E-class device must implement those target interfaces
-after the schematic and pinout are frozen.
+The compositor does not access SPI or video hardware itself. A low-priority
+AT7456E task snapshots its frame and advances an asynchronous SPI state
+machine by at most one transaction per tick. The backend maintains a hardware
+shadow, coalesces adjacent changed cells, polls LOS/PAL/NTSC, limits NTSC to
+the 30×13 safe area, invalidates the shadow after reset/standard/recovery, and
+backs off after transport failure. Custom 54-byte glyph NVM uploads use the
+same state machine and never execute in the control or CRSF path.
 
 ## Updates and recovery
 

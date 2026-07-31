@@ -266,6 +266,37 @@ UiScreen make_openpocket_video_screen(const VrxStatus& vrx)
   return screen;
 }
 
+bool openpocket_warning_is_persistent(UiWarningCode warning)
+{
+  switch (warning) {
+    case UiWarningCode::StorageInvalid:
+    case UiWarningCode::CalibrationRequired:
+    case UiWarningCode::InputInvalid:
+    case UiWarningCode::InputStale:
+    case UiWarningCode::ThrottleHigh:
+    case UiWarningCode::ArmSwitch:
+    case UiWarningCode::SwitchPosition:
+    case UiWarningCode::MixerDeadline:
+    case UiWarningCode::WatchdogRecovery:
+    case UiWarningCode::WatchdogUnavailable:
+    case UiWarningCode::BatteryCritical:
+    case UiWarningCode::BatterySensor:
+    case UiWarningCode::ModuleOffline:
+    case UiWarningCode::LinkLost:
+    case UiWarningCode::LinkCritical:
+      return true;
+    case UiWarningCode::None:
+    case UiWarningCode::BatteryLow:
+    case UiWarningCode::LinkWeak:
+    case UiWarningCode::LoggingFailed:
+    case UiWarningCode::ModelUnsaved:
+    case UiWarningCode::Maintenance:
+    case UiWarningCode::VideoNoSignal:
+      return false;
+  }
+  return false;
+}
+
 void CharacterOsdComposer::clear()
 {
   frame_.cells.fill(' ');
@@ -295,6 +326,13 @@ void CharacterOsdComposer::text(std::size_t column, std::size_t row,
   for (std::size_t index = 0; index < count; ++index) {
     frame_.cells[row * kOsdColumns + column + index] = value[index];
   }
+}
+
+void CharacterOsdComposer::center_text(std::size_t row,
+                                       const std::string& value)
+{
+  const std::size_t length = std::min(value.size(), kOsdColumns);
+  text((kOsdColumns - length) / 2, row, value, length);
 }
 
 void CharacterOsdComposer::right_text(std::size_t row, const char* value)
@@ -341,56 +379,45 @@ void CharacterOsdComposer::compose_home(
     const UiScreen& screen, const UiHomeStatus& home,
     const VrxStatus& vrx)
 {
-  text(0, 0, screen.title, 20);
-  right_text(0, home.outputs_enabled ? "LIVE" : "SAFE");
-  text(0, 1, "------------------------------");
-
-  text(0, 3, "ELRS");
-  text(6, 3, home.module_online ? "ONLINE" : "OFFLINE");
-  text(18, 3, "LQ");
-  number(21, 3, home.link_quality);
-  text(25, 3, "%");
-
-  text(0, 5, "TX BAT");
-  number(7, 5, home.battery_mv);
-  text(12, 5, "MV");
+  (void)screen;
+  text(0, 0, "BAT ");
   if (home.battery_percent_valid) {
-    number(18, 5, home.battery_percent);
-    text(21, 5, "%");
-  }
-
-  char vrx_line[30]{};
-  if (vrx.available) {
-    (void)std::snprintf(
-        vrx_line, sizeof(vrx_line), "VRX B%u CH%u %uMHZ",
-        static_cast<unsigned>(vrx.band + 1),
-        static_cast<unsigned>(vrx.channel + 1),
-        static_cast<unsigned>(vrx.frequency_mhz));
+    number(4, 0, home.battery_percent);
+    text(home.battery_percent >= 100 ? 7 : (home.battery_percent >= 10 ? 6 : 5),
+         0, "%");
   } else {
-    (void)std::snprintf(vrx_line, sizeof(vrx_line), "VRX NOT AVAILABLE");
-  }
-  text(0, 7, vrx_line);
-  text(0, 8,
-       vrx.scanning
-           ? "VIDEO SCANNING"
-           : (vrx.video_signal ? "VIDEO SIGNAL OK" : "VIDEO NO SIGNAL"));
-
-  text(0, 10, "WARNING");
-  text(9, 10,
-       home.warning_count == 0
-           ? "NONE"
-           : ui_warning_text(home.warnings[0]));
-  if (home.warning_count > 1) {
-    text(9, 11, "+");
-    number(10, 11, static_cast<int32_t>(home.warning_count - 1));
-    text(13, 11, "MORE");
+    number(4, 0, home.battery_mv);
+    text(8, 0, "MV");
   }
 
-  text(0, 13, "ARM CH5");
-  text(9, 13, home.channels[4] > 0 ? "HIGH" : "LOW");
-  number(15, 13, home.channels[4]);
-  text(0, 15, "ENTER MENU");
-  right_text(15, "RIVETTX");
+  char link[12]{};
+  if (home.module_online) {
+    (void)std::snprintf(link, sizeof(link), "LQ %u%%",
+                        static_cast<unsigned>(home.link_quality));
+  } else {
+    (void)std::snprintf(link, sizeof(link), "LQ --");
+  }
+  right_text(0, link);
+
+  if (home.warning_count != 0) {
+    center_text(7, std::string("! ") +
+                       ui_warning_text(home.warnings[0]) + " !");
+    if (home.warning_count > 1) {
+      center_text(8, "+" + std::to_string(home.warning_count - 1) +
+                         " MORE");
+    }
+  }
+
+  text(0, 12, home.channels[4] > 0 ? "ARMED" : "DISARMED");
+  char vrx_channel[16]{};
+  if (vrx.available) {
+    (void)std::snprintf(vrx_channel, sizeof(vrx_channel), "VRX B%u CH%u",
+                        static_cast<unsigned>(vrx.band + 1),
+                        static_cast<unsigned>(vrx.channel + 1));
+  } else {
+    (void)std::snprintf(vrx_channel, sizeof(vrx_channel), "VRX --");
+  }
+  right_text(12, vrx_channel);
 }
 
 void CharacterOsdComposer::compose_list(
@@ -398,7 +425,7 @@ void CharacterOsdComposer::compose_list(
     std::size_t selected_index, std::size_t scroll_offset,
     bool editing)
 {
-  constexpr std::size_t kVisibleRows = 12;
+  constexpr std::size_t kVisibleRows = kOpenPocketListRows;
   text(0, 0, screen.title, 20);
   right_text(0, editing ? "EDIT"
                        : (home.outputs_enabled ? "LIVE" : "SAFE"));
@@ -441,15 +468,15 @@ void CharacterOsdComposer::compose_list(
     frame_.cells[2 * kOsdColumns + 29] = '^';
   }
   if (scroll_offset + kVisibleRows < visible_count) {
-    frame_.cells[13 * kOsdColumns + 29] = 'v';
+    frame_.cells[11 * kOsdColumns + 29] = 'v';
   }
   char position[24]{};
   (void)std::snprintf(
       position, sizeof(position), "%u/%u",
       static_cast<unsigned>(visible_count == 0 ? 0 : selected_visible + 1),
       static_cast<unsigned>(visible_count));
-  text(0, 14, position);
-  right_text(14, home.module_online ? "ELRS OK" : "ELRS LOST");
+  text(0, 12, position);
+  right_text(12, home.module_online ? "ELRS OK" : "ELRS LOST");
   text(0, 15,
        editing ? "ROTATE CHANGE ENTER SAVE"
                : "ENTER SELECT  BACK");
@@ -557,7 +584,7 @@ void CharacterOsdUi::move_selection(int direction, int steps)
 
 void CharacterOsdUi::keep_selection_visible()
 {
-  constexpr std::size_t kVisibleRows = 12;
+  constexpr std::size_t kVisibleRows = kOpenPocketListRows;
   std::size_t selected_visible = 0;
   for (std::size_t index = 0; index < selected_index_ &&
                               index < screen_.fields.size(); ++index) {
@@ -749,21 +776,91 @@ UiScreen OpenPocketMenuController::screen_for(OpenPocketPage page)
   }
 }
 
-void OpenPocketMenuController::start(const UiHomeStatus& home)
+void OpenPocketMenuController::start(const UiHomeStatus& home,
+                                     TimeUs now_us)
 {
   home_ = home;
+  notification_warning_ = UiWarningCode::None;
+  notification_started_us_ = now_us;
+  notification_seen_ = false;
+  update_hud_warning(now_us);
   history_size_ = 0;
   page_ = OpenPocketPage::Home;
   ui_.set_screen(screen_for(page_));
-  ui_.update_home(home_);
+  update_ui_home();
   change_pending_ = false;
 }
 
-void OpenPocketMenuController::refresh(const UiHomeStatus& home)
+void OpenPocketMenuController::refresh(const UiHomeStatus& home,
+                                       TimeUs now_us)
 {
   home_ = home;
+  update_hud_warning(now_us);
   ui_.set_screen(screen_for(page_));
-  ui_.update_home(home_);
+  update_ui_home();
+}
+
+void OpenPocketMenuController::update_hud_warning(TimeUs now_us)
+{
+  hud_home_ = home_;
+  hud_home_.warnings.fill(UiWarningCode::None);
+  hud_home_.warning_count = 0;
+
+  UiWarningCode persistent = UiWarningCode::None;
+  UiWarningCode notification = UiWarningCode::None;
+  const std::size_t warning_count = std::min<std::size_t>(
+      home_.warning_count, home_.warnings.size());
+  for (std::size_t index = 0; index < warning_count; ++index) {
+    const UiWarningCode warning = home_.warnings[index];
+    if (warning == UiWarningCode::None) {
+      continue;
+    }
+    if (persistent == UiWarningCode::None &&
+        openpocket_warning_is_persistent(warning)) {
+      persistent = warning;
+    } else if (notification == UiWarningCode::None &&
+               !openpocket_warning_is_persistent(warning)) {
+      notification = warning;
+    }
+  }
+
+  UiWarningCode displayed = persistent;
+  if (persistent != UiWarningCode::None) {
+    notification_warning_ = UiWarningCode::None;
+    notification_seen_ = false;
+  } else if (notification == UiWarningCode::None) {
+    notification_warning_ = UiWarningCode::None;
+    notification_seen_ = false;
+  } else {
+    if (!notification_seen_ || notification != notification_warning_ ||
+        now_us < notification_started_us_) {
+      notification_warning_ = notification;
+      notification_started_us_ = now_us;
+      notification_seen_ = true;
+    }
+    if (now_us - notification_started_us_ <
+        kOpenPocketNotificationDurationUs) {
+      displayed = notification;
+    }
+  }
+
+  if (displayed == UiWarningCode::None) {
+    return;
+  }
+  hud_home_.warnings[hud_home_.warning_count++] = displayed;
+  for (std::size_t index = 0;
+       index < warning_count &&
+       hud_home_.warning_count < hud_home_.warnings.size(); ++index) {
+    const UiWarningCode warning = home_.warnings[index];
+    if (warning != UiWarningCode::None && warning != displayed) {
+      hud_home_.warnings[hud_home_.warning_count++] = warning;
+    }
+  }
+}
+
+void OpenPocketMenuController::update_ui_home()
+{
+  ui_.update_home(page_ == OpenPocketPage::Home ? hud_home_ : home_);
 }
 
 bool OpenPocketMenuController::route(
@@ -844,18 +941,7 @@ void OpenPocketMenuController::navigate(OpenPocketPage target)
   }
   page_ = target;
   ui_.set_screen(screen_for(page_));
-  ui_.update_home(home_);
-}
-
-void OpenPocketMenuController::go_back()
-{
-  if (history_size_ == 0) {
-    go_home();
-    return;
-  }
-  page_ = history_[--history_size_];
-  ui_.set_screen(screen_for(page_));
-  ui_.update_home(home_);
+  update_ui_home();
 }
 
 void OpenPocketMenuController::go_home()
@@ -863,12 +949,12 @@ void OpenPocketMenuController::go_home()
   history_size_ = 0;
   page_ = OpenPocketPage::Home;
   ui_.set_screen(screen_for(page_));
-  ui_.update_home(home_);
+  update_ui_home();
 }
 
 bool OpenPocketMenuController::handle(const UiEvent& event)
 {
-  if (event.type == UiEventType::Home) {
+  if (event.type == UiEventType::Home || event.type == UiEventType::Back) {
     go_home();
     return true;
   }
@@ -882,9 +968,6 @@ bool OpenPocketMenuController::handle(const UiEvent& event)
       pending_change_ = change;
       change_pending_ = true;
     }
-  }
-  if (ui_.take_back_request()) {
-    go_back();
   }
   return handled;
 }

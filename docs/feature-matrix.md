@@ -14,7 +14,7 @@ hardware evidence.
 | Finder | active-antenna RSSI, one-second freshness gate, integer smoothing, dBm/bar display, signal-rate buzzer | native virtual-telemetry and tone tests; RF search test pending |
 | audio alerts | fixed-allocation priority sequencer; link weak/critical/lost/recovered, module loss/recovery, TX battery low/critical, safety transitions, telemetry alarms, Finder and Lua | native pattern/pre-emption/policy tests plus audible disconnect simulation; buzzer hardware pending |
 | OLED UI | standalone RivetTX home with two live gimbal plots, link/battery/ELRS status, prioritized warning banner/list, persistent EDIT indicator, Home → Menu → Detail navigation, scrolling/editing and touch events; it does not expose or claim the OpenPocket VRX/OSD menu | 128×64, 240×135, and 480×320 simulator renders plus native tests; target display endurance pending |
-| displays | mutually exclusive presentation profiles: standalone SSD1306 OLED or OpenPocket analog character OSD; a product must never initialize both | OLED driver and three virtual OLED profiles exist; physical OpenPocket OSD driver and target HIL remain pending |
+| displays | mutually exclusive presentation profiles: standalone SSD1306 OLED or OpenPocket AT7456E analog character OSD; configurable async SPI/CS, PAL/NTSC autodetection, 30×16 PAL and 30×13 NTSC, delta runs, LOS/standard recovery, retry/backoff and staged custom-glyph NVM uploads | OLED and AT7456E drivers plus native fake-SPI tests; target composite-video HIL remains pending |
 | Lua | real Lua 5.5, allocator ceiling, instruction budgets for load/init/runtime, restricted libraries and script paths, LCD/model/telemetry/CRSF APIs, active `RSSI`, telemetry-age query, and bounded tone output | ESP32-C3/S3 target builds; real buzzer/script test pending |
 | storage/models | versioned schema, CRC and migration; 32 transactional model slots; active-index recovery; create, copy, select, delete, import/export; verified mirror recovery without automatic formatting | native corruption, migration, library and recovery tests; target power-cut/storage-full campaign pending |
 | diagnostics | bounded event ring, crash snapshot, reset reason and ESP core-dump partition | native tests; reset injection pending |
@@ -22,7 +22,7 @@ hardware evidence.
 | battery/power | synchronized validated ADC snapshot, calibrated divider scaling, fail-closed sensor faults, hysteresis, voltage-based percentage fallback, alarms and inactivity/shutdown policy | native policy/fault tests; real charger, fuel gauge, latch and divider validation pending |
 | backup/recovery | locked-only Wi-Fi page for active-model export/verified restore, boot-failure counter, held-button recovery | codec/library tests; complete web configurator and portal hardware pending |
 | USB simulator | native ESP32-S3 TinyUSB HID gamepad, four gimbals plus four analog controls and switch buttons, output lock and per-model RF lock; C3 explicitly unsupported | host policy tests and S3 CI build; Windows/Linux/macOS and simulator compatibility pending |
-| OpenPocket VRX/video OSD | non-blocking 6×8 frequency controller and scan state machine, RSSI/video-loss state, fixed 30×16 Home → seven-group Menu → all 20 Detail routes, bounded back-stack/Home action, selection, twelve-row scrolling, transactional EDIT/cancel, and editable VRX band/channel/scan scene; this is the OpenPocket presentation instead of OLED | exhaustive native route tests and deterministic renders for every group/detail plus selection, clipping and error states; no physical VRX or AT7456E-class driver until the OpenPocket hardware profile is frozen |
+| OpenPocket VRX/video OSD | non-blocking 6×8 frequency controller and scan state machine, minimal 30×16 flying HUD with all essential content in rows 0–12, centered persistent startup/critical warnings, four-second normal notifications, ENTER menu access, global BACK/Home escape, seven menu groups, all 20 Detail routes, selection, ten-row scrolling, transactional EDIT, editable VRX band/channel/scan scene, and physical AT7456E frame output | native tests cover PAL, NTSC, HUD/warnings, every menu route, changed-cell writes, glyph upload, video loss/recovery, standard change, SPI failure and timeout; deterministic renders cover all HUD/menu states; VRX hardware and target composite HIL remain pending |
 | onboarding | automatic missing-calibration entry and bounded first-run state machine for calibration, ARM/AUX, ELRS, optional video, battery and CH5-low preview | native state-machine tests; the post-calibration UI flow remains to be connected |
 | update/boot | ESP-IDF bootloader, A/B OTA, HTTPS, manifest gates, post-boot self-test, rollback, Secure Boot V2 production config | mock OTA tests; signed-device drill pending |
 | development | deterministic virtual hardware simulator, JSON report, PBM outputs, strict-warning tests, ASan/UBSan, dual ESP-IDF target builds with firmware headroom gates | host, ESP32-C3, and ESP32-S3 CI verified |
@@ -34,12 +34,13 @@ hardware evidence.
 - Model edits and model selection are saved only while outputs are locked.
   The control task atomically replaces the runtime model, resets mixer state,
   keeps CH5 low, and releases maintenance only after the hand-off completes.
-- The current physical display driver is monochrome SSD1306. Adding a display
-  means implementing a sink/canvas backend and declaring its capabilities; the
-  screen data and responsive layout do not depend on 128x64 coordinates.
+- Physical presentation is selected at build time: SSD1306 for standalone or
+  AT7456E for OpenPocket. The latter consumes the character compositor rather
+  than the pixel-canvas sink.
 - The pass-through and update services have safe core/platform APIs, but a
   production product should choose its authenticated USB or maintenance UI
   workflow after the PCB is fixed.
-- The VRX scanner and analog character compositor are hardware-independent
-  cores, not proof of a working video path. A product claim requires the exact
-  tuner, OSD IC, routing, NTSC/PAL behavior and target-PCB HIL evidence.
+- The VRX scanner and analog character compositor remain hardware-independent.
+  Native AT7456E register tests are not proof of analog signal integrity; a
+  product claim still requires the exact tuner, OSD revision, routing and
+  target-PCB PAL/NTSC HIL evidence.

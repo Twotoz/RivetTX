@@ -1,5 +1,6 @@
 idf_component_register(
   SRCS
+    "at7456e.cpp"
     "audio.cpp"
     "core.cpp"
     "crsf.cpp"

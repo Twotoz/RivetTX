@@ -4,6 +4,7 @@ CPPFLAGS := -Icomponents/rivet_core/include -Isimulator
 BUILD := build
 SANITIZE_BUILD := $(BUILD)/sanitize
 CORE := \
+	components/rivet_core/at7456e.cpp \
 	components/rivet_core/audio.cpp \
 	components/rivet_core/core.cpp \
 	components/rivet_core/crsf.cpp \

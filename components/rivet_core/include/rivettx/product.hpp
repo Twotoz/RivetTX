@@ -59,6 +59,9 @@ class VrxController {
 
 constexpr std::size_t kOsdColumns = 30;
 constexpr std::size_t kOsdRows = 16;
+constexpr std::size_t kOpenPocketSafeRows = 13;
+constexpr std::size_t kOpenPocketListRows = 10;
+constexpr TimeUs kOpenPocketNotificationDurationUs = 4000000;
 
 struct CharacterOsdFrame {
   std::array<char, kOsdColumns * kOsdRows> cells{};
@@ -81,6 +84,7 @@ UiScreen make_openpocket_home_screen(const Model& model,
 UiScreen make_openpocket_main_menu_screen();
 UiScreen make_openpocket_group_menu_screen(OpenPocketMenuGroup group);
 UiScreen make_openpocket_video_screen(const VrxStatus& vrx);
+bool openpocket_warning_is_persistent(UiWarningCode warning);
 
 class CharacterOsdComposer {
  public:
@@ -96,6 +100,7 @@ class CharacterOsdComposer {
   void text(std::size_t column, std::size_t row, const char* value);
   void text(std::size_t column, std::size_t row, const std::string& value,
             std::size_t maximum);
+  void center_text(std::size_t row, const std::string& value);
   void right_text(std::size_t row, const char* value);
   void number(std::size_t column, std::size_t row, int32_t value);
   void compose_home(const UiScreen& screen, const UiHomeStatus& home,
@@ -182,8 +187,8 @@ class OpenPocketMenuController {
  public:
   explicit OpenPocketMenuController(IOpenPocketScreenProvider& screens);
 
-  void start(const UiHomeStatus& home);
-  void refresh(const UiHomeStatus& home);
+  void start(const UiHomeStatus& home, TimeUs now_us = 0);
+  void refresh(const UiHomeStatus& home, TimeUs now_us = 0);
   bool handle(const UiEvent& event);
   bool render(const VrxStatus& vrx);
   bool take_change(UiChange& change);
@@ -199,15 +204,20 @@ class OpenPocketMenuController {
   UiScreen screen_for(OpenPocketPage page);
   bool route(const UiChange& change, OpenPocketPage& target) const;
   void navigate(OpenPocketPage target);
-  void go_back();
   void go_home();
+  void update_hud_warning(TimeUs now_us);
+  void update_ui_home();
 
   IOpenPocketScreenProvider& screens_;
   CharacterOsdUi ui_{};
   UiHomeStatus home_{};
+  UiHomeStatus hud_home_{};
   std::array<OpenPocketPage, 4> history_{};
   std::size_t history_size_ = 0;
   OpenPocketPage page_ = OpenPocketPage::Home;
+  UiWarningCode notification_warning_ = UiWarningCode::None;
+  TimeUs notification_started_us_ = 0;
+  bool notification_seen_ = false;
   UiChange pending_change_{};
   bool change_pending_ = false;
 };

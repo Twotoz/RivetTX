@@ -10,6 +10,7 @@
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "driver/spi_master.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
@@ -19,6 +20,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
+#include "esp_rom_sys.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
@@ -85,12 +87,19 @@ TimeUs now_us()
 
 bool validate_pin_configuration()
 {
-  const std::array<int, 36> pins{
+  std::array<int, 41> pins{};
+  pins.fill(-1);
+  std::size_t pin_count = 0;
+  const auto add_pin = [&pins, &pin_count](int pin) {
+    if (pin_count < pins.size()) {
+      pins[pin_count++] = pin;
+    }
+  };
+  const std::array<int, 34> common_pins{
       CONFIG_RIVETTX_AXIS0_GPIO,      CONFIG_RIVETTX_AXIS1_GPIO,
       CONFIG_RIVETTX_AXIS2_GPIO,      CONFIG_RIVETTX_AXIS3_GPIO,
       CONFIG_RIVETTX_AXIS4_GPIO,      CONFIG_RIVETTX_AXIS5_GPIO,
       CONFIG_RIVETTX_AXIS6_GPIO,      CONFIG_RIVETTX_AXIS7_GPIO,
-      CONFIG_RIVETTX_I2C_SDA,         CONFIG_RIVETTX_I2C_SCL,
       CONFIG_RIVETTX_CRSF_TX,         CONFIG_RIVETTX_CRSF_RX,
       CONFIG_RIVETTX_BUTTON_UP,       CONFIG_RIVETTX_BUTTON_DOWN,
       CONFIG_RIVETTX_BUTTON_ENTER,    CONFIG_RIVETTX_BUTTON_BACK,
@@ -108,7 +117,27 @@ bool validate_pin_configuration()
       CONFIG_RIVETTX_TRIM_RUD_NEG_GPIO,
       CONFIG_RIVETTX_TRIM_RUD_POS_GPIO,
       CONFIG_RIVETTX_BATTERY_GPIO,    CONFIG_RIVETTX_BUZZER_GPIO};
-  for (std::size_t index = 0; index < pins.size(); ++index) {
+  for (const int pin : common_pins) {
+    add_pin(pin);
+  }
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  add_pin(CONFIG_RIVETTX_AT7456E_SCLK_GPIO);
+  add_pin(CONFIG_RIVETTX_AT7456E_MOSI_GPIO);
+  add_pin(CONFIG_RIVETTX_AT7456E_MISO_GPIO);
+  add_pin(CONFIG_RIVETTX_AT7456E_CS_GPIO);
+  add_pin(CONFIG_RIVETTX_AT7456E_RESET_GPIO);
+  if (CONFIG_RIVETTX_AT7456E_SCLK_GPIO < 0 ||
+      CONFIG_RIVETTX_AT7456E_MOSI_GPIO < 0 ||
+      CONFIG_RIVETTX_AT7456E_MISO_GPIO < 0 ||
+      CONFIG_RIVETTX_AT7456E_CS_GPIO < 0) {
+    ESP_LOGE(kTag, "OpenPocket requires SCLK, MOSI, MISO and CS GPIOs");
+    return false;
+  }
+#else
+  add_pin(CONFIG_RIVETTX_I2C_SDA);
+  add_pin(CONFIG_RIVETTX_I2C_SCL);
+#endif
+  for (std::size_t index = 0; index < pin_count; ++index) {
     const int pin = pins[index];
     if (pin < 0) {
       continue;
@@ -118,7 +147,7 @@ bool validate_pin_configuration()
                CONFIG_IDF_TARGET);
       return false;
     }
-    for (std::size_t other = index + 1; other < pins.size(); ++other) {
+    for (std::size_t other = index + 1; other < pin_count; ++other) {
       if (pins[other] == pin) {
         ESP_LOGE(kTag, "GPIO %d is assigned more than once", pin);
         return false;
@@ -155,9 +184,18 @@ bool validate_pin_configuration()
     return false;
   }
 
-  const std::array<int, 4> output_pins{
-      CONFIG_RIVETTX_I2C_SDA, CONFIG_RIVETTX_I2C_SCL,
-      CONFIG_RIVETTX_CRSF_TX, CONFIG_RIVETTX_BUZZER_GPIO};
+  std::array<int, 6> output_pins{
+      CONFIG_RIVETTX_CRSF_TX, CONFIG_RIVETTX_BUZZER_GPIO,
+      -1, -1, -1, -1};
+#if CONFIG_RIVETTX_OPENPOCKET_OSD
+  output_pins[2] = CONFIG_RIVETTX_AT7456E_SCLK_GPIO;
+  output_pins[3] = CONFIG_RIVETTX_AT7456E_MOSI_GPIO;
+  output_pins[4] = CONFIG_RIVETTX_AT7456E_CS_GPIO;
+  output_pins[5] = CONFIG_RIVETTX_AT7456E_RESET_GPIO;
+#else
+  output_pins[2] = CONFIG_RIVETTX_I2C_SDA;
+  output_pins[3] = CONFIG_RIVETTX_I2C_SCL;
+#endif
   for (const int pin : output_pins) {
     if (pin >= 0 && !GPIO_IS_VALID_OUTPUT_GPIO(pin)) {
       ESP_LOGE(kTag, "GPIO %d cannot drive an output on target %s", pin,
@@ -166,6 +204,115 @@ bool validate_pin_configuration()
     }
   }
   return true;
+}
+
+bool EspAt7456eSpi::initialize()
+{
+#if !CONFIG_RIVETTX_OPENPOCKET_OSD
+  return false;
+#else
+  if (device_ != nullptr) {
+    return true;
+  }
+  if (CONFIG_RIVETTX_AT7456E_RESET_GPIO >= 0) {
+    gpio_config_t reset_config{};
+    reset_config.pin_bit_mask =
+        1ULL << CONFIG_RIVETTX_AT7456E_RESET_GPIO;
+    reset_config.mode = GPIO_MODE_OUTPUT;
+    if (gpio_config(&reset_config) != ESP_OK ||
+        gpio_set_level(static_cast<gpio_num_t>(
+                           CONFIG_RIVETTX_AT7456E_RESET_GPIO),
+                       0) != ESP_OK) {
+      return false;
+    }
+    esp_rom_delay_us(50000);
+    if (gpio_set_level(static_cast<gpio_num_t>(
+                           CONFIG_RIVETTX_AT7456E_RESET_GPIO),
+                       1) != ESP_OK) {
+      return false;
+    }
+    esp_rom_delay_us(100);
+  }
+
+  spi_bus_config_t bus{};
+  bus.mosi_io_num = CONFIG_RIVETTX_AT7456E_MOSI_GPIO;
+  bus.miso_io_num = CONFIG_RIVETTX_AT7456E_MISO_GPIO;
+  bus.sclk_io_num = CONFIG_RIVETTX_AT7456E_SCLK_GPIO;
+  bus.quadwp_io_num = -1;
+  bus.quadhd_io_num = -1;
+  bus.max_transfer_sz = 64;
+  const esp_err_t bus_result =
+      spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_DISABLED);
+  if (bus_result != ESP_OK) {
+    ESP_LOGE(kTag, "AT7456E SPI bus init failed: %s",
+             esp_err_to_name(bus_result));
+    return false;
+  }
+
+  spi_device_interface_config_t device_config{};
+  device_config.mode = 0;
+  device_config.clock_speed_hz = CONFIG_RIVETTX_AT7456E_SPI_CLOCK_HZ;
+  device_config.spics_io_num = CONFIG_RIVETTX_AT7456E_CS_GPIO;
+  device_config.queue_size = 1;
+  device_config.cs_ena_pretrans =
+      CONFIG_RIVETTX_AT7456E_CS_SETUP_CYCLES;
+  device_config.cs_ena_posttrans =
+      CONFIG_RIVETTX_AT7456E_CS_HOLD_CYCLES;
+  const esp_err_t device_result =
+      spi_bus_add_device(SPI2_HOST, &device_config, &device_);
+  if (device_result != ESP_OK) {
+    ESP_LOGE(kTag, "AT7456E SPI device init failed: %s",
+             esp_err_to_name(device_result));
+    device_ = nullptr;
+    return false;
+  }
+  return true;
+#endif
+}
+
+bool EspAt7456eSpi::queue(const uint8_t* transmit, uint8_t* receive,
+                          std::size_t size)
+{
+  if (device_ == nullptr || queued_ || transmit == nullptr ||
+      receive == nullptr || size == 0 || size > 64) {
+    return false;
+  }
+  transaction_ = {};
+  transaction_.length = size * 8;
+  transaction_.tx_buffer = transmit;
+  transaction_.rx_buffer = receive;
+  const esp_err_t result =
+      spi_device_queue_trans(device_, &transaction_, 0);
+  queued_ = result == ESP_OK;
+  return queued_;
+}
+
+At7456eTransferState EspAt7456eSpi::poll()
+{
+  if (device_ == nullptr || !queued_) {
+    return At7456eTransferState::Failed;
+  }
+  spi_transaction_t* completed = nullptr;
+  const esp_err_t result =
+      spi_device_get_trans_result(device_, &completed, 0);
+  if (result == ESP_ERR_TIMEOUT) {
+    return At7456eTransferState::Busy;
+  }
+  queued_ = false;
+  return result == ESP_OK && completed == &transaction_
+             ? At7456eTransferState::Complete
+             : At7456eTransferState::Failed;
+}
+
+void EspAt7456eSpi::abort()
+{
+  if (device_ == nullptr || !queued_) {
+    return;
+  }
+  spi_transaction_t* completed = nullptr;
+  if (spi_device_get_trans_result(device_, &completed, 0) == ESP_OK) {
+    queued_ = false;
+  }
 }
 
 bool EspBoard::configure_adc_gpio(int gpio, AdcInput& input)
