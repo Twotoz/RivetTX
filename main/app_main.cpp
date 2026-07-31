@@ -1044,6 +1044,7 @@ void ui_task(void*)
   bool runtime_update_requires_activation = false;
   bool usb_maintenance = false;
   bool screen_rendered = false;
+  bool display_failed = false;
   bool force_screen_rebuild = true;
   AppScreen rendered_screen = AppScreen::Home;
   TimeUs next_live_refresh_us = 0;
@@ -1472,14 +1473,22 @@ void ui_task(void*)
     rendered_screen = screen;
     screen_rendered = true;
     force_screen_rebuild = false;
-    (void)app.ui.render();
+    const bool rendered = app.ui.render();
+    if (!rendered && !display_failed) {
+      ESP_LOGE(kTag, "display refresh failed; UI task will retry");
+    } else if (rendered && display_failed) {
+      ESP_LOGI(kTag, "display refresh recovered");
+    }
+    display_failed = !rendered;
     if (app.screenshot_requested.exchange(false,
                                           std::memory_order_acq_rel) &&
         app.safety.begin_maintenance()) {
       const auto& buffer = app.canvas.buffer();
       const std::vector<uint8_t> image(buffer.begin(), buffer.end());
-      (void)app.files.write("screenshot.mono", image);
-      (void)app.files.sync("screenshot.mono");
+      if (!app.files.write("screenshot.mono", image) ||
+          !app.files.sync("screenshot.mono")) {
+        ESP_LOGE(kTag, "screenshot write or sync failed");
+      }
       app.safety.end_maintenance();
     }
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -1523,7 +1532,9 @@ void service_task(void*)
       taskENTER_CRITICAL(&app.frame_lock);
       snapshot = app.pending_snapshot;
       taskEXIT_CRITICAL(&app.frame_lock);
-      (void)app.crash_store.write(snapshot);
+      if (!app.crash_store.write(snapshot)) {
+        ESP_LOGE(kTag, "crash snapshot persistence failed");
+      }
     }
     std::array<TelemetryEntry, kMaxTelemetrySensors> telemetry{};
     BatteryState battery_state = BatteryState::Unknown;
@@ -1676,8 +1687,10 @@ bool initialize_storage(bool explicit_format_requested)
         "}\n";
     const std::vector<uint8_t> script(
         startup_script, startup_script + sizeof(startup_script) - 1);
-    (void)app.files.write("scripts/startup.lua", script);
-    (void)app.files.sync("scripts/startup.lua");
+    if (!app.files.write("scripts/startup.lua", script) ||
+        !app.files.sync("scripts/startup.lua")) {
+      ESP_LOGE(kTag, "default Lua startup script persistence failed");
+    }
   }
   std::string lua_error;
   if (!app.lua.load_file("/models/scripts/startup.lua", lua_error)) {
@@ -1803,8 +1816,8 @@ extern "C" void app_main()
   if (!app.boot.finish_startup(self_test, now_us())) {
     ESP_LOGE(kTag, "startup self-test failed");
     app.safety.request_lock();
-  } else {
-    (void)app.boot_state.mark_success();
+  } else if (!app.boot_state.mark_success()) {
+    ESP_LOGE(kTag, "boot success state persistence failed");
   }
 
   if (recovery_requested) {

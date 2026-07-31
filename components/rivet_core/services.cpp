@@ -589,10 +589,12 @@ bool BootManager::enter_recovery(bool recovery_button,
 }
 
 UpdateManager::UpdateManager(IOtaBackend& ota, DiagnosticLog& diagnostics,
+                             const IFirmwareManifestVerifier& verifier,
                              std::string target,
                              std::string current_version)
     : ota_(ota),
       diagnostics_(diagnostics),
+      verifier_(verifier),
       target_(std::move(target)),
       current_version_(std::move(current_version))
 {
@@ -612,10 +614,10 @@ bool UpdateManager::install(const FirmwareManifest& manifest,
     rejection_reason_ = "model schema too new";
   } else if (!version_is_newer(manifest.version, current_version_)) {
     rejection_reason_ = "firmware version is not newer";
-  } else if (!manifest.signature_present) {
-    rejection_reason_ = "missing firmware signature";
   } else if (manifest.url.rfind("https://", 0) != 0) {
     rejection_reason_ = "update URL is not HTTPS";
+  } else if (!verifier_.verify(manifest)) {
+    rejection_reason_ = "firmware signature verification failed";
   }
 
   if (!rejection_reason_.empty()) {

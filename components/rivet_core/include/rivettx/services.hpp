@@ -334,14 +334,22 @@ struct FirmwareManifest {
   std::string version;
   std::string url;
   uint16_t minimum_model_schema = 0;
-  bool signature_present = false;
+  std::vector<uint8_t> signature;
+};
+
+class IFirmwareManifestVerifier {
+ public:
+  virtual ~IFirmwareManifestVerifier() = default;
+  // Implementations must cryptographically authenticate the canonical
+  // manifest fields and signature against a provisioned trust anchor.
+  virtual bool verify(const FirmwareManifest& manifest) const = 0;
 };
 
 class UpdateManager {
  public:
   UpdateManager(IOtaBackend& ota, DiagnosticLog& diagnostics,
-                std::string target,
-                std::string current_version = "0.1.0");
+                const IFirmwareManifestVerifier& verifier,
+                std::string target, std::string current_version);
   bool install(const FirmwareManifest& manifest, bool maintenance_allowed,
                TimeUs now_us);
   const std::string& rejection_reason() const;
@@ -349,6 +357,7 @@ class UpdateManager {
  private:
   IOtaBackend& ota_;
   DiagnosticLog& diagnostics_;
+  const IFirmwareManifestVerifier& verifier_;
   std::string target_;
   std::string current_version_;
   std::string rejection_reason_;

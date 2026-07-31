@@ -117,6 +117,8 @@ The ESP-IDF second-stage bootloader owns A/B selection. RivetTX:
 
 - downloads only over authenticated HTTPS
 - checks project name, target, minimum compatible model schema, and version
+- requires a cryptographic manifest verifier backed by a provisioned trust
+  anchor; the presence of signature bytes alone is never accepted as proof
 - relies on Secure Boot V2 for production signature validation
 - marks a new image valid only after storage, input, display, CRSF, and task
   self-tests pass

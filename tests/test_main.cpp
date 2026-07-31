@@ -186,6 +186,20 @@ class FakeOta final : public IOtaBackend {
   std::string updated_url;
 };
 
+class FakeManifestVerifier final : public IFirmwareManifestVerifier {
+ public:
+  bool verify(const FirmwareManifest& manifest) const override
+  {
+    ++calls;
+    last_signature_size = manifest.signature.size();
+    return accept && !manifest.signature.empty();
+  }
+
+  bool accept = true;
+  mutable uint32_t calls = 0;
+  mutable std::size_t last_signature_size = 0;
+};
+
 class MemoryTelemetrySink final : public ITelemetryLogSink {
  public:
   bool append(TimeUs time_us, uint16_t sensor_id, int32_t value) override
@@ -1393,22 +1407,36 @@ void test_module_update_backup_and_calibration()
   CHECK(ota.rollback);
   CHECK(boot.enter_recovery(false, 3));
 
-  UpdateManager updates(ota, diagnostics, "esp32c3");
+  FakeManifestVerifier verifier;
+  UpdateManager updates(ota, diagnostics, verifier, "esp32c3", "0.1.0");
   FirmwareManifest invalid{"rivettx", "esp32c3", "1.0",
-                           "http://invalid", 2, true};
+                           "http://invalid", 2, {0x01}};
   CHECK(!updates.install(invalid, true, 3000));
   FirmwareManifest valid{"rivettx", "esp32c3", "1.0",
-                         "https://example.invalid/rivettx.bin", 2, true};
+                         "https://example.invalid/rivettx.bin", 2, {0x01}};
   CHECK(updates.install(valid, true, 4000));
   CHECK(ota.updated_url == valid.url);
+  CHECK(verifier.calls == 1);
+  CHECK(verifier.last_signature_size == 1);
+
+  FirmwareManifest unsigned_manifest = valid;
+  unsigned_manifest.signature.clear();
+  CHECK(!updates.install(unsigned_manifest, true, 4200));
+  CHECK(updates.rejection_reason() ==
+        "firmware signature verification failed");
+  verifier.accept = false;
+  CHECK(!updates.install(valid, true, 4300));
+  CHECK(ota.updated_url == valid.url);
+  verifier.accept = true;
 
   FakeOta s3_ota;
-  UpdateManager s3_updates(s3_ota, diagnostics, "esp32s3");
+  UpdateManager s3_updates(
+      s3_ota, diagnostics, verifier, "esp32s3", "0.1.0");
   FirmwareManifest wrong_target{"rivettx", "esp32c3", "1.0",
-                                "https://example.invalid/c3.bin", 2, true};
+                                "https://example.invalid/c3.bin", 2, {0x01}};
   CHECK(!s3_updates.install(wrong_target, true, 4500));
   FirmwareManifest s3_valid{"rivettx", "esp32s3", "1.0",
-                            "https://example.invalid/s3.bin", 2, true};
+                            "https://example.invalid/s3.bin", 2, {0x01}};
   CHECK(s3_updates.install(s3_valid, true, 5000));
   CHECK(s3_ota.updated_url == s3_valid.url);
   FirmwareManifest downgrade = s3_valid;
