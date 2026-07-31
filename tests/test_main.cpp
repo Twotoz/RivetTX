@@ -528,6 +528,7 @@ void test_safety()
   SafetyConfig config{};
   config.healthy_cycles_before_ready = 2;
   SafetyManager safety(config);
+  safety.report_module_ready(true);
   FakeWatchdog watchdog;
   ControlLoop loop(input, mixer, safety, telemetry, watchdog);
   safety.boot_complete(true, false);
@@ -603,6 +604,22 @@ void test_safety()
   CHECK(!safe_reenable.frame.safe);
   CHECK(safe_reenable.safety.state == SafetyState::Enabled);
 
+  safety.report_module_ready(false);
+  safety.request_enable();
+  raw.sampled_at_us = 89000;
+  const auto module_locked =
+      loop.run(model, raw, 3800, 89000, 89100);
+  CHECK(module_locked.frame.safe);
+  CHECK(module_locked.frame.channels[4] == -kResolution);
+  CHECK(module_locked.safety.state == SafetyState::Locked);
+  CHECK(module_locked.safety.reason == SafetyReason::ModuleOffline);
+  safety.report_module_ready(true);
+  safety.request_enable();
+  raw.sampled_at_us = 93000;
+  CHECK(loop.run(model, raw, 3800, 93000, 93100).frame.safe);
+  raw.sampled_at_us = 97000;
+  CHECK(!loop.run(model, raw, 3800, 97000, 97100).frame.safe);
+
   raw.sampled_at_us = 0;
   auto stale = loop.run(model, raw, 3800, 100000, 100100);
   CHECK(stale.frame.safe);
@@ -610,7 +627,7 @@ void test_safety()
 
   safety.report_battery(3000);
   CHECK(safety.status().state == SafetyState::Fault);
-  CHECK(watchdog.count == 13);
+  CHECK(watchdog.count == 16);
 
   SafetyManager uncalibrated;
   uncalibrated.boot_complete(true, false, false);
@@ -1267,6 +1284,9 @@ void test_ui()
   home.warnings[0] = UiWarningCode::WatchdogUnavailable;
   CHECK(make_warnings_screen(home).fields[0].value_text ==
         "RESTART RADIO");
+  home.warnings[0] = UiWarningCode::ModuleOffline;
+  CHECK(make_warnings_screen(home).fields[0].value_text ==
+        "CHECK ELRS POWER UART");
 
   home.warning_count = 0;
   ui.update_home(home);
@@ -1401,15 +1421,55 @@ void test_module_update_backup_and_calibration()
   module.capture_failsafe(model, frame);
   CHECK(model.outputs[2].failsafe == -777);
 
+  const std::array<BootProductProfile, 2> product_profiles{{
+      BootProductProfile::StandaloneOled,
+      BootProductProfile::OpenPocketOsd,
+  }};
+  const std::array<ModuleBootCondition, 4> optional_module_cases{{
+      ModuleBootCondition::Absent,
+      ModuleBootCondition::Starting,
+      ModuleBootCondition::Incompatible,
+      ModuleBootCondition::Reconnecting,
+  }};
+  for (const auto profile : product_profiles) {
+    const auto requirements = startup_requirements_for(profile);
+    CHECK(requirements.storage);
+    CHECK(requirements.inputs);
+    CHECK(requirements.presentation);
+    CHECK(requirements.crsf_uart);
+    CHECK(requirements.control_task);
+    CHECK(requirements.control_runtime);
+    CHECK(!requirements.module_online);
+    for (const auto condition : optional_module_cases) {
+      FakeOta pending_ota;
+      pending_ota.pending = true;
+      BootManager pending_boot(pending_ota, diagnostics, profile);
+      SelfTestResult healthy{};
+      healthy.storage = true;
+      healthy.inputs = true;
+      healthy.display = true;
+      healthy.crsf_uart = true;
+      healthy.control_task = true;
+      healthy.control_runtime = true;
+      healthy.module = condition;
+      CHECK(pending_boot.finish_startup(healthy, 1000));
+      CHECK(pending_ota.marked);
+      CHECK(!pending_ota.rollback);
+    }
+  }
+
   FakeOta ota;
   BootManager boot(ota, diagnostics);
   ota.pending = true;
-  CHECK(boot.finish_startup(
-      {true, true, true, true, true, true, false}, 1000));
-  CHECK(ota.marked);
-  ota.marked = false;
-  CHECK(!boot.finish_startup(
-      {true, false, true, true, true, true, true}, 2000));
+  SelfTestResult unhealthy{};
+  unhealthy.storage = true;
+  unhealthy.inputs = false;
+  unhealthy.display = true;
+  unhealthy.crsf_uart = true;
+  unhealthy.control_task = true;
+  unhealthy.control_runtime = true;
+  unhealthy.module = ModuleBootCondition::Online;
+  CHECK(!boot.finish_startup(unhealthy, 2000));
   CHECK(ota.rollback);
   CHECK(boot.enter_recovery(false, 3));
 

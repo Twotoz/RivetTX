@@ -187,7 +187,8 @@ RawInputs make_inputs(ScenarioKind kind, uint32_t cycle, TimeUs now_us)
 
   const bool startup = now_us < 400000;
   const bool recovery =
-      ((kind == ScenarioKind::StaleInput && now_us >= 2300000) ||
+      ((kind == ScenarioKind::Disconnect && now_us >= 2400000) ||
+       (kind == ScenarioKind::StaleInput && now_us >= 2300000) ||
        (kind == ScenarioKind::MissedDeadline && now_us >= 2200000)) &&
       now_us < 3200000;
   raw.axes[2] = startup || recovery ? 100 : 2048;
@@ -229,7 +230,9 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
   bool saw_safe_after_enabled = false;
   bool saw_offline = false;
   bool saw_online_after_offline = false;
+  bool saw_module_safety_lock = false;
   bool enable_reissued = false;
+  bool previous_module_ready = false;
   for (uint32_t cycle = 0; cycle < kCycles; ++cycle) {
     const TimeUs now_us = static_cast<TimeUs>(cycle) * kPeriodUs;
     if (!enable_reissued && now_us >= 3000000 &&
@@ -239,6 +242,13 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
       enable_reissued = true;
     }
     transport.advance(now_us);
+    const bool module_ready =
+        module.status().state == ModuleState::Online;
+    safety.report_module_ready(module_ready);
+    if (module_ready && !previous_module_ready) {
+      safety.request_enable();
+    }
+    previous_module_ready = module_ready;
     const RawInputs raw = make_inputs(kind, cycle, now_us);
     const uint32_t duration =
         kind == ScenarioKind::MissedDeadline &&
@@ -252,6 +262,10 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
         ever_enabled || cycle_result.safety.state == SafetyState::Enabled;
     if (ever_enabled && latest.safe) {
       saw_safe_after_enabled = true;
+    }
+    if (ever_enabled &&
+        cycle_result.safety.reason == SafetyReason::ModuleOffline) {
+      saw_module_safety_lock = true;
     }
     (void)module.send_channels(latest, now_us + duration + 50);
     module.poll(now_us + duration + 100);
@@ -351,6 +365,8 @@ ScenarioResult run_scenario(ScenarioKind kind, const Model& model)
             "parser did not reject every corrupted frame");
   } else if (kind == ScenarioKind::Disconnect) {
     require(result, saw_offline, "module disconnect was not detected");
+    require(result, saw_module_safety_lock,
+            "module disconnect did not lock channel outputs");
     require(result, saw_online_after_offline,
             "module did not recover after reconnect");
     require(result, transport_stats.failed_writes > 0,

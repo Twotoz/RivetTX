@@ -872,6 +872,21 @@ void SafetyManager::report_watchdog_fault()
   status_.reason = SafetyReason::WatchdogUnavailable;
 }
 
+void SafetyManager::report_module_ready(bool ready)
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  module_ready_ = ready;
+  if (!ready) {
+    enable_requested_ = false;
+    healthy_cycles_ = 0;
+    if (status_.state != SafetyState::Booting &&
+        status_.state != SafetyState::Fault) {
+      status_.state = SafetyState::Locked;
+      status_.reason = SafetyReason::ModuleOffline;
+    }
+  }
+}
+
 void SafetyManager::report_mixer_duration(uint32_t duration_us)
 {
   const std::lock_guard<std::mutex> lock(mutex_);
@@ -966,6 +981,15 @@ ChannelFrame SafetyManager::gate(const Model& model,
     healthy_cycles_ = 0;
     status_.state = SafetyState::Fault;
     status_.reason = SafetyReason::BatteryCritical;
+    return safe_frame(model, now_us, proposed.sequence);
+  }
+  if (!module_ready_) {
+    enable_requested_ = false;
+    healthy_cycles_ = 0;
+    if (status_.state != SafetyState::Fault) {
+      status_.state = SafetyState::Locked;
+      status_.reason = SafetyReason::ModuleOffline;
+    }
     return safe_frame(model, now_us, proposed.sequence);
   }
   if (status_.state != SafetyState::Enabled &&

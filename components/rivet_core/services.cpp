@@ -561,14 +561,17 @@ uint8_t ScriptSupervisor::strikes() const
   return strikes_;
 }
 
-BootManager::BootManager(IOtaBackend& ota, DiagnosticLog& diagnostics)
-    : ota_(ota), diagnostics_(diagnostics)
+BootManager::BootManager(IOtaBackend& ota, DiagnosticLog& diagnostics,
+                         BootProductProfile profile)
+    : ota_(ota),
+      diagnostics_(diagnostics),
+      requirements_(startup_requirements_for(profile))
 {
 }
 
 bool BootManager::finish_startup(const SelfTestResult& result, TimeUs now_us)
 {
-  if (!result.passed()) {
+  if (!result.passed(requirements_)) {
     diagnostics_.push(
         {now_us, LogSeverity::Fatal, LogCode::BootSelfTestFailed, 0, 0});
     if (ota_.running_image_pending_verification()) {

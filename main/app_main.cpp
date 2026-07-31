@@ -213,7 +213,8 @@ struct Application {
   LuaVm lua{service_telemetry, parser, lua_crsf, lua_canvas, &audio};
   ScriptSupervisor scripts{lua, service_diagnostics};
   UiController ui{display, canvas};
-  BootManager boot{ota, boot_diagnostics};
+  BootManager boot{
+      ota, boot_diagnostics, BootProductProfile::StandaloneOled};
   Model model = make_default_model();
   Model edit_model = make_default_model();
   std::array<StoredModelSummary, kMaximumStoredModels> model_summaries{};
@@ -443,6 +444,8 @@ void control_task(void*)
     } else {
       app.safety.report_battery(app.battery.voltage_mv());
     }
+    app.safety.report_module_ready(
+        app.module.status().state == ModuleState::Online);
     app.safety.report_mixer_duration(mixer_duration);
     ChannelFrame frame =
         app.safety.gate(app.model, controls, proposed, mixed_at);
@@ -618,6 +621,9 @@ UiHomeStatus current_home_status(
       break;
     case SafetyReason::WatchdogUnavailable:
       add_warning(UiWarningCode::WatchdogUnavailable);
+      break;
+    case SafetyReason::ModuleOffline:
+      add_warning(UiWarningCode::ModuleOffline);
       break;
     case SafetyReason::BatteryCritical:
       add_warning(UiWarningCode::BatteryCritical);
@@ -1792,7 +1798,20 @@ extern "C" void app_main()
   }
   self_test.control_runtime =
       app.healthy_control_cycles.load(std::memory_order_relaxed) >= 20;
-  self_test.module_link = runtime_module_state == ModuleState::Online;
+  switch (runtime_module_state) {
+    case ModuleState::Online:
+      self_test.module = ModuleBootCondition::Online;
+      break;
+    case ModuleState::Starting:
+      self_test.module = ModuleBootCondition::Starting;
+      break;
+    case ModuleState::Offline:
+      self_test.module = ModuleBootCondition::Absent;
+      break;
+    case ModuleState::Passthrough:
+      self_test.module = ModuleBootCondition::Reconnecting;
+      break;
+  }
 
   if (!app.boot.finish_startup(self_test, now_us())) {
     ESP_LOGE(kTag, "startup self-test failed");
