@@ -1,5 +1,6 @@
 #include "rivettx/audio.hpp"
 #include "rivettx/at7456e.hpp"
+#include "rivettx/board_power.hpp"
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
@@ -47,6 +48,33 @@ class FakeWatchdog final : public IWatchdog {
     ++count;
   }
   uint32_t count = 0;
+};
+
+class FakeBoardPowerHardware final : public IBoardPowerHardware {
+ public:
+  bool initialize() override { initialized = true; return calls_ok; }
+  bool set_video_5v(bool value) override { video = value; return calls_ok; }
+  bool set_display_5v(bool value) override { display = value; return calls_ok; }
+  bool set_elrs_5v(bool value) override { elrs = value; return calls_ok; }
+  bool set_backlight(uint8_t value) override { backlight = value; return calls_ok; }
+  bool set_amt630a_reset(bool value) override { reset = value; return calls_ok; }
+  bool set_amt630a_flash_owner(bool value) override { owner = value; return calls_ok; }
+  bool read_vbus_present(bool& value) override { value = vbus; return calls_ok; }
+  ChargerTelemetry read_charger() override { return charger; }
+  FuelGaugeTelemetry read_fuel_gauge() override { return gauge; }
+
+  bool initialized = false;
+  bool calls_ok = true;
+  bool video = false;
+  bool display = false;
+  bool elrs = false;
+  bool reset = false;
+  bool owner = false;
+  bool vbus = true;
+  uint8_t backlight = 0;
+  ChargerTelemetry charger{BoardSensorState::Valid, ChargeState::Charging,
+                           3880, true, true, false};
+  FuelGaugeTelemetry gauge{BoardSensorState::Valid, 3890, 67, false};
 };
 
 class FakeVrxHardware final : public IVrxHardware {
@@ -2144,6 +2172,22 @@ void test_openpocket_product_services()
 
 void test_rx5808_backend()
 {
+  VrxCommandQueue startup_commands;
+  CHECK(startup_commands.empty());
+  CHECK(startup_commands.push({VrxCommandType::Tune, 4, 5}));
+  // An immediate model switch must be queued behind, not overwrite, the
+  // active model restored from storage.
+  CHECK(startup_commands.push({VrxCommandType::Tune, 2, 7}));
+  VrxCommand startup_command{};
+  CHECK(startup_commands.pop(startup_command));
+  CHECK(startup_command.type == VrxCommandType::Tune);
+  CHECK(startup_command.band == 4);
+  CHECK(startup_command.channel == 5);
+  CHECK(startup_commands.pop(startup_command));
+  CHECK(startup_command.band == 2);
+  CHECK(startup_command.channel == 7);
+  CHECK(startup_commands.empty());
+
   Rtc6715Program program{};
   CHECK(!rtc6715_program_for_frequency(0, program));
   CHECK(!rtc6715_program_for_frequency(5801, program));
@@ -2164,6 +2208,40 @@ void test_rx5808_backend()
   FakeRtc6715Io io;
   Rtc6715Backend backend(io, {1, 100});
   CHECK(backend.initialize());
+  CHECK(backend.tune_state() == VrxTuneState::Idle);
+  backend.tick(10000000);
+  CHECK(backend.tune_state() == VrxTuneState::Idle);
+
+  const auto check_startup = [](TimeUs pre_task_delay_us,
+                                uint8_t stored_band,
+                                uint8_t stored_channel) {
+    FakeRtc6715Io startup_io;
+    Rtc6715Backend startup_backend(startup_io, {1, 100});
+    CHECK(startup_backend.initialize());
+    startup_backend.tick(pre_task_delay_us);
+    CHECK(startup_backend.tune_state() == VrxTuneState::Idle);
+    const uint16_t frequency =
+        vrx_frequency_mhz(stored_band, stored_channel);
+    CHECK(startup_backend.start_tune(frequency, pre_task_delay_us));
+    TimeUs transaction_now = pre_task_delay_us;
+    for (std::size_t tick = 0;
+         tick < 100 &&
+         startup_backend.tune_state() == VrxTuneState::Pending;
+         ++tick) {
+      startup_backend.tick(transaction_now);
+      transaction_now += 10;
+    }
+    CHECK(startup_backend.tune_state() == VrxTuneState::Complete);
+    CHECK(startup_backend.tuned_frequency_mhz() == frequency);
+    CHECK(startup_io.frames.size() == 1);
+  };
+  check_startup(0, 0, 0);          // normal startup
+  check_startup(10000000, 4, 5);   // ten-second first-run calibration
+  check_startup(4000000, 1, 2);    // cancelled calibration
+  check_startup(2000000, 2, 3);    // recovery startup
+  check_startup(3000000, 3, 4);    // recovered storage mirror
+  check_startup(8000000, 5, 6);    // restored active model
+
   TimeUs now = 1000;
   std::size_t programmed = 0;
   for (uint8_t band = 0; band < kVrxBandCount; ++band) {
@@ -2358,6 +2436,59 @@ void test_rx5808_backend()
   display_status.rssi_state = VrxRssiState::SensorFault;
   video_screen = make_openpocket_video_screen(display_status);
   CHECK(video_screen.fields[4].value_text == "SENSOR FAULT");
+}
+
+void test_openpocket_board_power()
+{
+  FakeBoardPowerHardware hardware;
+  BoardPowerController power(hardware, {50, 60});
+  CHECK(power.initialize(false));
+  CHECK(hardware.initialized);
+  CHECK(!hardware.video);
+  CHECK(!hardware.display);
+  CHECK(!hardware.elrs);
+  CHECK(hardware.reset);
+  CHECK(!hardware.owner);
+  CHECK(hardware.backlight == 0);
+
+  CHECK(power.request_video(true));
+  CHECK(power.request_display(true, 70));
+  CHECK(power.request_elrs(true));
+  CHECK(power.status().video_5v);
+  CHECK(power.status().display_5v);
+  CHECK(power.status().elrs_5v);
+  CHECK(power.status().backlight_percent == 70);
+  CHECK(!power.status().amt630a_reset_asserted);
+
+  power.tick(0);
+  CHECK(power.status().vbus_present);
+  CHECK(power.status().charger.state == BoardSensorState::Valid);
+  CHECK(power.status().charger.battery_mv == 3880);
+  CHECK(power.status().fuel_gauge.cell_mv == 3890);
+  CHECK(power.status().fuel_gauge.state_of_charge == 67);
+
+  CHECK(power.enter_amt630a_flash_mode());
+  CHECK(hardware.reset);
+  CHECK(hardware.owner);
+  CHECK(hardware.backlight == 0);
+  CHECK(!power.request_display(true));
+  CHECK(power.leave_amt630a_flash_mode());
+  CHECK(!hardware.owner);
+  CHECK(!hardware.reset);
+
+  CHECK(power.set_simulator_mode(true));
+  CHECK(!hardware.elrs);
+  CHECK(!hardware.video);
+  CHECK(!power.request_elrs(true));
+  CHECK(!power.request_video(true));
+  // USB-only simulator operation is valid without a battery or gauge.
+  hardware.gauge = {};
+  hardware.charger = {BoardSensorState::Valid, ChargeState::Disconnected,
+                      0, true, false, false};
+  power.tick(50000);
+  CHECK(power.status().vbus_present);
+  CHECK(power.status().fuel_gauge.state == BoardSensorState::Unavailable);
+  CHECK(power.request_display(false));
 }
 
 void test_complete_openpocket_menu()
@@ -2679,6 +2810,7 @@ int main()
   test_services();
   test_module_update_backup_and_calibration();
   test_rx5808_backend();
+  test_openpocket_board_power();
   test_openpocket_product_services();
   test_complete_openpocket_menu();
   test_at7456e_backend();

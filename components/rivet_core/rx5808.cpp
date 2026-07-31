@@ -49,6 +49,38 @@ bool vrx_frequency_supported(uint16_t frequency_mhz)
   return false;
 }
 
+bool VrxCommandQueue::push(VrxCommand command)
+{
+  if (count_ == commands_.size()) {
+    return false;
+  }
+  commands_[write_] = command;
+  write_ = (write_ + 1) % commands_.size();
+  ++count_;
+  return true;
+}
+
+bool VrxCommandQueue::pop(VrxCommand& command)
+{
+  if (count_ == 0) {
+    return false;
+  }
+  command = commands_[read_];
+  read_ = (read_ + 1) % commands_.size();
+  --count_;
+  return true;
+}
+
+std::size_t VrxCommandQueue::size() const
+{
+  return count_;
+}
+
+bool VrxCommandQueue::empty() const
+{
+  return count_ == 0;
+}
+
 bool rtc6715_program_for_frequency(uint16_t frequency_mhz,
                                    Rtc6715Program& program)
 {

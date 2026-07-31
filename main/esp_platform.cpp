@@ -58,6 +58,22 @@ bool configure_optional_switch(int gpio_number)
   return gpio_number < 0 || configure_button(gpio_number);
 }
 
+bool configure_output(int gpio_number, int initial_level)
+{
+  if (!GPIO_IS_VALID_OUTPUT_GPIO(gpio_number)) {
+    return false;
+  }
+  gpio_config_t config{};
+  config.pin_bit_mask = 1ULL << gpio_number;
+  config.mode = GPIO_MODE_OUTPUT;
+  config.pull_up_en = GPIO_PULLUP_DISABLE;
+  config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  config.intr_type = GPIO_INTR_DISABLE;
+  return gpio_config(&config) == ESP_OK &&
+         gpio_set_level(static_cast<gpio_num_t>(gpio_number),
+                        initial_level) == ESP_OK;
+}
+
 bool active_low_input(int gpio_number)
 {
   return gpio_number >= 0 &&
@@ -87,7 +103,7 @@ TimeUs now_us()
 
 bool validate_pin_configuration()
 {
-  std::array<int, 41> pins{};
+  std::array<int, 64> pins{};
   pins.fill(-1);
   std::size_t pin_count = 0;
   const auto add_pin = [&pins, &pin_count](int pin) {
@@ -137,6 +153,24 @@ bool validate_pin_configuration()
   add_pin(CONFIG_RIVETTX_I2C_SDA);
   add_pin(CONFIG_RIVETTX_I2C_SCL);
 #endif
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  const std::array<int, 15> rev_a_pins{
+      CONFIG_RIVETTX_BOARD_I2C_SDA_GPIO,
+      CONFIG_RIVETTX_BOARD_I2C_SCL_GPIO,
+      CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO,
+      CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO,
+      CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO,
+      CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO,
+      CONFIG_RIVETTX_AMT630A_RESET_GPIO,
+      CONFIG_RIVETTX_AMT630A_FLASH_OWNER_GPIO,
+      CONFIG_RIVETTX_AMT630A_FLASH_CS_GPIO,
+      CONFIG_RIVETTX_VBUS_DETECT_GPIO,
+      CONFIG_RIVETTX_CONTROL_EXPANDER_INT_GPIO,
+      CONFIG_RIVETTX_CHARGER_INT_GPIO,
+      CONFIG_RIVETTX_FUEL_GAUGE_ALERT_GPIO,
+      19, 20};  // Native USB D-/D+ are reserved by the board.
+  for (const int pin : rev_a_pins) add_pin(pin);
+#endif
   for (std::size_t index = 0; index < pin_count; ++index) {
     const int pin = pins[index];
     if (pin < 0) {
@@ -184,9 +218,9 @@ bool validate_pin_configuration()
     return false;
   }
 
-  std::array<int, 6> output_pins{
+  std::array<int, 16> output_pins{
       CONFIG_RIVETTX_CRSF_TX, CONFIG_RIVETTX_BUZZER_GPIO,
-      -1, -1, -1, -1};
+      -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 #if CONFIG_RIVETTX_OPENPOCKET_OSD
   output_pins[2] = CONFIG_RIVETTX_AT7456E_SCLK_GPIO;
   output_pins[3] = CONFIG_RIVETTX_AT7456E_MOSI_GPIO;
@@ -195,6 +229,17 @@ bool validate_pin_configuration()
 #else
   output_pins[2] = CONFIG_RIVETTX_I2C_SDA;
   output_pins[3] = CONFIG_RIVETTX_I2C_SCL;
+#endif
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  output_pins[6] = CONFIG_RIVETTX_BOARD_I2C_SDA_GPIO;
+  output_pins[7] = CONFIG_RIVETTX_BOARD_I2C_SCL_GPIO;
+  output_pins[8] = CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO;
+  output_pins[9] = CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO;
+  output_pins[10] = CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO;
+  output_pins[11] = CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO;
+  output_pins[12] = CONFIG_RIVETTX_AMT630A_RESET_GPIO;
+  output_pins[13] = CONFIG_RIVETTX_AMT630A_FLASH_OWNER_GPIO;
+  output_pins[14] = CONFIG_RIVETTX_AMT630A_FLASH_CS_GPIO;
 #endif
   for (const int pin : output_pins) {
     if (pin >= 0 && !GPIO_IS_VALID_OUTPUT_GPIO(pin)) {
@@ -263,7 +308,7 @@ bool validate_rx5808_configuration()
     }
   }
 
-  const std::array<int, 39> occupied{
+  const std::array<int, 52> occupied{
       CONFIG_RIVETTX_AXIS0_GPIO,      CONFIG_RIVETTX_AXIS1_GPIO,
       CONFIG_RIVETTX_AXIS2_GPIO,      CONFIG_RIVETTX_AXIS3_GPIO,
       CONFIG_RIVETTX_AXIS4_GPIO,      CONFIG_RIVETTX_AXIS5_GPIO,
@@ -289,7 +334,25 @@ bool validate_rx5808_configuration()
       CONFIG_RIVETTX_AT7456E_MOSI_GPIO,
       CONFIG_RIVETTX_AT7456E_MISO_GPIO,
       CONFIG_RIVETTX_AT7456E_CS_GPIO,
-      CONFIG_RIVETTX_AT7456E_RESET_GPIO};
+      CONFIG_RIVETTX_AT7456E_RESET_GPIO,
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+      CONFIG_RIVETTX_BOARD_I2C_SDA_GPIO,
+      CONFIG_RIVETTX_BOARD_I2C_SCL_GPIO,
+      CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO,
+      CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO,
+      CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO,
+      CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO,
+      CONFIG_RIVETTX_AMT630A_RESET_GPIO,
+      CONFIG_RIVETTX_AMT630A_FLASH_OWNER_GPIO,
+      CONFIG_RIVETTX_AMT630A_FLASH_CS_GPIO,
+      CONFIG_RIVETTX_VBUS_DETECT_GPIO,
+      CONFIG_RIVETTX_CONTROL_EXPANDER_INT_GPIO,
+      CONFIG_RIVETTX_CHARGER_INT_GPIO,
+      CONFIG_RIVETTX_FUEL_GAUGE_ALERT_GPIO
+#else
+      -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+#endif
+  };
   for (const int vrx_pin : vrx_pins) {
     for (const int used_pin : occupied) {
       if (used_pin >= 0 && vrx_pin == used_pin) {
@@ -540,6 +603,257 @@ bool EspRx5808Io::read_rssi(int& raw_adc)
   return initialized_ && board_.read_vrx_rssi(raw_adc);
 }
 
+bool EspBoardPowerIo::set_output(int gpio, bool enabled)
+{
+  return initialized_ && GPIO_IS_VALID_OUTPUT_GPIO(gpio) &&
+         gpio_set_level(static_cast<gpio_num_t>(gpio),
+                        enabled ? 1 : 0) == ESP_OK;
+}
+
+bool EspBoardPowerIo::read_register(i2c_master_dev_handle_t device,
+                                    uint8_t reg, uint8_t* data,
+                                    std::size_t size)
+{
+  return initialized_ && device != nullptr && data != nullptr && size != 0 &&
+         i2c_master_transmit_receive(device, &reg, 1, data, size, 10) == ESP_OK;
+}
+
+bool EspBoardPowerIo::initialize()
+{
+#if !CONFIG_RIVETTX_OPENPOCKET_REV_A
+  return false;
+#else
+  if (initialized_) {
+    return true;
+  }
+  const std::array<std::pair<int, int>, 6> safe_outputs{{
+      {CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO, 0},
+      {CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO, 0},
+      {CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO, 0},
+      {CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO, 0},
+      {CONFIG_RIVETTX_AMT630A_RESET_GPIO, 0},
+      {CONFIG_RIVETTX_AMT630A_FLASH_OWNER_GPIO, 0},
+  }};
+  for (const auto& output : safe_outputs) {
+    if (!configure_output(output.first, output.second)) {
+      ESP_LOGE(kTag, "Rev-A power GPIO %d initialization failed",
+               output.first);
+      return false;
+    }
+  }
+  if (!GPIO_IS_VALID_GPIO(CONFIG_RIVETTX_VBUS_DETECT_GPIO)) {
+    return false;
+  }
+  gpio_config_t vbus_config{};
+  vbus_config.pin_bit_mask = 1ULL << CONFIG_RIVETTX_VBUS_DETECT_GPIO;
+  vbus_config.mode = GPIO_MODE_INPUT;
+  vbus_config.pull_up_en = GPIO_PULLUP_DISABLE;
+  vbus_config.pull_down_en = GPIO_PULLDOWN_ENABLE;
+  if (gpio_config(&vbus_config) != ESP_OK) {
+    return false;
+  }
+
+  i2c_master_bus_config_t bus_config{};
+  bus_config.i2c_port = -1;
+  bus_config.sda_io_num =
+      static_cast<gpio_num_t>(CONFIG_RIVETTX_BOARD_I2C_SDA_GPIO);
+  bus_config.scl_io_num =
+      static_cast<gpio_num_t>(CONFIG_RIVETTX_BOARD_I2C_SCL_GPIO);
+  bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
+  bus_config.glitch_ignore_cnt = 7;
+  bus_config.flags.enable_internal_pullup = false;
+  if (i2c_new_master_bus(&bus_config, &bus_) != ESP_OK) {
+    return false;
+  }
+  const auto add_device = [this](uint8_t address,
+                                 i2c_master_dev_handle_t& device) {
+    i2c_device_config_t config{};
+    config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    config.device_address = address;
+    config.scl_speed_hz = 400000;
+    return i2c_master_bus_add_device(bus_, &config, &device) == ESP_OK;
+  };
+  if (!add_device(0x6A, charger_) || !add_device(0x36, gauge_) ||
+      !add_device(CONFIG_RIVETTX_CONTROL_EXPANDER0_ADDRESS,
+                  expanders_[0]) ||
+      !add_device(CONFIG_RIVETTX_CONTROL_EXPANDER1_ADDRESS,
+                  expanders_[1])) {
+    return false;
+  }
+
+  ledc_timer_config_t timer{};
+  timer.speed_mode = LEDC_LOW_SPEED_MODE;
+  timer.duty_resolution = LEDC_TIMER_10_BIT;
+  timer.timer_num = LEDC_TIMER_1;
+  timer.freq_hz = 20000;
+  timer.clk_cfg = LEDC_AUTO_CLK;
+  ledc_channel_config_t channel{};
+  channel.gpio_num = CONFIG_RIVETTX_BACKLIGHT_PWM_GPIO;
+  channel.speed_mode = LEDC_LOW_SPEED_MODE;
+  channel.channel = LEDC_CHANNEL_1;
+  channel.intr_type = LEDC_INTR_DISABLE;
+  channel.timer_sel = LEDC_TIMER_1;
+  channel.duty = 0;
+  channel.hpoint = 0;
+  initialized_ = ledc_timer_config(&timer) == ESP_OK &&
+                 ledc_channel_config(&channel) == ESP_OK;
+  return initialized_;
+#endif
+}
+
+bool EspBoardPowerIo::set_video_5v(bool enabled)
+{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  return set_output(CONFIG_RIVETTX_5V_VIDEO_ENABLE_GPIO, enabled);
+#else
+  (void)enabled;
+  return false;
+#endif
+}
+
+bool EspBoardPowerIo::set_display_5v(bool enabled)
+{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  return set_output(CONFIG_RIVETTX_5V_DISPLAY_ENABLE_GPIO, enabled);
+#else
+  (void)enabled;
+  return false;
+#endif
+}
+
+bool EspBoardPowerIo::set_elrs_5v(bool enabled)
+{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  return set_output(CONFIG_RIVETTX_5V_ELRS_ENABLE_GPIO, enabled);
+#else
+  (void)enabled;
+  return false;
+#endif
+}
+
+bool EspBoardPowerIo::set_backlight(uint8_t percent)
+{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  if (!initialized_ || percent > 100) {
+    return false;
+  }
+  const uint32_t duty = static_cast<uint32_t>(percent) * 1023U / 100U;
+  return ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty) == ESP_OK &&
+         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1) == ESP_OK;
+#else
+  (void)percent;
+  return false;
+#endif
+}
+
+bool EspBoardPowerIo::set_amt630a_reset(bool asserted)
+{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  return set_output(CONFIG_RIVETTX_AMT630A_RESET_GPIO, !asserted);
+#else
+  (void)asserted;
+  return false;
+#endif
+}
+
+bool EspBoardPowerIo::set_amt630a_flash_owner(bool esp_owns_bus)
+{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  return set_output(CONFIG_RIVETTX_AMT630A_FLASH_OWNER_GPIO, esp_owns_bus);
+#else
+  (void)esp_owns_bus;
+  return false;
+#endif
+}
+
+bool EspBoardPowerIo::read_vbus_present(bool& present)
+{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  if (!initialized_) return false;
+  present = gpio_get_level(
+                static_cast<gpio_num_t>(CONFIG_RIVETTX_VBUS_DETECT_GPIO)) != 0;
+  return true;
+#else
+  present = false;
+  return false;
+#endif
+}
+
+ChargerTelemetry EspBoardPowerIo::read_charger()
+{
+  ChargerTelemetry telemetry{};
+  uint8_t status = 0;
+  uint8_t fault = 0;
+  uint8_t battery = 0;
+  if (!read_register(charger_, 0x0B, &status, 1) ||
+      !read_register(charger_, 0x0C, &fault, 1) ||
+      !read_register(charger_, 0x0E, &battery, 1)) {
+    telemetry.state = initialized_ ? BoardSensorState::Fault
+                                   : BoardSensorState::Unavailable;
+    telemetry.charge = ChargeState::Fault;
+    return telemetry;
+  }
+  telemetry.state = fault == 0 ? BoardSensorState::Valid
+                               : BoardSensorState::Fault;
+  const uint8_t vbus_state = static_cast<uint8_t>((status >> 5U) & 0x07U);
+  const uint8_t charge_state = static_cast<uint8_t>((status >> 3U) & 0x03U);
+  telemetry.vbus_present = vbus_state != 0;
+  telemetry.battery_present = (battery & 0x7FU) != 0;
+  telemetry.battery_mv = static_cast<uint16_t>(
+      2304U + static_cast<uint16_t>(battery & 0x7FU) * 20U);
+  telemetry.thermal_regulation = (status & 0x02U) != 0;
+  if (fault != 0) {
+    telemetry.charge = ChargeState::Fault;
+  } else if (!telemetry.vbus_present) {
+    telemetry.charge = ChargeState::Disconnected;
+  } else if (charge_state == 3) {
+    telemetry.charge = ChargeState::Full;
+  } else if (charge_state != 0) {
+    telemetry.charge = ChargeState::Charging;
+  } else {
+    telemetry.charge = ChargeState::Disconnected;
+  }
+  return telemetry;
+}
+
+FuelGaugeTelemetry EspBoardPowerIo::read_fuel_gauge()
+{
+  FuelGaugeTelemetry telemetry{};
+  std::array<uint8_t, 2> vcell{};
+  std::array<uint8_t, 2> soc{};
+  std::array<uint8_t, 2> config{};
+  if (!read_register(gauge_, 0x02, vcell.data(), vcell.size()) ||
+      !read_register(gauge_, 0x04, soc.data(), soc.size()) ||
+      !read_register(gauge_, 0x0C, config.data(), config.size())) {
+    telemetry.state = initialized_ ? BoardSensorState::Fault
+                                   : BoardSensorState::Unavailable;
+    return telemetry;
+  }
+  const uint16_t raw_vcell = static_cast<uint16_t>(
+      (static_cast<uint16_t>(vcell[0]) << 8U) | vcell[1]);
+  telemetry.cell_mv = static_cast<uint16_t>((raw_vcell >> 4U) * 5U / 4U);
+  telemetry.state_of_charge = std::min<uint8_t>(100, soc[0]);
+  telemetry.alert = (config[1] & 0x20U) != 0;
+  telemetry.state = BoardSensorState::Valid;
+  return telemetry;
+}
+
+bool EspBoardPowerIo::read_expanded_controls(uint32_t& active_low_bits)
+{
+  std::array<uint8_t, 2> first{};
+  std::array<uint8_t, 2> second{};
+  if (!read_register(expanders_[0], 0x00, first.data(), first.size()) ||
+      !read_register(expanders_[1], 0x00, second.data(), second.size())) {
+    return false;
+  }
+  const uint32_t raw = static_cast<uint32_t>(first[0]) |
+                       (static_cast<uint32_t>(first[1]) << 8U) |
+                       (static_cast<uint32_t>(second[0]) << 16U) |
+                       (static_cast<uint32_t>(second[1]) << 24U);
+  active_low_bits = ~raw;
+  return true;
+}
+
 bool EspBoard::initialize()
 {
   adc_oneshot_unit_init_cfg_t unit_config{};
@@ -580,7 +894,13 @@ bool EspBoard::initialize()
     ESP_LOGW(kTag, "ADC eFuse calibration unavailable");
   }
 
-  return configure_button(CONFIG_RIVETTX_BUTTON_UP) &&
+  bool digital_inputs_ok = true;
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  digital_inputs_ok =
+      configure_optional_switch(CONFIG_RIVETTX_ENCODER_A_GPIO) &&
+      configure_optional_switch(CONFIG_RIVETTX_ENCODER_B_GPIO);
+#else
+  digital_inputs_ok = configure_button(CONFIG_RIVETTX_BUTTON_UP) &&
          configure_button(CONFIG_RIVETTX_BUTTON_DOWN) &&
          configure_button(CONFIG_RIVETTX_BUTTON_ENTER) &&
          configure_button(CONFIG_RIVETTX_BUTTON_BACK) &&
@@ -602,6 +922,8 @@ bool EspBoard::initialize()
          configure_optional_switch(CONFIG_RIVETTX_TRIM_THR_POS_GPIO) &&
          configure_optional_switch(CONFIG_RIVETTX_TRIM_RUD_NEG_GPIO) &&
          configure_optional_switch(CONFIG_RIVETTX_TRIM_RUD_POS_GPIO);
+#endif
+  return digital_inputs_ok;
 }
 
 RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
@@ -620,26 +942,71 @@ RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
     }
     inputs.axes[i] = static_cast<int16_t>(value);
   }
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  const uint32_t expanded = rev_a_controls_.load(std::memory_order_acquire);
+  const TimeUs expanded_at =
+      rev_a_controls_sampled_at_.load(std::memory_order_acquire);
+  const bool expanded_valid =
+      rev_a_controls_valid_.load(std::memory_order_acquire) &&
+      expanded_at != 0 && sample_time_us >= expanded_at &&
+      sample_time_us - expanded_at <= 50000;
+  inputs.valid = inputs.valid && expanded_valid;
+  const auto expanded_input = [expanded](uint8_t bit) {
+    return (expanded & (1UL << bit)) != 0;
+  };
+  inputs.switches[0] = expanded_input(0);
+  inputs.switches[1] = expanded_input(1);
+  inputs.switches[2] = expanded_input(2);
+  inputs.switches[3] = expanded_input(3);
+  inputs.switches[4] = expanded_input(4);
+#else
   inputs.switches[0] = active_low_input(CONFIG_RIVETTX_BUTTON_UP);
   inputs.switches[1] = active_low_input(CONFIG_RIVETTX_BUTTON_DOWN);
   inputs.switches[2] = active_low_input(CONFIG_RIVETTX_BUTTON_ENTER);
   inputs.switches[3] = active_low_input(CONFIG_RIVETTX_BUTTON_BACK);
   inputs.switches[4] = active_low_input(CONFIG_RIVETTX_AUX1_GPIO);
+#endif
   inputs.switch_positions_valid = true;
   for (std::size_t i = 0; i < kNavigationButtonCount; ++i) {
     inputs.switch_positions[i] = inputs.switches[i] ? 1 : -1;
   }
   inputs.switch_positions[4] = inputs.switches[4] ? 1 : -1;
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  const auto expanded_position = [&expanded_input](uint8_t high_bit,
+                                                   uint8_t low_bit) {
+    const bool high = expanded_input(high_bit);
+    const bool low = expanded_input(low_bit);
+    return high == low ? (high ? int8_t{0} : int8_t{0})
+                       : (high ? int8_t{1} : int8_t{-1});
+  };
+  if ((expanded_input(5) && expanded_input(6)) ||
+      (expanded_input(7) && expanded_input(8)) ||
+      (expanded_input(9) && expanded_input(10))) {
+    inputs.valid = false;
+    inputs.switch_positions_valid = false;
+  }
+  inputs.switch_positions[5] = expanded_position(5, 6);
+  inputs.switch_positions[6] = expanded_position(7, 8);
+  inputs.switch_positions[7] = expanded_position(9, 10);
+#else
   inputs.switch_positions[5] = switch_position(
       CONFIG_RIVETTX_AUX2_GPIO, CONFIG_RIVETTX_AUX2_LOW_GPIO, inputs.valid);
   inputs.switch_positions[6] = switch_position(
       CONFIG_RIVETTX_AUX3_GPIO, CONFIG_RIVETTX_AUX3_LOW_GPIO, inputs.valid);
   inputs.switch_positions[7] = switch_position(
       CONFIG_RIVETTX_AUX4_GPIO, CONFIG_RIVETTX_AUX4_LOW_GPIO, inputs.valid);
+#endif
   for (std::size_t i = 5; i < 8; ++i) {
     inputs.switches[i] = inputs.switch_positions[i] > 0;
   }
 
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  for (std::size_t i = 0; i < kTrimSwitchCount; ++i) {
+    const std::size_t index = kFirstTrimSwitch + i;
+    inputs.switches[index] = expanded_input(static_cast<uint8_t>(12 + i));
+    inputs.switch_positions[index] = inputs.switches[index] ? 1 : -1;
+  }
+#else
   const std::array<int, kTrimSwitchCount> trim_pins{
       CONFIG_RIVETTX_TRIM_AIL_NEG_GPIO,
       CONFIG_RIVETTX_TRIM_AIL_POS_GPIO,
@@ -654,6 +1021,7 @@ RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
     inputs.switches[index] = active_low_input(trim_pins[i]);
     inputs.switch_positions[index] = inputs.switches[index] ? 1 : -1;
   }
+#endif
 
   if (CONFIG_RIVETTX_ENCODER_A_GPIO >= 0) {
     inputs.encoder_delta = encoder_decoder_.update(
@@ -661,8 +1029,21 @@ RawInputs EspBoard::sample_inputs(TimeUs sample_time_us)
         active_low_input(CONFIG_RIVETTX_ENCODER_B_GPIO));
   }
   inputs.encoder_pressed =
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+      expanded_input(11);
+#else
       active_low_input(CONFIG_RIVETTX_ENCODER_PRESS_GPIO);
+#endif
   return inputs;
+}
+
+void EspBoard::publish_rev_a_controls(uint32_t active_low_bits,
+                                      TimeUs sampled_at_us, bool valid)
+{
+  rev_a_controls_.store(active_low_bits, std::memory_order_relaxed);
+  rev_a_controls_sampled_at_.store(sampled_at_us,
+                                   std::memory_order_relaxed);
+  rev_a_controls_valid_.store(valid, std::memory_order_release);
 }
 
 uint8_t EspBoard::configured_axis_count() const
@@ -701,8 +1082,12 @@ BatterySensorSample EspBoard::sample_battery()
 
 bool EspBoard::recovery_button_pressed() const
 {
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  return (rev_a_controls_.load(std::memory_order_acquire) & (1UL << 3U)) != 0;
+#else
   return gpio_get_level(
              static_cast<gpio_num_t>(CONFIG_RIVETTX_BUTTON_BACK)) == 0;
+#endif
 }
 
 bool EspCrsfTransport::initialize()

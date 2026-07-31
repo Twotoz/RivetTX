@@ -6,6 +6,7 @@ SANITIZE_BUILD := $(BUILD)/sanitize
 CORE := \
 	components/rivet_core/at7456e.cpp \
 	components/rivet_core/audio.cpp \
+	components/rivet_core/board_power.cpp \
 	components/rivet_core/core.cpp \
 	components/rivet_core/crsf.cpp \
 	components/rivet_core/elrs.cpp \

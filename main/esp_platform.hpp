@@ -2,6 +2,7 @@
 
 #include "rivettx/core.hpp"
 #include "rivettx/at7456e.hpp"
+#include "rivettx/board_power.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
 #include "rivettx/product.hpp"
@@ -10,6 +11,7 @@
 #include "rivettx/ui.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -35,6 +37,8 @@ class EspBoard {
   BatterySensorSample sample_battery();
   bool recovery_button_pressed() const;
   uint8_t configured_axis_count() const;
+  void publish_rev_a_controls(uint32_t active_low_bits, TimeUs sampled_at_us,
+                              bool valid);
 
  private:
   struct AdcInput {
@@ -53,6 +57,35 @@ class EspBoard {
   AdcInput vrx_rssi_{};
   uint8_t configured_axis_count_ = 4;
   RotaryEncoderDecoder encoder_decoder_{};
+  std::atomic<uint32_t> rev_a_controls_{0};
+  std::atomic<TimeUs> rev_a_controls_sampled_at_{0};
+  std::atomic<bool> rev_a_controls_valid_{false};
+};
+
+class EspBoardPowerIo final : public IBoardPowerHardware {
+ public:
+  bool initialize() override;
+  bool set_video_5v(bool enabled) override;
+  bool set_display_5v(bool enabled) override;
+  bool set_elrs_5v(bool enabled) override;
+  bool set_backlight(uint8_t percent) override;
+  bool set_amt630a_reset(bool asserted) override;
+  bool set_amt630a_flash_owner(bool esp_owns_bus) override;
+  bool read_vbus_present(bool& present) override;
+  ChargerTelemetry read_charger() override;
+  FuelGaugeTelemetry read_fuel_gauge() override;
+  bool read_expanded_controls(uint32_t& active_low_bits);
+
+ private:
+  bool set_output(int gpio, bool enabled);
+  bool read_register(i2c_master_dev_handle_t device, uint8_t reg,
+                     uint8_t* data, std::size_t size);
+
+  i2c_master_bus_handle_t bus_ = nullptr;
+  i2c_master_dev_handle_t charger_ = nullptr;
+  i2c_master_dev_handle_t gauge_ = nullptr;
+  std::array<i2c_master_dev_handle_t, 2> expanders_{};
+  bool initialized_ = false;
 };
 
 class EspRx5808Io final : public IRtc6715Io {

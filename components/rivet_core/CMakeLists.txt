@@ -2,6 +2,7 @@ idf_component_register(
   SRCS
     "at7456e.cpp"
     "audio.cpp"
+    "board_power.cpp"
     "core.cpp"
     "crsf.cpp"
     "elrs.cpp"

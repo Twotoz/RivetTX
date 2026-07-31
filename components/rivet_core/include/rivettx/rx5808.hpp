@@ -4,14 +4,45 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 
 namespace rivettx {
 
 constexpr std::size_t kVrxBandCount = 6;
 constexpr std::size_t kVrxChannelsPerBand = 8;
+constexpr std::size_t kVrxCommandQueueCapacity = 8;
 
 uint16_t vrx_frequency_mhz(uint8_t band, uint8_t channel);
 bool vrx_frequency_supported(uint16_t frequency_mhz);
+
+enum class VrxCommandType : uint8_t {
+  Tune,
+  StartScan,
+  CancelScan,
+};
+
+struct VrxCommand {
+  VrxCommandType type = VrxCommandType::Tune;
+  uint8_t band = 0;
+  uint8_t channel = 0;
+};
+
+// A fixed-capacity mailbox used between UI/control code and the low-priority
+// VRX task. The caller supplies platform locking; the container itself never
+// allocates, waits, or overwrites an older command.
+class VrxCommandQueue {
+ public:
+  bool push(VrxCommand command);
+  bool pop(VrxCommand& command);
+  std::size_t size() const;
+  bool empty() const;
+
+ private:
+  std::array<VrxCommand, kVrxCommandQueueCapacity> commands_{};
+  std::size_t read_ = 0;
+  std::size_t write_ = 0;
+  std::size_t count_ = 0;
+};
 
 enum class VrxTuneState : uint8_t {
   Idle,
