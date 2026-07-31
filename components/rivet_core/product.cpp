@@ -8,136 +8,280 @@
 
 namespace rivettx {
 
-namespace {
-
-constexpr std::array<std::array<uint16_t, kVrxChannelsPerBand>,
-                     kVrxBandCount>
-    kVrxFrequencies{{
-        {{5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725}},
-        {{5733, 5752, 5771, 5790, 5809, 5828, 5847, 5866}},
-        {{5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945}},
-        {{5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880}},
-        {{5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917}},
-        {{5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621}},
-    }};
-
-uint8_t rssi_percent(int16_t rssi)
+VrxController::VrxController(IVrxHardware& hardware,
+                             uint32_t scan_dwell_ms)
+    : VrxController(hardware, VrxControllerConfig{})
 {
-  return static_cast<uint8_t>(
-      clamp<int32_t>(0, (static_cast<int32_t>(rssi) + 100) * 100 / 80,
-                     100));
-}
-
-}  // namespace
-
-uint16_t vrx_frequency_mhz(uint8_t band, uint8_t channel)
-{
-  if (band >= kVrxBandCount || channel >= kVrxChannelsPerBand) {
-    return 0;
-  }
-  return kVrxFrequencies[band][channel];
+  config_.scan_dwell_ms = std::max<uint32_t>(20, scan_dwell_ms);
 }
 
 VrxController::VrxController(IVrxHardware& hardware,
-                             uint32_t scan_dwell_ms)
-    : hardware_(hardware),
-      scan_dwell_ms_(std::max<uint32_t>(20, scan_dwell_ms))
+                             VrxControllerConfig config)
+    : hardware_(hardware), config_(config)
 {
+  config_.scan_dwell_ms = std::max<uint32_t>(20, config_.scan_dwell_ms);
+  config_.tune_timeout_ms =
+      std::max<uint32_t>(10, config_.tune_timeout_ms);
+  config_.rssi_sample_interval_ms =
+      std::max<uint32_t>(5, config_.rssi_sample_interval_ms);
+  config_.rssi_stale_ms = std::max<uint32_t>(
+      config_.rssi_sample_interval_ms, config_.rssi_stale_ms);
+  config_.rssi_filter_shift =
+      static_cast<uint8_t>(clamp<int32_t>(0, config_.rssi_filter_shift, 8));
+  config_.rssi_hysteresis_percent = static_cast<uint8_t>(
+      clamp<int32_t>(0, config_.rssi_hysteresis_percent, 20));
+  rssi_calibration_valid_ =
+      config_.rssi_min_adc >= 0 &&
+      config_.rssi_max_adc > config_.rssi_min_adc &&
+      config_.rssi_max_adc <= 4095;
+  if (!rssi_calibration_valid_) {
+    status_.rssi_state = VrxRssiState::SensorFault;
+    status_.failure = VrxFailure::RssiCalibration;
+  }
 }
 
 bool VrxController::select(uint8_t band, uint8_t channel, TimeUs now_us)
 {
+  status_.scanning = false;
+  finishing_scan_ = false;
+  restoring_after_scan_ = false;
+  scan_result_pending_ = false;
+  hardware_.cancel_tune();
+  return request_tune(band, channel, now_us);
+}
+
+bool VrxController::begin_scan(TimeUs now_us)
+{
+  if (status_.scanning) {
+    return false;
+  }
+  scan_origin_band_ = status_.band;
+  scan_origin_channel_ = status_.channel;
+  scan_index_ = 0;
+  best_index_ = 0;
+  best_rssi_ = INT16_MIN;
+  status_.scanning = true;
+  finishing_scan_ = false;
+  restoring_after_scan_ = false;
+  scan_result_pending_ = false;
+  hardware_.cancel_tune();
+  return tune_scan_candidate(now_us);
+}
+
+bool VrxController::cancel_scan(TimeUs now_us)
+{
+  if (!status_.scanning) {
+    return false;
+  }
+  status_.scanning = false;
+  finishing_scan_ = false;
+  restoring_after_scan_ = true;
+  hardware_.cancel_tune();
+  return request_tune(scan_origin_band_, scan_origin_channel_, now_us);
+}
+
+void VrxController::set_video_signal(bool present, bool fresh)
+{
+  status_.signal_fresh = fresh;
+  status_.video_signal = fresh && present;
+}
+
+bool VrxController::request_tune(uint8_t band, uint8_t channel,
+                                 TimeUs now_us)
+{
   const uint16_t frequency = vrx_frequency_mhz(band, channel);
-  if (frequency == 0 || !hardware_.tune(frequency)) {
-    status_.available = false;
+  if (frequency == 0 || !vrx_frequency_supported(frequency)) {
+    fail_tune(VrxFailure::InvalidFrequency);
     return false;
   }
   status_.band = band;
   status_.channel = channel;
   status_.frequency_mhz = frequency;
-  status_.available = true;
-  status_.scanning = false;
-  status_.signal_fresh = false;
-  last_sample_us_ = now_us;
+  if (!hardware_.start_tune(frequency, now_us)) {
+    fail_tune(VrxFailure::TuneRejected);
+    return false;
+  }
+  requested_band_ = band;
+  requested_channel_ = channel;
+  status_.tuning = true;
+  status_.available = false;
+  status_.failure = VrxFailure::None;
+  if (status_.rssi_state == VrxRssiState::Valid) {
+    status_.rssi_state = VrxRssiState::Stale;
+  }
+  tune_deadline_us_ =
+      now_us + static_cast<TimeUs>(config_.tune_timeout_ms) * 1000U;
   return true;
-}
-
-bool VrxController::begin_scan(TimeUs now_us)
-{
-  scan_index_ = 0;
-  best_index_ = 0;
-  best_rssi_ = INT16_MIN;
-  status_.scanning = true;
-  next_scan_step_us_ = now_us;
-  return tune_scan_candidate(now_us);
-}
-
-void VrxController::cancel_scan()
-{
-  status_.scanning = false;
 }
 
 bool VrxController::tune_scan_candidate(TimeUs now_us)
 {
   if (scan_index_ >= kVrxBandCount * kVrxChannelsPerBand) {
-    status_.scanning = false;
-    const uint8_t band =
-        static_cast<uint8_t>(best_index_ / kVrxChannelsPerBand);
-    const uint8_t channel =
-        static_cast<uint8_t>(best_index_ % kVrxChannelsPerBand);
-    return select(band, channel, now_us);
+    finish_scan(now_us);
+    return status_.tuning;
   }
   const uint8_t band =
       static_cast<uint8_t>(scan_index_ / kVrxChannelsPerBand);
   const uint8_t channel =
       static_cast<uint8_t>(scan_index_ % kVrxChannelsPerBand);
-  const uint16_t frequency = vrx_frequency_mhz(band, channel);
-  if (!hardware_.tune(frequency)) {
-    status_.available = false;
-    status_.scanning = false;
-    return false;
-  }
-  status_.band = band;
-  status_.channel = channel;
-  status_.frequency_mhz = frequency;
-  status_.available = true;
-  status_.signal_fresh = false;
-  next_scan_step_us_ =
-      now_us + static_cast<TimeUs>(scan_dwell_ms_) * 1000;
-  return true;
+  return request_tune(band, channel, now_us);
 }
 
 void VrxController::tick(TimeUs now_us)
 {
-  if (!status_.available) {
-    return;
-  }
-  int16_t rssi = 0;
-  bool video_signal = false;
-  if (hardware_.sample(rssi, video_signal)) {
-    status_.rssi = rssi;
-    status_.strength_percent = rssi_percent(rssi);
-    status_.video_signal = video_signal;
-    status_.signal_fresh = true;
-    last_sample_us_ = now_us;
-    if (status_.scanning && rssi > best_rssi_) {
-      best_rssi_ = rssi;
-      best_index_ = scan_index_;
+  hardware_.tick(now_us);
+  if (status_.tuning) {
+    const VrxTuneState tune_state = hardware_.tune_state();
+    if (tune_state == VrxTuneState::Complete) {
+      finish_tune(now_us);
+    } else if (tune_state == VrxTuneState::Failed) {
+      fail_tune(VrxFailure::Communication);
+    } else if (now_us >= tune_deadline_us_) {
+      hardware_.cancel_tune();
+      fail_tune(VrxFailure::TuneTimeout);
     }
-  } else if (last_sample_us_ == 0 ||
-             now_us - last_sample_us_ > 1000000) {
-    status_.signal_fresh = false;
-    status_.video_signal = false;
   }
-  if (status_.scanning && now_us >= next_scan_step_us_) {
+
+  if (status_.scanning && !status_.tuning &&
+      !finishing_scan_ && !restoring_after_scan_ &&
+      now_us >= next_scan_step_us_) {
+    (void)sample_rssi(now_us, true);
     ++scan_index_;
     (void)tune_scan_candidate(now_us);
+  } else if (!status_.scanning && !status_.tuning &&
+             status_.available && now_us >= next_sample_us_) {
+    (void)sample_rssi(now_us, false);
+    next_sample_us_ =
+        now_us +
+        static_cast<TimeUs>(config_.rssi_sample_interval_ms) * 1000U;
+  }
+
+  if (status_.rssi_state == VrxRssiState::Valid &&
+      last_sample_us_ != 0 &&
+      now_us - last_sample_us_ >
+          static_cast<TimeUs>(config_.rssi_stale_ms) * 1000U) {
+    status_.rssi_state = VrxRssiState::Stale;
   }
 }
 
 const VrxStatus& VrxController::status() const
 {
   return status_;
+}
+
+bool VrxController::take_scan_result(uint8_t& band, uint8_t& channel)
+{
+  if (!scan_result_pending_) {
+    return false;
+  }
+  band = status_.band;
+  channel = status_.channel;
+  scan_result_pending_ = false;
+  return true;
+}
+
+void VrxController::finish_tune(TimeUs now_us)
+{
+  status_.tuning = false;
+  status_.available = true;
+  status_.failure = VrxFailure::None;
+  status_.band = requested_band_;
+  status_.channel = requested_channel_;
+  status_.frequency_mhz =
+      vrx_frequency_mhz(requested_band_, requested_channel_);
+  if (status_.scanning && finishing_scan_) {
+    status_.scanning = false;
+    finishing_scan_ = false;
+    scan_result_pending_ = true;
+    next_sample_us_ = now_us;
+  } else if (restoring_after_scan_) {
+    status_.scanning = false;
+    restoring_after_scan_ = false;
+    next_sample_us_ = now_us;
+  } else if (status_.scanning) {
+    next_scan_step_us_ =
+        now_us + static_cast<TimeUs>(config_.scan_dwell_ms) * 1000U;
+  } else {
+    next_sample_us_ = now_us;
+  }
+}
+
+void VrxController::fail_tune(VrxFailure failure)
+{
+  status_.tuning = false;
+  status_.available = false;
+  status_.scanning = false;
+  status_.failure = failure;
+  finishing_scan_ = false;
+  restoring_after_scan_ = false;
+}
+
+bool VrxController::sample_rssi(TimeUs now_us, bool scan_sample)
+{
+  if (!rssi_calibration_valid_) {
+    status_.rssi_state = VrxRssiState::SensorFault;
+    status_.failure = VrxFailure::RssiCalibration;
+    return false;
+  }
+  const VrxAdcSample sample = hardware_.sample_rssi();
+  if (sample.state == VrxAdcSampleState::Unavailable) {
+    status_.rssi_state = VrxRssiState::Unavailable;
+    return false;
+  }
+  if (sample.state == VrxAdcSampleState::SensorFault || sample.raw < 0 ||
+      sample.raw > 4095) {
+    status_.rssi_state = VrxRssiState::SensorFault;
+    return false;
+  }
+
+  const bool first_filtered_sample = !filter_initialized_;
+  if (first_filtered_sample) {
+    filtered_rssi_adc_ = sample.raw;
+    filter_initialized_ = true;
+  } else {
+    const int32_t divisor = 1 << config_.rssi_filter_shift;
+    filtered_rssi_adc_ +=
+        (static_cast<int32_t>(sample.raw) - filtered_rssi_adc_) / divisor;
+  }
+  status_.rssi = static_cast<int16_t>(filtered_rssi_adc_);
+  const int32_t calibrated = clamp<int32_t>(
+      0,
+      (filtered_rssi_adc_ - config_.rssi_min_adc) * 100 /
+          (config_.rssi_max_adc - config_.rssi_min_adc),
+      100);
+  const int32_t difference =
+      std::abs(calibrated - static_cast<int32_t>(status_.strength_percent));
+  if (first_filtered_sample ||
+      difference >= config_.rssi_hysteresis_percent) {
+    status_.strength_percent = static_cast<uint8_t>(calibrated);
+  }
+  status_.rssi_state = VrxRssiState::Valid;
+  last_sample_us_ = now_us;
+  if (scan_sample && sample.raw > best_rssi_) {
+    best_rssi_ = sample.raw;
+    best_index_ = scan_index_;
+  }
+  return true;
+}
+
+void VrxController::finish_scan(TimeUs now_us)
+{
+  hardware_.cancel_tune();
+  if (best_rssi_ != INT16_MIN) {
+    finishing_scan_ = true;
+    const uint8_t band =
+        static_cast<uint8_t>(best_index_ / kVrxChannelsPerBand);
+    const uint8_t channel =
+        static_cast<uint8_t>(best_index_ % kVrxChannelsPerBand);
+    if (!request_tune(band, channel, now_us)) {
+      finishing_scan_ = false;
+    }
+    return;
+  }
+  restoring_after_scan_ = true;
+  if (!request_tune(scan_origin_band_, scan_origin_channel_, now_us)) {
+    restoring_after_scan_ = false;
+  }
 }
 
 char CharacterOsdFrame::at(std::size_t column, std::size_t row) const
@@ -236,6 +380,19 @@ UiScreen make_openpocket_group_menu_screen(OpenPocketMenuGroup group)
 UiScreen make_openpocket_video_screen(const VrxStatus& vrx)
 {
   UiScreen screen{"video", "Video receiver", {}};
+  const char* rssi_text = "UNAVAILABLE";
+  switch (vrx.rssi_state) {
+    case VrxRssiState::Valid:
+      break;
+    case VrxRssiState::Stale:
+      rssi_text = "STALE";
+      break;
+    case VrxRssiState::SensorFault:
+      rssi_text = "SENSOR FAULT";
+      break;
+    case VrxRssiState::Unavailable:
+      break;
+  }
   screen.fields.push_back(
       {"band", "BAND", "", UiFieldKind::Choice,
        static_cast<int32_t>(vrx.band + 1), 1,
@@ -258,11 +415,16 @@ UiScreen make_openpocket_video_screen(const VrxStatus& vrx)
        UiFieldKind::Label, vrx.video_signal ? 1 : 0, 0, 1, false, true});
   screen.fields.push_back(
       {"rssi", "VRX STRENGTH",
-       std::to_string(vrx.strength_percent) + "%",
-       UiFieldKind::Progress, vrx.strength_percent, 0, 100, false, true});
+       vrx.rssi_state == VrxRssiState::Valid
+           ? std::to_string(vrx.strength_percent) + "%"
+           : rssi_text,
+       UiFieldKind::Progress,
+       vrx.rssi_state == VrxRssiState::Valid ? vrx.strength_percent : 0,
+       0, 100, false, true});
   screen.fields.push_back(
       {"scan", vrx.scanning ? "CANCEL SCAN" : "START SCAN",
-       "ENTER", UiFieldKind::Action, 0, 0, 1, false, true});
+       vrx.tuning ? "TUNING" : "ENTER", UiFieldKind::Action,
+       0, 0, 1, false, true});
   return screen;
 }
 

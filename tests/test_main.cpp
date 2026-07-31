@@ -51,26 +51,111 @@ class FakeWatchdog final : public IWatchdog {
 
 class FakeVrxHardware final : public IVrxHardware {
  public:
-  bool tune(uint16_t frequency_mhz) override
+  bool start_tune(uint16_t frequency_mhz, TimeUs) override
   {
     tuned = frequency_mhz;
     ++tunes;
+    state = available ? VrxTuneState::Complete : VrxTuneState::Failed;
     return available;
   }
 
-  bool sample(int16_t& rssi, bool& video_signal) override
+  void tick(TimeUs) override {}
+
+  VrxTuneState tune_state() const override
   {
-    if (!available) {
-      return false;
+    return state;
+  }
+
+  void cancel_tune() override
+  {
+    state = VrxTuneState::Idle;
+  }
+
+  VrxAdcSample sample_rssi() override
+  {
+    if (rssi_state != VrxAdcSampleState::Valid) {
+      return {rssi_state, 0};
     }
-    rssi = tuned == 5800 ? -20 : -90;
-    video_signal = tuned == 5800;
-    return true;
+    if (!available) {
+      return {VrxAdcSampleState::SensorFault, 0};
+    }
+    const int16_t value = fixed_rssi >= 0
+                              ? fixed_rssi
+                              : static_cast<int16_t>(
+                                    tuned == strongest_frequency
+                                        ? strongest_rssi
+                                        : default_rssi);
+    return {VrxAdcSampleState::Valid, value};
   }
 
   uint16_t tuned = 0;
   uint32_t tunes = 0;
   bool available = true;
+  VrxTuneState state = VrxTuneState::Idle;
+  VrxAdcSampleState rssi_state = VrxAdcSampleState::Valid;
+  uint16_t strongest_frequency = 5800;
+  int16_t strongest_rssi = 3000;
+  int16_t default_rssi = 500;
+  int16_t fixed_rssi = -1;
+};
+
+class FakeRtc6715Io final : public IRtc6715Io {
+ public:
+  bool initialize() override
+  {
+    return initialize_ok;
+  }
+
+  bool set_data(bool high) override
+  {
+    if (fail_writes) return false;
+    data = high;
+    return true;
+  }
+
+  bool set_clock(bool high) override
+  {
+    if (fail_writes) return false;
+    if (!clock && high && !latch && captured_bits < 25) {
+      if (data) captured_frame |= 1U << captured_bits;
+      ++captured_bits;
+    }
+    clock = high;
+    return true;
+  }
+
+  bool set_latch(bool high) override
+  {
+    if (fail_writes) return false;
+    if (!latch && high && captured_bits == 25) {
+      frames.push_back(captured_frame);
+      captured_bits = 0;
+      captured_frame = 0;
+    } else if (latch && !high) {
+      captured_bits = 0;
+      captured_frame = 0;
+    }
+    latch = high;
+    return true;
+  }
+
+  bool read_rssi(int& raw_adc) override
+  {
+    if (fail_adc) return false;
+    raw_adc = rssi;
+    return true;
+  }
+
+  bool initialize_ok = true;
+  bool fail_writes = false;
+  bool fail_adc = false;
+  bool data = false;
+  bool clock = false;
+  bool latch = true;
+  uint8_t captured_bits = 0;
+  uint32_t captured_frame = 0;
+  int rssi = 1000;
+  std::vector<uint32_t> frames;
 };
 
 class FakeAt7456eSpi final : public IAt7456eSpi {
@@ -1882,14 +1967,19 @@ void test_openpocket_product_services()
   FakeVrxHardware hardware;
   VrxController vrx(hardware, 80);
   CHECK(vrx.select(3, 3, 1000));
+  vrx.set_video_signal(true, true);
   vrx.tick(2000);
   CHECK(vrx.status().frequency_mhz == 5800);
   CHECK(vrx.status().video_signal);
   CHECK(vrx.status().strength_percent == 100);
   CHECK(vrx.begin_scan(100000));
-  for (std::size_t step = 0;
-       step <= kVrxBandCount * kVrxChannelsPerBand; ++step) {
-    vrx.tick(100000 + (step + 1) * 80000);
+  TimeUs scan_time = 100000;
+  for (std::size_t step = 0; step < 120 && vrx.status().scanning;
+       ++step) {
+    vrx.tick(scan_time);
+    scan_time += 80000;
+    vrx.tick(scan_time);
+    scan_time += 1000;
   }
   CHECK(!vrx.status().scanning);
   CHECK(vrx.status().frequency_mhz == 5800);
@@ -2050,6 +2140,224 @@ void test_openpocket_product_services()
   evidence.arm_channel_low = true;
   CHECK(guide.advance(evidence));
   CHECK(guide.complete());
+}
+
+void test_rx5808_backend()
+{
+  Rtc6715Program program{};
+  CHECK(!rtc6715_program_for_frequency(0, program));
+  CHECK(!rtc6715_program_for_frequency(5801, program));
+  CHECK(!rtc6715_program_for_frequency(6000, program));
+  CHECK(rtc6715_program_for_frequency(5865, program));
+  CHECK(program.synthesizer_b == 0x2A05);
+  CHECK(program.frame == 0x00540B1);
+  CHECK(rtc6715_program_for_frequency(5800, program));
+  CHECK(program.synthesizer_b == 0x2984);
+  CHECK(program.frame == 0x0053091);
+  CHECK(rtc6715_program_for_frequency(5362, program));
+  CHECK(program.synthesizer_b == 0x2609);
+  CHECK(program.frame == 0x004C131);
+  CHECK(rtc6715_program_for_frequency(5945, program));
+  CHECK(program.synthesizer_b == 0x2A8D);
+  CHECK(program.frame == 0x00551B1);
+
+  FakeRtc6715Io io;
+  Rtc6715Backend backend(io, {1, 100});
+  CHECK(backend.initialize());
+  TimeUs now = 1000;
+  std::size_t programmed = 0;
+  for (uint8_t band = 0; band < kVrxBandCount; ++band) {
+    for (uint8_t channel = 0; channel < kVrxChannelsPerBand; ++channel) {
+      const uint16_t frequency = vrx_frequency_mhz(band, channel);
+      CHECK(frequency != 0);
+      CHECK(vrx_frequency_supported(frequency));
+      CHECK(rtc6715_program_for_frequency(frequency, program));
+      CHECK(backend.start_tune(frequency, now));
+      for (std::size_t tick = 0;
+           tick < 100 && backend.tune_state() == VrxTuneState::Pending;
+           ++tick) {
+        backend.tick(now);
+        now += 10;
+      }
+      CHECK(backend.tune_state() == VrxTuneState::Complete);
+      CHECK(backend.tuned_frequency_mhz() == frequency);
+      CHECK(io.frames.size() == programmed + 1);
+      if (io.frames.size() == programmed + 1) {
+        CHECK(io.frames.back() == program.frame);
+      }
+      ++programmed;
+    }
+  }
+  CHECK(programmed == kVrxBandCount * kVrxChannelsPerBand);
+  CHECK(!backend.start_tune(5801, now));
+
+  io.fail_writes = true;
+  CHECK(backend.start_tune(5800, now));
+  backend.tick(now);
+  CHECK(backend.tune_state() == VrxTuneState::Failed);
+  io.fail_writes = false;
+  CHECK(backend.start_tune(5800, now + 100));
+  for (std::size_t tick = 0;
+       tick < 100 && backend.tune_state() == VrxTuneState::Pending;
+       ++tick) {
+    now += 10;
+    backend.tick(now);
+  }
+  CHECK(backend.tune_state() == VrxTuneState::Complete);
+
+  FakeRtc6715Io timeout_io;
+  Rtc6715Backend timeout_backend(timeout_io, {100, 10});
+  CHECK(timeout_backend.initialize());
+  CHECK(timeout_backend.start_tune(5800, 0));
+  timeout_backend.tick(10000);
+  CHECK(timeout_backend.tune_state() == VrxTuneState::Failed);
+
+  FakeVrxHardware hardware;
+  VrxControllerConfig config{};
+  config.scan_dwell_ms = 20;
+  config.tune_timeout_ms = 100;
+  config.rssi_sample_interval_ms = 10;
+  config.rssi_stale_ms = 100;
+  config.rssi_min_adc = 100;
+  config.rssi_max_adc = 1100;
+  config.rssi_filter_shift = 1;
+  config.rssi_hysteresis_percent = 5;
+  hardware.fixed_rssi = 600;
+  VrxController vrx(hardware, config);
+  CHECK(vrx.select(0, 0, 0));
+  vrx.tick(0);
+  CHECK(vrx.status().available);
+  CHECK(vrx.status().rssi_state == VrxRssiState::Valid);
+  CHECK(vrx.status().strength_percent == 50);
+  vrx.set_video_signal(false, true);
+  CHECK(vrx.status().signal_fresh);
+  CHECK(!vrx.status().video_signal);
+  CHECK(vrx.status().rssi_state == VrxRssiState::Valid);
+
+  hardware.fixed_rssi = 620;
+  vrx.tick(10000);
+  CHECK(vrx.status().strength_percent == 50);
+  hardware.fixed_rssi = 1100;
+  vrx.tick(20000);
+  CHECK(vrx.status().strength_percent == 75);
+  CHECK(vrx.select(0, 1, 21000));
+  CHECK(vrx.status().rssi_state == VrxRssiState::Stale);
+  vrx.tick(21000);
+  CHECK(vrx.status().rssi_state == VrxRssiState::Valid);
+  hardware.rssi_state = VrxAdcSampleState::SensorFault;
+  vrx.tick(31000);
+  CHECK(vrx.status().rssi_state == VrxRssiState::SensorFault);
+  hardware.rssi_state = VrxAdcSampleState::Unavailable;
+  vrx.tick(41000);
+  CHECK(vrx.status().rssi_state == VrxRssiState::Unavailable);
+
+  VrxControllerConfig malformed = config;
+  malformed.rssi_min_adc = 2000;
+  malformed.rssi_max_adc = 1000;
+  VrxController invalid_calibration(hardware, malformed);
+  CHECK(invalid_calibration.status().rssi_state ==
+        VrxRssiState::SensorFault);
+  CHECK(invalid_calibration.status().failure ==
+        VrxFailure::RssiCalibration);
+
+  hardware.rssi_state = VrxAdcSampleState::Valid;
+  hardware.fixed_rssi = -1;
+  hardware.strongest_frequency = 5800;
+  hardware.strongest_rssi = 1090;
+  hardware.default_rssi = 150;
+  VrxController scanner(hardware, config);
+  CHECK(scanner.select(0, 0, 0));
+  scanner.tick(0);
+  CHECK(scanner.begin_scan(1000));
+  TimeUs scan_now = 1000;
+  std::size_t scan_steps = 0;
+  while (scanner.status().scanning && scan_steps < 120) {
+    scanner.tick(scan_now);
+    scan_now += 20000;
+    scanner.tick(scan_now);
+    scan_now += 1000;
+    ++scan_steps;
+  }
+  CHECK(scan_steps <= 50);
+  CHECK(!scanner.status().scanning);
+  CHECK(scanner.status().band == 3);
+  CHECK(scanner.status().channel == 3);
+  CHECK(scanner.status().frequency_mhz == 5800);
+  uint8_t result_band = 0;
+  uint8_t result_channel = 0;
+  CHECK(scanner.take_scan_result(result_band, result_channel));
+  CHECK(result_band == 3);
+  CHECK(result_channel == 3);
+
+  CHECK(scanner.begin_scan(scan_now));
+  scanner.tick(scan_now);
+  CHECK(scanner.cancel_scan(scan_now + 1));
+  scanner.tick(scan_now + 1);
+  CHECK(!scanner.status().scanning);
+  CHECK(scanner.status().frequency_mhz == 5800);
+
+  Model startup_model = make_default_model();
+  startup_model.vrx_band = 4;
+  startup_model.vrx_channel = 5;
+  CHECK(scanner.select(startup_model.vrx_band,
+                       startup_model.vrx_channel, scan_now + 2));
+  scanner.tick(scan_now + 2);
+  CHECK(scanner.status().frequency_mhz ==
+        vrx_frequency_mhz(4, 5));
+  Model switched_model = make_default_model();
+  switched_model.vrx_band = 2;
+  switched_model.vrx_channel = 7;
+  CHECK(scanner.select(switched_model.vrx_band,
+                       switched_model.vrx_channel, scan_now + 3));
+  scanner.tick(scan_now + 3);
+  CHECK(scanner.status().frequency_mhz ==
+        vrx_frequency_mhz(2, 7));
+
+  hardware.available = false;
+  CHECK(!scanner.select(0, 0, scan_now + 4));
+  CHECK(scanner.status().failure == VrxFailure::TuneRejected);
+  CHECK(!scanner.status().available);
+  hardware.available = true;
+  CHECK(scanner.select(0, 0, scan_now + 5));
+  scanner.tick(scan_now + 5);
+  CHECK(scanner.status().available);
+  CHECK(scanner.status().failure == VrxFailure::None);
+
+  FakeVrxHardware dwell_hardware;
+  VrxController dwell_controller(dwell_hardware, config);
+  CHECK(dwell_controller.select(0, 0, 0));
+  dwell_controller.tick(0);
+  CHECK(dwell_controller.begin_scan(100));
+  dwell_controller.tick(100);
+  const uint32_t tunes_after_first_candidate = dwell_hardware.tunes;
+  dwell_controller.tick(20099);
+  CHECK(dwell_hardware.tunes == tunes_after_first_candidate);
+  dwell_controller.tick(20100);
+  CHECK(dwell_hardware.tunes == tunes_after_first_candidate + 1);
+
+  VrxStatus display_status = scanner.status();
+  display_status.band = 3;
+  display_status.channel = 3;
+  display_status.frequency_mhz = 5800;
+  display_status.rssi_state = VrxRssiState::Valid;
+  display_status.strength_percent = 87;
+  display_status.signal_fresh = true;
+  display_status.video_signal = false;
+  UiScreen video_screen = make_openpocket_video_screen(display_status);
+  CHECK(video_screen.fields[0].value == 4);
+  CHECK(video_screen.fields[1].value == 4);
+  CHECK(video_screen.fields[2].value_text == "5800MHZ");
+  CHECK(video_screen.fields[3].value_text == "NO SIGNAL");
+  CHECK(video_screen.fields[4].value_text == "87%");
+  display_status.rssi_state = VrxRssiState::Stale;
+  video_screen = make_openpocket_video_screen(display_status);
+  CHECK(video_screen.fields[4].value_text == "STALE");
+  display_status.rssi_state = VrxRssiState::Unavailable;
+  video_screen = make_openpocket_video_screen(display_status);
+  CHECK(video_screen.fields[4].value_text == "UNAVAILABLE");
+  display_status.rssi_state = VrxRssiState::SensorFault;
+  video_screen = make_openpocket_video_screen(display_status);
+  CHECK(video_screen.fields[4].value_text == "SENSOR FAULT");
 }
 
 void test_complete_openpocket_menu()
@@ -2370,6 +2678,7 @@ int main()
   test_ui();
   test_services();
   test_module_update_backup_and_calibration();
+  test_rx5808_backend();
   test_openpocket_product_services();
   test_complete_openpocket_menu();
   test_at7456e_backend();

@@ -190,6 +190,7 @@ The reference profiles are intentionally focused:
 | four maintained switches | two-position ARM/AUX1; AUX2-AUX4 may be two- or three-position |
 | eight optional trim contacts | negative/positive trim for AIL, ELE, THR, and RUD |
 | SSD1306 128×64 OLED or AT7456E composite OSD | mutually exclusive standalone/OpenPocket presentation |
+| SPI-enabled RX5808 / RTC6715 plus RSSI ADC | OpenPocket 6×8 analog-video tuning and bounded scanning |
 | four buttons | UP, DOWN, ENTER, and BACK/recovery |
 | optional pressable rotary encoder | menu navigation and field editing |
 | suitable regulator | must tolerate the chosen TX module's peak current |

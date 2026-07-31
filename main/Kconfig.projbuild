@@ -61,6 +61,105 @@ config RIVETTX_AT7456E_CS_HOLD_CYCLES
     default 1
     depends on RIVETTX_OPENPOCKET_OSD
 
+config RIVETTX_RX5808_ENABLED
+    bool "Enable physical RX5808 / RTC6715 receiver"
+    default n
+    depends on RIVETTX_OPENPOCKET_OSD
+    help
+        Enables the non-blocking three-wire RTC6715 tuner and RSSI ADC for
+        OpenPocket. The module must expose an SPI-enabled RTC6715 interface;
+        stock RX5808 modules may require the documented SPI modification.
+
+config RIVETTX_RX5808_DATA_GPIO
+    int "RX5808 DATA GPIO"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    depends on RIVETTX_RX5808_ENABLED
+
+config RIVETTX_RX5808_CLK_GPIO
+    int "RX5808 CLK GPIO"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    depends on RIVETTX_RX5808_ENABLED
+
+config RIVETTX_RX5808_LE_GPIO
+    int "RX5808 LE / latch-enable GPIO"
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
+    default -1
+    depends on RIVETTX_RX5808_ENABLED
+
+config RIVETTX_RX5808_RSSI_GPIO
+    int "RX5808 RSSI ADC GPIO"
+    range -1 4 if IDF_TARGET_ESP32C3
+    range -1 10 if IDF_TARGET_ESP32S3
+    default -1
+    depends on RIVETTX_RX5808_ENABLED
+    help
+        Must be an ADC1-capable input. The RX5808 RSSI voltage must never
+        exceed the selected ESP32 target's ADC input limit.
+
+config RIVETTX_RX5808_TRANSITION_INTERVAL_US
+    int "RX5808 serial transition interval (microseconds)"
+    range 1 100
+    default 2
+    depends on RIVETTX_RX5808_ENABLED
+    help
+        Minimum spacing between DATA, CLK, and LE state-machine transitions.
+        No busy-wait delay is used.
+
+config RIVETTX_RX5808_TUNE_TIMEOUT_MS
+    int "RX5808 tune timeout (milliseconds)"
+    range 10 1000
+    default 150
+    depends on RIVETTX_RX5808_ENABLED
+
+config RIVETTX_RX5808_SCAN_DWELL_MS
+    int "RX5808 scan dwell / settle time (milliseconds)"
+    range 20 1000
+    default 80
+    depends on RIVETTX_RX5808_ENABLED
+
+config RIVETTX_RX5808_RSSI_SAMPLE_INTERVAL_MS
+    int "RX5808 RSSI sample interval (milliseconds)"
+    range 5 1000
+    default 20
+    depends on RIVETTX_RX5808_ENABLED
+
+config RIVETTX_RX5808_RSSI_STALE_MS
+    int "RX5808 RSSI stale timeout (milliseconds)"
+    range 100 5000
+    default 1000
+    depends on RIVETTX_RX5808_ENABLED
+
+config RIVETTX_RX5808_RSSI_MIN_ADC
+    int "RX5808 RSSI noise/minimum ADC level"
+    range 0 4094
+    default 300
+    depends on RIVETTX_RX5808_ENABLED
+
+config RIVETTX_RX5808_RSSI_MAX_ADC
+    int "RX5808 RSSI maximum-signal ADC level"
+    range 1 4095
+    default 3000
+    depends on RIVETTX_RX5808_ENABLED
+
+config RIVETTX_RX5808_RSSI_FILTER_SHIFT
+    int "RX5808 RSSI IIR filter shift"
+    range 0 8
+    default 3
+    depends on RIVETTX_RX5808_ENABLED
+    help
+        Zero disables smoothing. Higher values increase smoothing and delay.
+
+config RIVETTX_RX5808_RSSI_HYSTERESIS_PERCENT
+    int "RX5808 displayed RSSI hysteresis (percent)"
+    range 0 20
+    default 2
+    depends on RIVETTX_RX5808_ENABLED
+
 config RIVETTX_I2C_SDA
     int "OLED I2C SDA GPIO"
     range 0 21 if IDF_TARGET_ESP32C3

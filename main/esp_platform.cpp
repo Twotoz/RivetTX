@@ -206,6 +206,104 @@ bool validate_pin_configuration()
   return true;
 }
 
+bool validate_rx5808_configuration()
+{
+#if !CONFIG_RIVETTX_RX5808_ENABLED
+  return false;
+#else
+  const std::array<int, 4> vrx_pins{
+      CONFIG_RIVETTX_RX5808_DATA_GPIO,
+      CONFIG_RIVETTX_RX5808_CLK_GPIO,
+      CONFIG_RIVETTX_RX5808_LE_GPIO,
+      CONFIG_RIVETTX_RX5808_RSSI_GPIO};
+  for (const int pin : vrx_pins) {
+    if (pin < 0) {
+      ESP_LOGE(kTag,
+               "RX5808 disabled: DATA, CLK, LE and RSSI GPIOs are required");
+      return false;
+    }
+    if (!GPIO_IS_VALID_GPIO(pin)) {
+      ESP_LOGE(kTag, "RX5808 disabled: GPIO %d is invalid for %s", pin,
+               CONFIG_IDF_TARGET);
+      return false;
+    }
+  }
+  const std::array<int, 3> output_pins{
+      CONFIG_RIVETTX_RX5808_DATA_GPIO,
+      CONFIG_RIVETTX_RX5808_CLK_GPIO,
+      CONFIG_RIVETTX_RX5808_LE_GPIO};
+  for (const int pin : output_pins) {
+    if (!GPIO_IS_VALID_OUTPUT_GPIO(pin)) {
+      ESP_LOGE(kTag, "RX5808 disabled: GPIO %d cannot drive an output", pin);
+      return false;
+    }
+  }
+  adc_unit_t rssi_unit{};
+  adc_channel_t rssi_channel{};
+  if (adc_oneshot_io_to_channel(CONFIG_RIVETTX_RX5808_RSSI_GPIO,
+                                &rssi_unit, &rssi_channel) != ESP_OK ||
+      rssi_unit != ADC_UNIT_1) {
+    ESP_LOGE(kTag, "RX5808 disabled: RSSI GPIO %d is not an ADC1 input",
+             CONFIG_RIVETTX_RX5808_RSSI_GPIO);
+    return false;
+  }
+  if (CONFIG_RIVETTX_RX5808_RSSI_MIN_ADC >=
+      CONFIG_RIVETTX_RX5808_RSSI_MAX_ADC) {
+    ESP_LOGE(kTag,
+             "RX5808 disabled: RSSI minimum ADC must be below maximum");
+    return false;
+  }
+  for (std::size_t first = 0; first < vrx_pins.size(); ++first) {
+    for (std::size_t second = first + 1; second < vrx_pins.size(); ++second) {
+      if (vrx_pins[first] == vrx_pins[second]) {
+        ESP_LOGE(kTag, "RX5808 disabled: GPIO %d is assigned twice",
+                 vrx_pins[first]);
+        return false;
+      }
+    }
+  }
+
+  const std::array<int, 39> occupied{
+      CONFIG_RIVETTX_AXIS0_GPIO,      CONFIG_RIVETTX_AXIS1_GPIO,
+      CONFIG_RIVETTX_AXIS2_GPIO,      CONFIG_RIVETTX_AXIS3_GPIO,
+      CONFIG_RIVETTX_AXIS4_GPIO,      CONFIG_RIVETTX_AXIS5_GPIO,
+      CONFIG_RIVETTX_AXIS6_GPIO,      CONFIG_RIVETTX_AXIS7_GPIO,
+      CONFIG_RIVETTX_CRSF_TX,         CONFIG_RIVETTX_CRSF_RX,
+      CONFIG_RIVETTX_BUTTON_UP,       CONFIG_RIVETTX_BUTTON_DOWN,
+      CONFIG_RIVETTX_BUTTON_ENTER,    CONFIG_RIVETTX_BUTTON_BACK,
+      CONFIG_RIVETTX_AUX1_GPIO,       CONFIG_RIVETTX_AUX2_GPIO,
+      CONFIG_RIVETTX_AUX3_GPIO,       CONFIG_RIVETTX_AUX4_GPIO,
+      CONFIG_RIVETTX_AUX2_LOW_GPIO,   CONFIG_RIVETTX_AUX3_LOW_GPIO,
+      CONFIG_RIVETTX_AUX4_LOW_GPIO,   CONFIG_RIVETTX_ENCODER_A_GPIO,
+      CONFIG_RIVETTX_ENCODER_B_GPIO,  CONFIG_RIVETTX_ENCODER_PRESS_GPIO,
+      CONFIG_RIVETTX_TRIM_AIL_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_AIL_POS_GPIO,
+      CONFIG_RIVETTX_TRIM_ELE_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_ELE_POS_GPIO,
+      CONFIG_RIVETTX_TRIM_THR_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_THR_POS_GPIO,
+      CONFIG_RIVETTX_TRIM_RUD_NEG_GPIO,
+      CONFIG_RIVETTX_TRIM_RUD_POS_GPIO,
+      CONFIG_RIVETTX_BATTERY_GPIO,    CONFIG_RIVETTX_BUZZER_GPIO,
+      CONFIG_RIVETTX_AT7456E_SCLK_GPIO,
+      CONFIG_RIVETTX_AT7456E_MOSI_GPIO,
+      CONFIG_RIVETTX_AT7456E_MISO_GPIO,
+      CONFIG_RIVETTX_AT7456E_CS_GPIO,
+      CONFIG_RIVETTX_AT7456E_RESET_GPIO};
+  for (const int vrx_pin : vrx_pins) {
+    for (const int used_pin : occupied) {
+      if (used_pin >= 0 && vrx_pin == used_pin) {
+        ESP_LOGE(kTag,
+                 "RX5808 disabled: GPIO %d conflicts with another device",
+                 vrx_pin);
+        return false;
+      }
+    }
+  }
+  return true;
+#endif
+}
+
 bool EspAt7456eSpi::initialize()
 {
 #if !CONFIG_RIVETTX_OPENPOCKET_OSD
@@ -345,6 +443,101 @@ bool EspBoard::read_adc(const AdcInput& input, int& value) const
     return false;
   }
   return adc_oneshot_read(adc_, input.channel, &value) == ESP_OK;
+}
+
+bool EspBoard::configure_vrx_rssi(int gpio)
+{
+  if (adc_ == nullptr || vrx_rssi_.configured) {
+    return vrx_rssi_.configured;
+  }
+  return configure_adc_gpio(gpio, vrx_rssi_);
+}
+
+bool EspBoard::read_vrx_rssi(int& value) const
+{
+  return read_adc(vrx_rssi_, value);
+}
+
+EspRx5808Io::EspRx5808Io(EspBoard& board) : board_(board) {}
+
+bool EspRx5808Io::initialize()
+{
+#if !CONFIG_RIVETTX_RX5808_ENABLED
+  return false;
+#else
+  if (initialized_) {
+    return true;
+  }
+  gpio_config_t outputs{};
+  outputs.pin_bit_mask =
+      (1ULL << CONFIG_RIVETTX_RX5808_DATA_GPIO) |
+      (1ULL << CONFIG_RIVETTX_RX5808_CLK_GPIO) |
+      (1ULL << CONFIG_RIVETTX_RX5808_LE_GPIO);
+  outputs.mode = GPIO_MODE_OUTPUT;
+  outputs.pull_up_en = GPIO_PULLUP_DISABLE;
+  outputs.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  outputs.intr_type = GPIO_INTR_DISABLE;
+  if (gpio_config(&outputs) != ESP_OK ||
+      !board_.configure_vrx_rssi(CONFIG_RIVETTX_RX5808_RSSI_GPIO) ||
+      gpio_set_level(static_cast<gpio_num_t>(
+                         CONFIG_RIVETTX_RX5808_DATA_GPIO),
+                     0) != ESP_OK ||
+      gpio_set_level(static_cast<gpio_num_t>(
+                         CONFIG_RIVETTX_RX5808_CLK_GPIO),
+                     0) != ESP_OK ||
+      gpio_set_level(static_cast<gpio_num_t>(
+                         CONFIG_RIVETTX_RX5808_LE_GPIO),
+                     1) != ESP_OK) {
+    ESP_LOGE(kTag, "RX5808 GPIO or RSSI ADC initialization failed");
+    return false;
+  }
+  initialized_ = true;
+  return true;
+#endif
+}
+
+bool EspRx5808Io::set_data(bool high)
+{
+#if CONFIG_RIVETTX_RX5808_ENABLED
+  return initialized_ &&
+         gpio_set_level(static_cast<gpio_num_t>(
+                            CONFIG_RIVETTX_RX5808_DATA_GPIO),
+                        high ? 1 : 0) == ESP_OK;
+#else
+  (void)high;
+  return false;
+#endif
+}
+
+bool EspRx5808Io::set_clock(bool high)
+{
+#if CONFIG_RIVETTX_RX5808_ENABLED
+  return initialized_ &&
+         gpio_set_level(static_cast<gpio_num_t>(
+                            CONFIG_RIVETTX_RX5808_CLK_GPIO),
+                        high ? 1 : 0) == ESP_OK;
+#else
+  (void)high;
+  return false;
+#endif
+}
+
+bool EspRx5808Io::set_latch(bool high)
+{
+#if CONFIG_RIVETTX_RX5808_ENABLED
+  return initialized_ &&
+         gpio_set_level(static_cast<gpio_num_t>(
+                            CONFIG_RIVETTX_RX5808_LE_GPIO),
+                        high ? 1 : 0) == ESP_OK;
+#else
+  (void)high;
+  return false;
+#endif
+}
+
+bool EspRx5808Io::read_rssi(int& raw_adc)
+{
+  return initialized_ && board_.read_vrx_rssi(raw_adc);
 }
 
 bool EspBoard::initialize()

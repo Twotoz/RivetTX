@@ -27,8 +27,10 @@ required, proven on the target PCB.
 - [ ] [#38](https://github.com/Twotoz/RivetTX/issues/38) Freeze the exact
   ESP32-S3, VRX, OSD, display, ELRS supply, charger, gauge, latch, and pinout.
 - [ ] [#39](https://github.com/Twotoz/RivetTX/issues/39) Connect the
-  non-blocking VRX controller and 48-channel scan core to the selected VRX
-  hardware and complete HIL.
+  implemented non-blocking RTC6715 backend to the selected SPI-modified
+  RX5808 hardware and complete RX5808 + AT7456E + composite LCD HIL. Keep this
+  open until real tuning, RSSI calibration, loss/recovery and latency evidence
+  is attached.
 - [ ] [#40](https://github.com/Twotoz/RivetTX/issues/40) Connect the
   fixed-size 30×16 analog OSD compositor to the selected AT7456E-class
   hardware and composite-video HIL.

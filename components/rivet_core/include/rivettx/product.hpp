@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rivettx/rx5808.hpp"
 #include "rivettx/types.hpp"
 #include "rivettx/ui.hpp"
 
@@ -9,16 +10,20 @@
 
 namespace rivettx {
 
-constexpr std::size_t kVrxBandCount = 6;
-constexpr std::size_t kVrxChannelsPerBand = 8;
+enum class VrxRssiState : uint8_t {
+  Unavailable,
+  Valid,
+  Stale,
+  SensorFault,
+};
 
-uint16_t vrx_frequency_mhz(uint8_t band, uint8_t channel);
-
-class IVrxHardware {
- public:
-  virtual ~IVrxHardware() = default;
-  virtual bool tune(uint16_t frequency_mhz) = 0;
-  virtual bool sample(int16_t& rssi, bool& video_signal) = 0;
+enum class VrxFailure : uint8_t {
+  None,
+  InvalidFrequency,
+  TuneRejected,
+  TuneTimeout,
+  Communication,
+  RssiCalibration,
 };
 
 struct VrxStatus {
@@ -27,34 +32,68 @@ struct VrxStatus {
   uint16_t frequency_mhz = 0;
   int16_t rssi = 0;
   uint8_t strength_percent = 0;
+  VrxRssiState rssi_state = VrxRssiState::Unavailable;
+  VrxFailure failure = VrxFailure::None;
   bool available = false;
   bool scanning = false;
+  bool tuning = false;
   bool signal_fresh = false;
   bool video_signal = false;
+};
+
+struct VrxControllerConfig {
+  uint32_t scan_dwell_ms = 80;
+  uint32_t tune_timeout_ms = 150;
+  uint32_t rssi_sample_interval_ms = 20;
+  uint32_t rssi_stale_ms = 1000;
+  int16_t rssi_min_adc = 300;
+  int16_t rssi_max_adc = 3000;
+  uint8_t rssi_filter_shift = 3;
+  uint8_t rssi_hysteresis_percent = 2;
 };
 
 class VrxController {
  public:
   explicit VrxController(IVrxHardware& hardware,
                          uint32_t scan_dwell_ms = 80);
+  VrxController(IVrxHardware& hardware, VrxControllerConfig config);
 
   bool select(uint8_t band, uint8_t channel, TimeUs now_us);
   bool begin_scan(TimeUs now_us);
-  void cancel_scan();
+  bool cancel_scan(TimeUs now_us);
+  void set_video_signal(bool present, bool fresh);
   void tick(TimeUs now_us);
   const VrxStatus& status() const;
+  bool take_scan_result(uint8_t& band, uint8_t& channel);
 
  private:
+  bool request_tune(uint8_t band, uint8_t channel, TimeUs now_us);
   bool tune_scan_candidate(TimeUs now_us);
+  void finish_tune(TimeUs now_us);
+  void fail_tune(VrxFailure failure);
+  bool sample_rssi(TimeUs now_us, bool scan_sample);
+  void finish_scan(TimeUs now_us);
 
   IVrxHardware& hardware_;
+  VrxControllerConfig config_{};
   VrxStatus status_{};
-  uint32_t scan_dwell_ms_ = 80;
   uint8_t scan_index_ = 0;
   uint8_t best_index_ = 0;
   int16_t best_rssi_ = INT16_MIN;
+  uint8_t scan_origin_band_ = 0;
+  uint8_t scan_origin_channel_ = 0;
+  uint8_t requested_band_ = 0;
+  uint8_t requested_channel_ = 0;
   TimeUs next_scan_step_us_ = 0;
+  TimeUs tune_deadline_us_ = 0;
+  TimeUs next_sample_us_ = 0;
   TimeUs last_sample_us_ = 0;
+  int32_t filtered_rssi_adc_ = 0;
+  bool filter_initialized_ = false;
+  bool finishing_scan_ = false;
+  bool restoring_after_scan_ = false;
+  bool scan_result_pending_ = false;
+  bool rssi_calibration_valid_ = false;
 };
 
 constexpr std::size_t kOsdColumns = 30;
