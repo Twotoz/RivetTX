@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1347,6 +1349,76 @@ void test_services()
 
   BatteryMonitor battery({3500, 3200, 100, 100});
   CHECK(battery.update(3600) == BatteryState::Normal);
+  BatteryMonitor zero_voltage({3500, 3200, 100, 100});
+  CHECK(zero_voltage.update(0) == BatteryState::Critical);
+
+  CHECK(!(BatterySensorSample{0, false, false}.sensor_fault()));
+  CHECK(!(BatterySensorSample{0, true, true}.sensor_fault()));
+  CHECK((BatterySensorSample{0, true, false}.sensor_fault()));
+
+  SafetyManager configured_zero;
+  configured_zero.report_battery(3800, true);
+  configured_zero.report_battery(0, true);
+  CHECK(configured_zero.status().state == SafetyState::Fault);
+  CHECK(configured_zero.status().reason ==
+        SafetyReason::BatteryCritical);
+  SafetyManager sensor_absent;
+  sensor_absent.report_battery(0, false);
+  CHECK(sensor_absent.status().state == SafetyState::Booting);
+  InputProcessor no_battery_inputs;
+  MixerEngine no_battery_mixer;
+  SafetyManager no_battery_safety;
+  no_battery_safety.report_module_ready(true);
+  FakeWatchdog no_battery_watchdog;
+  TelemetryRegistry no_battery_telemetry;
+  ControlLoop no_battery_loop(
+      no_battery_inputs, no_battery_mixer, no_battery_safety,
+      no_battery_telemetry, no_battery_watchdog);
+  no_battery_safety.boot_complete(true, false);
+  RawInputs no_battery_raw{};
+  no_battery_raw.valid = true;
+  no_battery_raw.axes.fill(2048);
+  no_battery_raw.axes[2] = 100;
+  no_battery_raw.sampled_at_us = 1000;
+  const auto no_battery_cycle = no_battery_loop.run(
+      make_default_model(), no_battery_raw, 0, 1000, 1100, false);
+  CHECK(no_battery_cycle.safety.reason !=
+        SafetyReason::BatteryCritical);
+
+  BatterySnapshotStore snapshot_store;
+  std::atomic<bool> torn_snapshot{false};
+  std::thread reader([&]() {
+    BatterySnapshot snapshot{};
+    do {
+      snapshot = snapshot_store.read();
+      std::this_thread::yield();
+    } while (snapshot.sequence == 0);
+    for (uint32_t read = 0; read < 50000; ++read) {
+      snapshot = snapshot_store.read();
+      const bool normal = (snapshot.sequence & 1U) == 0;
+      const bool consistent =
+          normal
+              ? snapshot.millivolts == 3800 &&
+                    snapshot.state == BatteryState::Normal &&
+                    snapshot.sensor_valid
+              : snapshot.millivolts == 0 &&
+                    snapshot.state == BatteryState::Unknown &&
+                    !snapshot.sensor_valid;
+      if (!consistent) {
+        torn_snapshot.store(true, std::memory_order_release);
+      }
+    }
+  });
+  for (uint32_t sequence = 1; sequence <= 50000; ++sequence) {
+    const bool normal = (sequence & 1U) == 0;
+    snapshot_store.publish(
+        normal ? BatterySnapshot{3800, BatteryState::Normal, true,
+                                 sequence}
+               : BatterySnapshot{0, BatteryState::Unknown, false,
+                                 sequence});
+  }
+  reader.join();
+  CHECK(!torn_snapshot.load(std::memory_order_acquire));
   for (int i = 0; i < 30; ++i) {
     (void)battery.update(3000);
   }

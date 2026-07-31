@@ -163,11 +163,20 @@ BatteryMonitor::BatteryMonitor(BatteryConfig config) : config_(config)
 {
 }
 
+void BatterySnapshotStore::publish(const BatterySnapshot& snapshot)
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  snapshot_ = snapshot;
+}
+
+BatterySnapshot BatterySnapshotStore::read() const
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  return snapshot_;
+}
+
 BatteryState BatteryMonitor::update(uint16_t sample_mv)
 {
-  if (sample_mv == 0) {
-    return state_;
-  }
   if (filtered_mv_ == 0) {
     filtered_mv_ = sample_mv;
   } else {

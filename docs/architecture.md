@@ -157,6 +157,17 @@ Every invocation has:
 
 The native control task keeps operating if a script is killed.
 
+## Battery boundary
+
+The control task is the only owner of ADC sampling and battery filtering. It
+publishes voltage, state, sensor validity, and frame sequence together through
+a locked immutable snapshot; UI and service tasks never read the mutable
+filter object.
+
+ADC/configuration failure is distinct from a successfully sampled low or zero
+voltage. Both fail closed: sensor failure raises `BatterySensor`, while a
+valid reading below the configured minimum raises `BatteryCritical`.
+
 ## Audio boundary
 
 Control-path state changes publish fixed-size bits and snapshots to a single

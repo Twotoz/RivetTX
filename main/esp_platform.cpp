@@ -330,9 +330,9 @@ uint8_t EspBoard::configured_axis_count() const
   return configured_axis_count_;
 }
 
-BatterySample EspBoard::sample_battery()
+BatterySensorSample EspBoard::sample_battery()
 {
-  BatterySample sample{};
+  BatterySensorSample sample{};
   sample.configured = battery_.configured;
   if (!battery_.configured) {
     sample.valid = true;
@@ -352,9 +352,10 @@ BatterySample EspBoard::sample_battery()
   sample.millivolts = static_cast<uint16_t>(std::min<uint32_t>(
       UINT16_MAX,
       pin_mv * CONFIG_RIVETTX_BATTERY_DIVIDER_MILLI / 1000U));
-  // A configured divider can only produce zero when the supply collapsed or
-  // the sensing path failed. Both conditions must lock outputs.
-  sample.valid = sample.millivolts != 0;
+  // Validity describes the ADC/configuration operation, not the voltage.
+  // A successfully sampled 0 V is a valid critical reading and must fail
+  // closed through the battery safety policy.
+  sample.valid = true;
   return sample;
 }
 

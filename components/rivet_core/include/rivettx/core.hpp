@@ -183,7 +183,8 @@ class SafetyManager {
                      bool calibration_valid = true);
   void request_enable();
   void request_lock();
-  void report_battery(uint16_t millivolts);
+  void report_battery(uint16_t millivolts,
+                      bool sensing_configured = true);
   void report_battery_fault();
   void report_watchdog_fault();
   void report_module_ready(bool ready);
@@ -234,7 +235,8 @@ class ControlLoop {
 
   ControlCycleResult run(const Model& model, const RawInputs& raw,
                          uint16_t battery_mv, TimeUs cycle_started_us,
-                         TimeUs cycle_finished_us);
+                         TimeUs cycle_finished_us,
+                         bool battery_sensing_configured = true);
 
  private:
   InputProcessor& inputs_;

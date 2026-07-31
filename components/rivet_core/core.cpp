@@ -841,11 +841,13 @@ void SafetyManager::request_lock()
   status_.reason = SafetyReason::ManualLock;
 }
 
-void SafetyManager::report_battery(uint16_t millivolts)
+void SafetyManager::report_battery(uint16_t millivolts,
+                                   bool sensing_configured)
 {
   const std::lock_guard<std::mutex> lock(mutex_);
   status_.battery_mv = millivolts;
-  if (millivolts != 0 && millivolts < config_.minimum_battery_mv) {
+  if (sensing_configured &&
+      millivolts < config_.minimum_battery_mv) {
     enable_requested_ = false;
     healthy_cycles_ = 0;
     status_.state = SafetyState::Fault;
@@ -1063,7 +1065,8 @@ ControlLoop::ControlLoop(InputProcessor& inputs, MixerEngine& mixer,
 ControlCycleResult ControlLoop::run(const Model& model, const RawInputs& raw,
                                     uint16_t battery_mv,
                                     TimeUs cycle_started_us,
-                                    TimeUs cycle_finished_us)
+                                    TimeUs cycle_finished_us,
+                                    bool battery_sensing_configured)
 {
   const auto controls = inputs_.process(raw);
   auto proposed =
@@ -1072,7 +1075,7 @@ ControlCycleResult ControlLoop::run(const Model& model, const RawInputs& raw,
       cycle_finished_us >= cycle_started_us
           ? static_cast<uint32_t>(cycle_finished_us - cycle_started_us)
           : 0;
-  safety_.report_battery(battery_mv);
+  safety_.report_battery(battery_mv, battery_sensing_configured);
   safety_.report_mixer_duration(duration);
   auto gated = safety_.gate(model, controls, proposed, cycle_finished_us);
   watchdog_.kick();

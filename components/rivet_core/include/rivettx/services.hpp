@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -120,6 +121,34 @@ enum class BatteryState : uint8_t {
   Normal,
   Low,
   Critical,
+};
+
+struct BatterySensorSample {
+  uint16_t millivolts = 0;
+  bool configured = false;
+  bool valid = false;
+
+  bool sensor_fault() const
+  {
+    return configured && !valid;
+  }
+};
+
+struct BatterySnapshot {
+  uint16_t millivolts = 0;
+  BatteryState state = BatteryState::Unknown;
+  bool sensor_valid = true;
+  uint32_t sequence = 0;
+};
+
+class BatterySnapshotStore {
+ public:
+  void publish(const BatterySnapshot& snapshot);
+  BatterySnapshot read() const;
+
+ private:
+  BatterySnapshot snapshot_{};
+  mutable std::mutex mutex_;
 };
 
 struct BatteryConfig {
