@@ -140,6 +140,78 @@ class CharacterOsdUi {
   bool back_pending_ = false;
 };
 
+enum class OpenPocketPage : uint8_t {
+  Home,
+  MainMenu,
+  ModelMenu,
+  RadioMenu,
+  ElrsMenu,
+  VideoMenu,
+  UsbMenu,
+  DiagnosticsMenu,
+  SystemMenu,
+  Warnings,
+  Models,
+  Outputs,
+  ModelSetup,
+  Inputs,
+  Mixes,
+  Limits,
+  FlightModes,
+  Curves,
+  LogicalSwitches,
+  SpecialFunctions,
+  Timers,
+  Elrs,
+  Finder,
+  Video,
+  Usb,
+  Web,
+  Telemetry,
+  Power,
+  System,
+};
+
+class IOpenPocketScreenProvider {
+ public:
+  virtual ~IOpenPocketScreenProvider() = default;
+  virtual UiScreen screen(OpenPocketPage page) = 0;
+};
+
+class OpenPocketMenuController {
+ public:
+  explicit OpenPocketMenuController(IOpenPocketScreenProvider& screens);
+
+  void start(const UiHomeStatus& home);
+  void refresh(const UiHomeStatus& home);
+  bool handle(const UiEvent& event);
+  bool render(const VrxStatus& vrx);
+  bool take_change(UiChange& change);
+  OpenPocketPage page() const;
+  std::size_t depth() const;
+  const UiScreen& screen() const;
+  const CharacterOsdFrame& frame() const;
+  std::size_t selected_index() const;
+  std::size_t scroll_offset() const;
+  bool editing() const;
+
+ private:
+  UiScreen screen_for(OpenPocketPage page);
+  bool route(const UiChange& change, OpenPocketPage& target) const;
+  void navigate(OpenPocketPage target);
+  void go_back();
+  void go_home();
+
+  IOpenPocketScreenProvider& screens_;
+  CharacterOsdUi ui_{};
+  UiHomeStatus home_{};
+  std::array<OpenPocketPage, 4> history_{};
+  std::size_t history_size_ = 0;
+  OpenPocketPage page_ = OpenPocketPage::Home;
+  UiChange pending_change_{};
+  bool change_pending_ = false;
+};
+
 struct UsbGamepadReport {
   std::array<int16_t, 8> axes{};
   uint32_t buttons = 0;

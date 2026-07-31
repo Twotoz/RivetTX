@@ -67,6 +67,7 @@ enum class UiEventType : uint8_t {
   Right,
   Enter,
   Back,
+  Home,
   Rotate,
   TouchPress,
   TouchDrag,
