@@ -139,11 +139,11 @@ BoardPowerConfig board_power_config()
   return config;
 }
 
-Tw8836Config tw8836_config()
+Amt630aConfig amt630a_config()
 {
-  Tw8836Config config{};
+  Amt630aConfig config{};
 #if CONFIG_RIVETTX_OPENPOCKET_REV_A
-  config.operation_timeout_ms = CONFIG_RIVETTX_TW8836_ISP_TIMEOUT_MS;
+  config.operation_timeout_ms = CONFIG_RIVETTX_AMT630A_FLASH_TIMEOUT_MS;
 #endif
   return config;
 }
@@ -220,7 +220,7 @@ struct Application {
   EspBoard board;
   EspBoardPowerIo board_power_io;
   BoardPowerController board_power{board_power_io, board_power_config()};
-  Tw8836Controller display_controller{board_power_io, tw8836_config()};
+  Amt630aController display_controller{board_power_io, amt630a_config()};
   EspRx5808Io vrx_io{board};
   Rtc6715Backend vrx_hardware{vrx_io, rtc6715_config()};
   VrxController vrx{vrx_hardware, vrx_controller_config()};
@@ -230,8 +230,10 @@ struct Application {
   EspAt7456eSpi osd_spi;
   At7456eDriver osd{osd_spi};
   EspToneOutput tones;
+  EspPcmOutput pcm_output;
   EspUsbGamepad usb_gamepad;
   AudioAlertScheduler audio{tones};
+  SpeakerService speaker{pcm_output};
   AudioWarningMonitor audio_warnings{audio_warning_config()};
   EspWatchdog watchdog;
   EspOtaBackend ota;
@@ -294,7 +296,7 @@ struct Application {
   portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
   VrxStatus latest_vrx{};
   BoardPowerStatus latest_board_power{};
-  Tw8836Status latest_display_controller{};
+  Amt630aStatus latest_display_controller{};
   portMUX_TYPE vrx_command_lock = portMUX_INITIALIZER_UNLOCKED;
   VrxCommandQueue vrx_commands{};
   std::atomic<int16_t> vrx_scan_result{-1};
@@ -2033,6 +2035,7 @@ void service_task(void*)
                             module_state, safety_state, current,
                             app.audio);
     app.audio.tick(current);
+    app.speaker.tick(current);
     const PowerDecision power_decision = app.power.evaluate(
         battery_state, safety_state == SafetyState::Enabled, current);
     if (power_decision == PowerDecision::LockAndShutdown &&
@@ -2217,7 +2220,7 @@ void board_io_task(void*)
   bool previous_simulator = false;
   bool previous_display = true;
   uint8_t previous_backlight = CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT;
-  Tw8836State previous_controller_state = Tw8836State::Unavailable;
+  Amt630aState previous_controller_state = Amt630aState::Unavailable;
   TimeUs next_controller_recovery_us = 0;
   while (true) {
     const TimeUs current = now_us();
@@ -2251,12 +2254,12 @@ void board_io_task(void*)
     }
     app.board_power.tick(current);
     BoardPowerStatus power_status = app.board_power.status();
-    Tw8836Status controller_status = app.display_controller.status();
+    Amt630aStatus controller_status = app.display_controller.status();
     if (power_status.display_5v &&
         !power_status.display_controller_reset_asserted) {
-      if (controller_status.state == Tw8836State::Unavailable) {
+      if (controller_status.state == Amt630aState::Unavailable) {
         (void)app.display_controller.initialize(current);
-      } else if (controller_status.state == Tw8836State::Fault &&
+      } else if (controller_status.state == Amt630aState::Fault &&
                  (display_changed || current >= next_controller_recovery_us)) {
         if (app.display_controller.recover(current)) {
           next_controller_recovery_us = current + 1000000U;
@@ -2270,7 +2273,7 @@ void board_io_task(void*)
         controller_status.runtime.panel_timing_active);
     power_status = app.board_power.status();
     if (controller_status.state != previous_controller_state) {
-      ESP_LOGI(kTag, "TW8836 state=%u fault=%u video=%u standard=%u",
+      ESP_LOGI(kTag, "AMT630A state=%u fault=%u video=%u standard=%u",
                static_cast<unsigned>(controller_status.state),
                static_cast<unsigned>(controller_status.fault),
                controller_status.runtime.video_present ? 1U : 0U,
@@ -2440,6 +2443,10 @@ extern "C" void app_main()
   if (pins_ok) {
     (void)app.tones.initialize();
   }
+  (void)app.audio.configure(
+      {AudioSettings::kVersion, true, true, true, true, false, false,
+       CONFIG_RIVETTX_BUZZER_VOLUME});
+  (void)app.speaker.initialize(false, {false, 50});
   app.audio.notify(AudioAlert::Startup);
   app.alarms.set_alarm(
       0, {true, crsf::SensorUplinkLinkQuality, AlarmComparison::Below,

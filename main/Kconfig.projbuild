@@ -14,7 +14,8 @@ config RIVETTX_OPENPOCKET_REV_A
     depends on IDF_TARGET_ESP32S3 && RIVETTX_OPENPOCKET_OSD
     help
         Enables the integrated charger, MAX17048 gauge, three switched 5 V
-        domains, TW8836 reset and I2C ISP, backlight PWM, and two I2C control
+        domains, AMT630A status and direct flash recovery, backlight PWM,
+        non-blocking buzzer/I2S audio, and two I2C control
         expanders. Revision A uses native USB and requires no PSRAM.
 
 config RIVETTX_BOARD_I2C_SDA_GPIO
@@ -60,20 +61,74 @@ config RIVETTX_BACKLIGHT_DEFAULT_PERCENT
     depends on RIVETTX_OPENPOCKET_REV_A
 
 config RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO
-    int "TW8836 active-low reset GPIO"
+    int "AMT630A active-low reset GPIO"
     range 0 48
     default 38
     depends on RIVETTX_OPENPOCKET_REV_A
 
-config RIVETTX_TW8836_I2C_ADDRESS
-    hex "TW8836 I2C address"
-    default 0x45
+config RIVETTX_AMT630A_I2C_ADDRESS
+    hex "AMT630A global-register I2C address"
+    default 0x58
     depends on RIVETTX_OPENPOCKET_REV_A
 
-config RIVETTX_TW8836_ISP_TIMEOUT_MS
-    int "TW8836 bounded ISP operation timeout (milliseconds)"
+config RIVETTX_AMT630A_FLASH_TIMEOUT_MS
+    int "AMT630A flash operation timeout (milliseconds)"
     range 100 30000
     default 10000
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_AMT630A_FLASH_CS_GPIO
+    int "AMT630A recovery-flash CS GPIO"
+    range 0 48
+    default 26
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_AMT630A_FLASH_CLK_GPIO
+    int "AMT630A recovery-flash CLK GPIO"
+    range 0 48
+    default 33
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_AMT630A_FLASH_MOSI_GPIO
+    int "AMT630A recovery-flash MOSI GPIO"
+    range 0 48
+    default 34
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_AMT630A_FLASH_MUX_GPIO
+    int "AMT630A flash owner mux-select GPIO"
+    range 0 48
+    default 36
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_AMT630A_FLASH_MISO_GPIO
+    int "AMT630A recovery-flash MISO GPIO"
+    range 0 48
+    default 37
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_SPEAKER_I2S_BCLK_GPIO
+    int "NS4168 I2S BCLK GPIO"
+    range 0 48
+    default 39
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_SPEAKER_I2S_WS_GPIO
+    int "NS4168 I2S word-select GPIO"
+    range 0 48
+    default 45
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_SPEAKER_I2S_DATA_GPIO
+    int "NS4168 I2S data GPIO"
+    range 0 48
+    default 46
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_SPEAKER_ENABLE_GPIO
+    int "NS4168 active-high shutdown-release GPIO"
+    range 0 48
+    default 6
     depends on RIVETTX_OPENPOCKET_REV_A
 
 config RIVETTX_VBUS_DETECT_GPIO

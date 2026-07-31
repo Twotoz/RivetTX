@@ -9,8 +9,9 @@ idf_component_register(
     "product.cpp"
     "rx5808.cpp"
     "services.cpp"
+    "speaker.cpp"
     "storage.cpp"
-    "tw8836.cpp"
+    "amt630a.cpp"
     "ui.cpp"
   INCLUDE_DIRS "include"
 )

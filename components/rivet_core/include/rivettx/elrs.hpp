@@ -127,6 +127,11 @@ class IToneOutput {
                          uint16_t duration_ms) = 0;
   virtual void stop_tone() = 0;
   virtual bool available() const = 0;
+  virtual bool set_intensity(uint8_t percent)
+  {
+    (void)percent;
+    return false;
+  }
 };
 
 struct ElrsFinderStatus {
