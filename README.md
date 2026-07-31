@@ -126,18 +126,20 @@ make
 The simulator runs nominal, packet-loss, corrupt-frame, disconnect/recovery,
 stale-input, and missed-deadline scenarios against the real core. It writes a
 machine-readable result to `build/sim-report.json` and renders compact,
-medium, and large previews:
+medium, large, and 30×16 OpenPocket previews:
 
 ```text
 build/sim-screen.pbm
 build/sim-screen-medium.pbm
 build/sim-screen-large.pbm
+build/sim-openpocket-osd.txt
 ```
 
 Run one focused case or display profile with:
 
 ```bash
 ./build/rivettx-sim --scenario disconnect --display compact
+./build/rivettx-sim --scenario nominal --display openpocket
 make sanitize
 ```
 

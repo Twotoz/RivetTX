@@ -2,6 +2,7 @@
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
+#include "rivettx/product.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
 #include "rivettx/ui.hpp"
@@ -446,6 +447,87 @@ bool render_displays(const Options& options, const Model& model,
   return success;
 }
 
+bool render_openpocket_osd(const Options& options, const Model& model,
+                           const ChannelFrame& channels)
+{
+  if (options.display != "all" && options.display != "openpocket") {
+    return true;
+  }
+  const std::filesystem::path path =
+      std::filesystem::path(options.output_directory) /
+      "sim-openpocket-osd.txt";
+  std::ofstream output(path, std::ios::trunc);
+  if (!output) {
+    std::cerr << "[FAIL] display openpocket: cannot open "
+              << path.string() << "\n";
+    return false;
+  }
+
+  UiHomeStatus home{};
+  for (std::size_t axis = 0; axis < home.axes.size(); ++axis) {
+    home.axes[axis] = channels.channels[axis];
+  }
+  home.channels = channels.channels;
+  home.battery_mv = 3800;
+  home.battery_percent = 67;
+  home.battery_percent_valid = true;
+  home.link_quality = 96;
+  home.module_online = true;
+  home.video_signal = true;
+  VrxStatus vrx{};
+  vrx.band = 3;
+  vrx.channel = 3;
+  vrx.frequency_mhz = vrx_frequency_mhz(vrx.band, vrx.channel);
+  vrx.strength_percent = 88;
+  vrx.available = true;
+  vrx.signal_fresh = true;
+  vrx.video_signal = true;
+
+  CharacterOsdUi ui;
+  const auto write_frame = [&output, &ui](const char* name) {
+    output << "=== " << name << " ===\n";
+    for (std::size_t row = 0; row < kOsdRows; ++row) {
+      output.write(
+          ui.frame().cells.data() + row * kOsdColumns,
+          static_cast<std::streamsize>(kOsdColumns));
+      output << "\n";
+    }
+  };
+
+  ui.set_screen(make_openpocket_home_screen(model, home));
+  (void)ui.render(vrx);
+  write_frame("HOME");
+
+  ui.set_screen(make_openpocket_main_menu_screen());
+  (void)ui.render(vrx);
+  write_frame("MAIN MENU");
+
+  ui.set_screen(
+      make_openpocket_group_menu_screen(OpenPocketMenuGroup::Model));
+  (void)ui.handle({UiEventType::Rotate, 1});
+  (void)ui.render(vrx);
+  write_frame("MODEL MENU");
+
+  ui.set_screen(make_model_setup_screen(model));
+  (void)ui.render(vrx);
+  write_frame("DETAIL");
+
+  (void)ui.handle({UiEventType::Enter});
+  (void)ui.handle({UiEventType::Rotate, 2});
+  (void)ui.render(vrx);
+  write_frame("EDIT");
+
+  output.flush();
+  const bool success = output.good();
+  if (success) {
+    std::cout << "[PASS] display openpocket 30x16 -> "
+              << path.string() << "\n";
+  } else {
+    std::cerr << "[FAIL] display openpocket: write failed\n";
+  }
+  return success;
+}
+
 void write_json_report(const std::filesystem::path& path,
                        const std::vector<ScenarioResult>& results,
                        bool passed)
@@ -491,7 +573,7 @@ void print_help()
          "[--output-dir PATH]\n"
       << "scenarios: all, nominal, packet-loss, corruption, disconnect, "
          "stale-input, missed-deadline\n"
-      << "displays: all, compact, medium, large\n";
+      << "displays: all, compact, medium, large, openpocket\n";
 }
 
 }  // namespace
@@ -519,7 +601,8 @@ int main(int argc, char** argv)
   }
   const bool known_display =
       options.display == "all" || options.display == "compact" ||
-      options.display == "medium" || options.display == "large";
+      options.display == "medium" || options.display == "large" ||
+      options.display == "openpocket";
   if (!known_scenario || !known_display) {
     std::cerr << "invalid scenario or display selection\n";
     print_help();
@@ -571,7 +654,8 @@ int main(int argc, char** argv)
   display_channels.channels[3] = 128;
   display_channels.safe = false;
   const bool displays_passed =
-      render_displays(options, loaded, display_channels);
+      render_displays(options, loaded, display_channels) &&
+      render_openpocket_osd(options, loaded, display_channels);
   bool passed = displays_passed;
   for (const auto& result : results) {
     passed = passed && result.passed;

@@ -1661,6 +1661,12 @@ void test_module_update_backup_and_calibration()
 
 void test_openpocket_product_services()
 {
+  const auto osd_row = [](const CharacterOsdFrame& frame, std::size_t row) {
+    const auto begin =
+        frame.cells.begin() + static_cast<std::ptrdiff_t>(row * kOsdColumns);
+    return std::string(begin, begin + kOsdColumns);
+  };
+
   CHECK(vrx_frequency_mhz(0, 0) == 5865);
   CHECK(vrx_frequency_mhz(5, 7) == 5621);
   CHECK(vrx_frequency_mhz(6, 0) == 0);
@@ -1683,15 +1689,110 @@ void test_openpocket_product_services()
   Model model = make_default_model();
   UiHomeStatus home{};
   home.battery_mv = 3900;
+  home.battery_percent = 75;
+  home.battery_percent_valid = true;
   home.link_quality = 92;
   home.module_online = true;
   home.channels[4] = -kResolution;
+  home.video_signal = true;
   CharacterOsdComposer osd;
   osd.compose(model, home, vrx.status());
   CHECK(osd.frame().at(0, 0) == 'D');
-  CHECK(osd.frame().at(0, 4) == 'T');
-  CHECK(osd.frame().at(10, 6) == 'V');
-  CHECK(osd.frame().at(8, 15) == 'O');
+  CHECK(osd_row(osd.frame(), 3).find("ELRS  ONLINE") == 0);
+  CHECK(osd_row(osd.frame(), 5).find("TX BAT 3900") == 0);
+  CHECK(osd_row(osd.frame(), 7).find("VRX B4 CH4 5800MHZ") == 0);
+  CHECK(osd_row(osd.frame(), 8).find("VIDEO SIGNAL OK") == 0);
+  CHECK(osd_row(osd.frame(), 15).find("ENTER MENU") == 0);
+
+  UiHomeStatus warning_home = home;
+  warning_home.warning_count = 2;
+  warning_home.warnings[0] = UiWarningCode::BatteryCritical;
+  warning_home.warnings[1] = UiWarningCode::VideoNoSignal;
+  VrxStatus no_signal = vrx.status();
+  no_signal.video_signal = false;
+  osd.compose(model, warning_home, no_signal);
+  CHECK(osd_row(osd.frame(), 8).find("VIDEO NO SIGNAL") == 0);
+  CHECK(osd_row(osd.frame(), 10).find("WARNING  BATTERY CRITICAL") == 0);
+  CHECK(osd_row(osd.frame(), 11).find("         +1  MORE") == 0);
+
+  CharacterOsdUi osd_ui;
+  osd_ui.set_screen(make_openpocket_home_screen(model, home));
+  CHECK(osd_ui.render(vrx.status()));
+  CHECK(osd_row(osd_ui.frame(), 0).find("Default") == 0);
+  CHECK(osd_ui.handle({UiEventType::Enter}));
+  osd_ui.set_screen(make_openpocket_home_screen(model, home));
+  UiChange osd_change{};
+  CHECK(osd_ui.take_change(osd_change));
+  CHECK(osd_change.screen_id == "openpocket.home");
+  CHECK(osd_change.field_id == "menu");
+
+  osd_ui.set_screen(make_openpocket_main_menu_screen());
+  CHECK(osd_ui.render(vrx.status()));
+  CHECK(osd_row(osd_ui.frame(), 2).find("> MODEL") == 0);
+  CHECK(osd_ui.handle({UiEventType::Enter}));
+  CHECK(osd_ui.take_change(osd_change));
+  CHECK(osd_change.screen_id == "openpocket.menu");
+  CHECK(osd_change.field_id == "group.model");
+
+  osd_ui.set_screen(
+      make_openpocket_group_menu_screen(OpenPocketMenuGroup::Model));
+  CHECK(osd_ui.handle({UiEventType::Rotate, 1}));
+  CHECK(osd_ui.handle({UiEventType::Enter}));
+  CHECK(osd_ui.take_change(osd_change));
+  CHECK(osd_change.screen_id == "openpocket.group.model");
+  CHECK(osd_change.field_id == "model");
+
+  osd_ui.set_screen(make_main_menu_screen());
+  CHECK(osd_ui.handle({UiEventType::Rotate, 13}));
+  CHECK(osd_ui.selected_index() == 13);
+  CHECK(osd_ui.scroll_offset() == 2);
+  CHECK(osd_ui.render(vrx.status()));
+  CHECK(osd_ui.frame().at(0, 13) == '>');
+  CHECK(osd_ui.handle({UiEventType::Enter}));
+  CHECK(osd_ui.take_change(osd_change));
+  CHECK(osd_change.screen_id == "menu");
+  CHECK(osd_change.field_id == "finder");
+
+  osd_ui.set_screen(make_openpocket_video_screen(vrx.status()));
+  CHECK(osd_ui.render(vrx.status()));
+  CHECK(osd_row(osd_ui.frame(), 2).find("> BAND") == 0);
+  CHECK(osd_row(osd_ui.frame(), 4).find("FREQUENCY") !=
+        std::string::npos);
+  CHECK(osd_row(osd_ui.frame(), 5).find("VIDEO") != std::string::npos);
+  CHECK(osd_ui.handle({UiEventType::Enter}));
+  CHECK(osd_ui.handle({UiEventType::Rotate, 99}));
+  CHECK(osd_ui.handle({UiEventType::Enter}));
+  CHECK(osd_ui.take_change(osd_change));
+  CHECK(osd_change.field_id == "band");
+  CHECK(osd_change.value == static_cast<int32_t>(kVrxBandCount));
+
+  osd_ui.set_screen(make_model_setup_screen(model));
+  const int32_t original_model_id = osd_ui.screen().fields[0].value;
+  CHECK(osd_ui.handle({UiEventType::Enter}));
+  CHECK(osd_ui.editing());
+  CHECK(osd_ui.handle({UiEventType::Rotate, 4}));
+  const int32_t staged_model_id = original_model_id + 4;
+  osd_ui.set_screen(make_model_setup_screen(model));
+  CHECK(osd_ui.editing());
+  CHECK(osd_ui.screen().fields[0].value == staged_model_id);
+  CHECK(osd_ui.render(vrx.status()));
+  CHECK(osd_row(osd_ui.frame(), 0).find("EDIT") != std::string::npos);
+  CHECK(osd_ui.handle({UiEventType::Back}));
+  CHECK(!osd_ui.editing());
+  CHECK(osd_ui.screen().fields[0].value == original_model_id);
+  CHECK(!osd_ui.take_change(osd_change));
+
+  CHECK(osd_ui.handle({UiEventType::Enter}));
+  CHECK(osd_ui.handle({UiEventType::Rotate, 2}));
+  CHECK(osd_ui.handle({UiEventType::Enter}));
+  CHECK(!osd_ui.editing());
+  CHECK(osd_ui.take_change(osd_change));
+  CHECK(osd_change.screen_id == "model");
+  CHECK(osd_change.field_id == "model_id");
+  CHECK(osd_change.value == original_model_id + 2);
+  CHECK(osd_ui.handle({UiEventType::Back}));
+  CHECK(osd_ui.take_back_request());
+  CHECK(!osd_ui.take_back_request());
 
   UsbSimulator usb;
   CHECK(!usb.enter(false, true));

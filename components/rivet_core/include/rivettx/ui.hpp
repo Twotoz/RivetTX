@@ -119,6 +119,8 @@ enum class UiWarningCode : uint8_t {
   VideoNoSignal,
 };
 
+const char* ui_warning_text(UiWarningCode warning);
+
 constexpr std::size_t kMaximumUiWarnings = 16;
 
 struct UiHomeStatus {

@@ -27,7 +27,7 @@ Focused runs are also available:
 
 Supported scenario names are `nominal`, `packet-loss`, `corruption`,
 `disconnect`, `stale-input`, and `missed-deadline`. Display names are
-`compact`, `medium`, and `large`.
+`compact`, `medium`, `large`, and `openpocket`.
 
 ## What is checked
 
@@ -46,7 +46,10 @@ telemetry values, receive-queue bounds, and the final safety/module state.
 
 The UI is rendered at 128×64, 240×135, and 480×320 to verify that screen data
 is independent of a single panel size. The resulting PBM files can be opened
-with common image viewers. Unit tests additionally drive the virtual module's
+with common image viewers. The OpenPocket profile writes
+`build/sim-openpocket-osd.txt`, containing deterministic 30×16 Home, grouped
+Menu, Detail and EDIT frames. Unit tests drive selection, scrolling,
+confirm/cancel and clipping in addition to the virtual module's
 discovered power and mode fields, bind and Wi-Fi commands, offline recovery,
 and Finder RSSI/audio behavior.
 
