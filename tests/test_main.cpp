@@ -1,11 +1,13 @@
 #include "rivettx/audio.hpp"
 #include "rivettx/at7456e.hpp"
+#include "rivettx/board_power.hpp"
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
 #include "rivettx/product.hpp"
 #include "rivettx/services.hpp"
 #include "rivettx/storage.hpp"
+#include "rivettx/tw8836.hpp"
 #include "rivettx/ui.hpp"
 #include "virtual_hardware.hpp"
 
@@ -47,6 +49,138 @@ class FakeWatchdog final : public IWatchdog {
     ++count;
   }
   uint32_t count = 0;
+};
+
+class FakeBoardPowerHardware final : public IBoardPowerHardware {
+ public:
+  bool initialize() override { initialized = true; return calls_ok; }
+  bool set_video_5v(bool value) override { video = value; return calls_ok; }
+  bool set_display_5v(bool value) override { display = value; return calls_ok; }
+  bool set_elrs_5v(bool value) override { elrs = value; return calls_ok; }
+  bool set_backlight(uint8_t value) override { backlight = value; return calls_ok; }
+  bool set_display_controller_reset(bool value) override { reset = value; return calls_ok; }
+  bool read_vbus_present(bool& value) override { value = vbus; return calls_ok; }
+  ChargerTelemetry read_charger() override { return charger; }
+  FuelGaugeTelemetry read_fuel_gauge() override { return gauge; }
+
+  bool initialized = false;
+  bool calls_ok = true;
+  bool video = false;
+  bool display = false;
+  bool elrs = false;
+  bool reset = false;
+  bool vbus = true;
+  uint8_t backlight = 0;
+  ChargerTelemetry charger{BoardSensorState::Valid, ChargeState::Charging,
+                           3880, true, true, false};
+  FuelGaugeTelemetry gauge{BoardSensorState::Valid, 3890, 67, false};
+};
+
+class FakeTw8836Hardware final : public ITw8836Hardware {
+ public:
+  bool initialize() override { initialized = true; return calls_ok; }
+  bool read_identity(uint16_t& value) override
+  {
+    value = identity;
+    return calls_ok;
+  }
+  bool enter_isp() override { entered_isp = true; return calls_ok; }
+  bool write_enable() override
+  {
+    if (!calls_ok) return false;
+    program_busy_polls = busy_polls;
+    return true;
+  }
+  bool start_erase() override
+  {
+    if (!calls_ok) return false;
+    std::fill(flash.begin(), flash.end(), 0xff);
+    erase_busy_polls = busy_polls;
+    return true;
+  }
+  bool flash_busy(bool& value) override
+  {
+    if (!calls_ok) return false;
+    if (erase_busy_polls != 0) {
+      --erase_busy_polls;
+      value = true;
+    } else if (program_busy_polls != 0) {
+      --program_busy_polls;
+      value = true;
+    } else {
+      value = false;
+    }
+    return true;
+  }
+  bool load_xram_block(const uint8_t* data, std::size_t size) override
+  {
+    if (!calls_ok || data == nullptr || size > xram.size()) {
+      return false;
+    }
+    std::copy(data, data + size, xram.begin());
+    xram_size = size;
+    return true;
+  }
+  bool start_program_flash_block(uint32_t address,
+                                 std::size_t size) override
+  {
+    if (!calls_ok || size != xram_size || address + size > flash.size()) {
+      return false;
+    }
+    std::copy(xram.begin(), xram.begin() + size, flash.begin() + address);
+    programmed_addresses.push_back(address);
+    program_busy_polls = busy_polls;
+    return true;
+  }
+  bool begin_read_flash_block(uint32_t address, std::size_t size) override
+  {
+    if (!calls_ok || readback_fails || address + size > flash.size()) {
+      return false;
+    }
+    readback_address = address;
+    readback_size = size;
+    program_busy_polls = busy_polls;
+    return true;
+  }
+  bool read_xram_block(uint8_t* data, std::size_t size) override
+  {
+    if (!calls_ok || readback_fails || data == nullptr ||
+        size != readback_size) {
+      return false;
+    }
+    std::copy(flash.begin() + readback_address,
+              flash.begin() + readback_address + size, data);
+    return true;
+  }
+  bool exit_isp_and_reset() override
+  {
+    if (!calls_ok) return false;
+    entered_isp = false;
+    runtime.booted = true;
+    runtime.panel_timing_active = true;
+    return true;
+  }
+  bool read_runtime_status(Tw8836RuntimeStatus& value) override
+  {
+    value = runtime;
+    return calls_ok;
+  }
+
+  bool initialized = false;
+  bool calls_ok = true;
+  bool entered_isp = false;
+  bool readback_fails = false;
+  uint16_t identity = kTw8836ExpectedIdentity;
+  uint8_t busy_polls = 1;
+  uint8_t erase_busy_polls = 0;
+  uint8_t program_busy_polls = 0;
+  uint32_t readback_address = 0;
+  std::size_t readback_size = 0;
+  Tw8836RuntimeStatus runtime{true, true, true, Tw8836VideoStandard::Pal};
+  std::array<uint8_t, 2048> flash{};
+  std::array<uint8_t, kTw8836IspBlockSize> xram{};
+  std::size_t xram_size = 0;
+  std::vector<uint32_t> programmed_addresses{};
 };
 
 class FakeVrxHardware final : public IVrxHardware {
@@ -2144,6 +2278,22 @@ void test_openpocket_product_services()
 
 void test_rx5808_backend()
 {
+  VrxCommandQueue startup_commands;
+  CHECK(startup_commands.empty());
+  CHECK(startup_commands.push({VrxCommandType::Tune, 4, 5}));
+  // An immediate model switch must be queued behind, not overwrite, the
+  // active model restored from storage.
+  CHECK(startup_commands.push({VrxCommandType::Tune, 2, 7}));
+  VrxCommand startup_command{};
+  CHECK(startup_commands.pop(startup_command));
+  CHECK(startup_command.type == VrxCommandType::Tune);
+  CHECK(startup_command.band == 4);
+  CHECK(startup_command.channel == 5);
+  CHECK(startup_commands.pop(startup_command));
+  CHECK(startup_command.band == 2);
+  CHECK(startup_command.channel == 7);
+  CHECK(startup_commands.empty());
+
   Rtc6715Program program{};
   CHECK(!rtc6715_program_for_frequency(0, program));
   CHECK(!rtc6715_program_for_frequency(5801, program));
@@ -2164,6 +2314,40 @@ void test_rx5808_backend()
   FakeRtc6715Io io;
   Rtc6715Backend backend(io, {1, 100});
   CHECK(backend.initialize());
+  CHECK(backend.tune_state() == VrxTuneState::Idle);
+  backend.tick(10000000);
+  CHECK(backend.tune_state() == VrxTuneState::Idle);
+
+  const auto check_startup = [](TimeUs pre_task_delay_us,
+                                uint8_t stored_band,
+                                uint8_t stored_channel) {
+    FakeRtc6715Io startup_io;
+    Rtc6715Backend startup_backend(startup_io, {1, 100});
+    CHECK(startup_backend.initialize());
+    startup_backend.tick(pre_task_delay_us);
+    CHECK(startup_backend.tune_state() == VrxTuneState::Idle);
+    const uint16_t frequency =
+        vrx_frequency_mhz(stored_band, stored_channel);
+    CHECK(startup_backend.start_tune(frequency, pre_task_delay_us));
+    TimeUs transaction_now = pre_task_delay_us;
+    for (std::size_t tick = 0;
+         tick < 100 &&
+         startup_backend.tune_state() == VrxTuneState::Pending;
+         ++tick) {
+      startup_backend.tick(transaction_now);
+      transaction_now += 10;
+    }
+    CHECK(startup_backend.tune_state() == VrxTuneState::Complete);
+    CHECK(startup_backend.tuned_frequency_mhz() == frequency);
+    CHECK(startup_io.frames.size() == 1);
+  };
+  check_startup(0, 0, 0);          // normal startup
+  check_startup(10000000, 4, 5);   // ten-second first-run calibration
+  check_startup(4000000, 1, 2);    // cancelled calibration
+  check_startup(2000000, 2, 3);    // recovery startup
+  check_startup(3000000, 3, 4);    // recovered storage mirror
+  check_startup(8000000, 5, 6);    // restored active model
+
   TimeUs now = 1000;
   std::size_t programmed = 0;
   for (uint8_t band = 0; band < kVrxBandCount; ++band) {
@@ -2358,6 +2542,136 @@ void test_rx5808_backend()
   display_status.rssi_state = VrxRssiState::SensorFault;
   video_screen = make_openpocket_video_screen(display_status);
   CHECK(video_screen.fields[4].value_text == "SENSOR FAULT");
+}
+
+void test_openpocket_board_power()
+{
+  FakeBoardPowerHardware hardware;
+  BoardPowerController power(hardware, {50, 60});
+  CHECK(power.initialize(false));
+  CHECK(hardware.initialized);
+  CHECK(!hardware.video);
+  CHECK(!hardware.display);
+  CHECK(!hardware.elrs);
+  CHECK(hardware.reset);
+  CHECK(hardware.backlight == 0);
+
+  CHECK(power.request_video(true));
+  CHECK(power.request_display(true, 70));
+  CHECK(power.request_elrs(true));
+  CHECK(power.status().video_5v);
+  CHECK(power.status().display_5v);
+  CHECK(power.status().elrs_5v);
+  CHECK(power.status().backlight_percent == 0);
+  CHECK(power.status().display_controller_reset_asserted);
+  CHECK(power.status().display_state == DisplayPowerState::PowerSettling);
+
+  power.tick(0);
+  CHECK(power.status().vbus_present);
+  CHECK(power.status().charger.state == BoardSensorState::Valid);
+  CHECK(power.status().charger.battery_mv == 3880);
+  CHECK(power.status().fuel_gauge.cell_mv == 3890);
+  CHECK(power.status().fuel_gauge.state_of_charge == 67);
+  power.tick(20000);
+  CHECK(!power.status().display_controller_reset_asserted);
+  CHECK(power.status().display_state ==
+        DisplayPowerState::WaitingForController);
+  power.set_display_controller_ready(true);
+  power.tick(20001);
+  CHECK(power.status().backlight_percent == 70);
+  CHECK(power.status().display_state == DisplayPowerState::Ready);
+  power.set_display_controller_ready(false);
+  CHECK(power.status().backlight_percent == 0);
+  CHECK(power.status().display_state ==
+        DisplayPowerState::WaitingForController);
+
+  CHECK(power.set_simulator_mode(true));
+  CHECK(!hardware.elrs);
+  CHECK(!hardware.video);
+  CHECK(!power.request_elrs(true));
+  CHECK(!power.request_video(true));
+  // USB-only simulator operation is valid without a battery or gauge.
+  hardware.gauge = {};
+  hardware.charger = {BoardSensorState::Valid, ChargeState::Disconnected,
+                      0, true, false, false};
+  power.tick(50000);
+  CHECK(power.status().vbus_present);
+  CHECK(power.status().fuel_gauge.state == BoardSensorState::Unavailable);
+  CHECK(power.request_display(false));
+}
+
+void test_tw8836_isp_controller()
+{
+  static constexpr std::array<uint8_t, 3> abc{'a', 'b', 'c'};
+  const std::array<uint8_t, 32> abc_sha{
+      0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+      0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+      0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+      0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
+  CHECK(tw8836_sha256(abc.data(), abc.size()) == abc_sha);
+
+  std::array<uint8_t, 700> image{};
+  for (std::size_t index = 0; index < image.size(); ++index) {
+    image[index] = static_cast<uint8_t>((index * 29U + 7U) & 0xffU);
+  }
+  const auto digest = tw8836_sha256(image.data(), image.size());
+  FakeTw8836Hardware hardware;
+  Tw8836Controller controller(hardware, {1000, 20});
+  TimeUs now = 100;
+  CHECK(controller.initialize(now));
+  CHECK(controller.status().state == Tw8836State::Detecting);
+  controller.tick(now);
+  CHECK(controller.status().state == Tw8836State::Ready);
+  CHECK(controller.status().identity == kTw8836ExpectedIdentity);
+  CHECK(controller.start_program(image.data(), image.size(), digest, now));
+  for (std::size_t ticks = 0; ticks < 100 &&
+       controller.status().state != Tw8836State::Complete; ++ticks) {
+    now += 1000;
+    controller.tick(now);
+  }
+  CHECK(controller.status().state == Tw8836State::Complete);
+  CHECK(controller.status().fault == Tw8836Fault::None);
+  CHECK(controller.status().progress_percent == 100);
+  CHECK(controller.status().runtime.panel_timing_active);
+  CHECK(hardware.programmed_addresses.size() == 3);
+  CHECK(hardware.programmed_addresses[0] == 0);
+  CHECK(hardware.programmed_addresses[1] == 256);
+  CHECK(hardware.programmed_addresses[2] == 512);
+  CHECK(std::equal(image.begin(), image.end(), hardware.flash.begin()));
+
+  FakeTw8836Hardware identity_fault;
+  identity_fault.identity = 0x1234;
+  Tw8836Controller bad_identity(identity_fault);
+  CHECK(bad_identity.initialize(0));
+  bad_identity.tick(0);
+  CHECK(bad_identity.status().fault == Tw8836Fault::Identity);
+  identity_fault.identity = kTw8836ExpectedIdentity;
+  CHECK(bad_identity.recover(1000));
+  bad_identity.tick(1000);
+  CHECK(bad_identity.status().state == Tw8836State::Ready);
+
+  FakeTw8836Hardware bad_readback;
+  Tw8836Controller verify_fault(bad_readback, {1000, 20});
+  CHECK(verify_fault.initialize(0));
+  verify_fault.tick(0);
+  CHECK(verify_fault.start_program(image.data(), image.size(), digest, 0));
+  bad_readback.readback_fails = true;
+  for (std::size_t ticks = 0; ticks < 30 &&
+       verify_fault.status().state != Tw8836State::Fault; ++ticks) {
+    verify_fault.tick(static_cast<TimeUs>(ticks + 1) * 1000U);
+  }
+  CHECK(verify_fault.status().fault == Tw8836Fault::Readback);
+
+  FakeTw8836Hardware timeout_hardware;
+  timeout_hardware.busy_polls = 255;
+  Tw8836Controller timeout(timeout_hardware, {100, 20});
+  CHECK(timeout.initialize(0));
+  timeout.tick(0);
+  CHECK(timeout.start_program(image.data(), image.size(), digest, 0));
+  timeout.tick(1000);    // enter ISP
+  timeout.tick(2000);    // start erase
+  timeout.tick(101000);  // bounded timeout
+  CHECK(timeout.status().fault == Tw8836Fault::Timeout);
 }
 
 void test_complete_openpocket_menu()
@@ -2679,6 +2993,8 @@ int main()
   test_services();
   test_module_update_backup_and_calibration();
   test_rx5808_backend();
+  test_openpocket_board_power();
+  test_tw8836_isp_controller();
   test_openpocket_product_services();
   test_complete_openpocket_menu();
   test_at7456e_backend();

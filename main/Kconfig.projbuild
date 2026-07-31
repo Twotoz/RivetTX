@@ -8,6 +8,114 @@ config RIVETTX_OPENPOCKET_OSD
         the 30x16 OpenPocket character compositor and AT7456E video overlay;
         it does not initialize the SSD1306 OLED.
 
+config RIVETTX_OPENPOCKET_REV_A
+    bool "OpenPocket Revision-A integrated ESP32-S3 board"
+    default n
+    depends on IDF_TARGET_ESP32S3 && RIVETTX_OPENPOCKET_OSD
+    help
+        Enables the integrated charger, MAX17048 gauge, three switched 5 V
+        domains, TW8836 reset and I2C ISP, backlight PWM, and two I2C control
+        expanders. Revision A uses native USB and requires no PSRAM.
+
+config RIVETTX_BOARD_I2C_SDA_GPIO
+    int "Revision-A board I2C SDA GPIO"
+    range 0 48
+    default 15
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_BOARD_I2C_SCL_GPIO
+    int "Revision-A board I2C SCL GPIO"
+    range 0 48
+    default 16
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_5V_VIDEO_ENABLE_GPIO
+    int "5V_VIDEO load-switch enable GPIO"
+    range 0 48
+    default 40
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_5V_DISPLAY_ENABLE_GPIO
+    int "5V_DISPLAY load-switch enable GPIO"
+    range 0 48
+    default 41
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_5V_ELRS_ENABLE_GPIO
+    int "5V_ELRS load-switch enable GPIO"
+    range 0 48
+    default 42
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_BACKLIGHT_PWM_GPIO
+    int "TPS61165 backlight PWM GPIO"
+    range 0 48
+    default 47
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_BACKLIGHT_DEFAULT_PERCENT
+    int "Default TFT backlight percentage"
+    range 0 100
+    default 60
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_DISPLAY_CONTROLLER_RESET_GPIO
+    int "TW8836 active-low reset GPIO"
+    range 0 48
+    default 38
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_TW8836_I2C_ADDRESS
+    hex "TW8836 I2C address"
+    default 0x45
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_TW8836_ISP_TIMEOUT_MS
+    int "TW8836 bounded ISP operation timeout (milliseconds)"
+    range 100 30000
+    default 10000
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_VBUS_DETECT_GPIO
+    int "USB VBUS detect GPIO"
+    range 0 48
+    default 48
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_CONTROL_EXPANDER0_ADDRESS
+    hex "First TCA9535 control-expander address"
+    default 0x20
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_CONTROL_EXPANDER1_ADDRESS
+    hex "Second TCA9535 control-expander address"
+    default 0x21
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_CONTROL_EXPANDER_INT_GPIO
+    int "Control-expander interrupt GPIO"
+    range 0 48
+    default 10
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_CHARGER_INT_GPIO
+    int "BQ25895 active-low interrupt GPIO"
+    range 0 48
+    default 43
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_FUEL_GAUGE_ALERT_GPIO
+    int "MAX17048 active-low ALERT GPIO"
+    range 0 48
+    default 44
+    depends on RIVETTX_OPENPOCKET_REV_A
+
+config RIVETTX_BOARD_POWER_SAMPLE_INTERVAL_MS
+    int "Charger and fuel-gauge sample interval (milliseconds)"
+    range 20 2000
+    default 100
+    depends on RIVETTX_OPENPOCKET_REV_A
+
 config RIVETTX_AT7456E_SCLK_GPIO
     int "AT7456E SPI clock GPIO"
     range -1 21 if IDF_TARGET_ESP32C3
@@ -246,29 +354,29 @@ config RIVETTX_AXIS7_GPIO
 
 config RIVETTX_BUTTON_UP
     int "Up button GPIO"
-    range 0 21 if IDF_TARGET_ESP32C3
-    range 0 48 if IDF_TARGET_ESP32S3
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
     default 8 if IDF_TARGET_ESP32C3
     default 10 if IDF_TARGET_ESP32S3
 
 config RIVETTX_BUTTON_DOWN
     int "Down button GPIO"
-    range 0 21 if IDF_TARGET_ESP32C3
-    range 0 48 if IDF_TARGET_ESP32S3
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
     default 9 if IDF_TARGET_ESP32C3
     default 11 if IDF_TARGET_ESP32S3
 
 config RIVETTX_BUTTON_ENTER
     int "Enter button GPIO"
-    range 0 21 if IDF_TARGET_ESP32C3
-    range 0 48 if IDF_TARGET_ESP32S3
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
     default 10 if IDF_TARGET_ESP32C3
     default 12 if IDF_TARGET_ESP32S3
 
 config RIVETTX_BUTTON_BACK
     int "Back/recovery button GPIO"
-    range 0 21 if IDF_TARGET_ESP32C3
-    range 0 48 if IDF_TARGET_ESP32S3
+    range -1 21 if IDF_TARGET_ESP32C3
+    range -1 48 if IDF_TARGET_ESP32S3
     default 20 if IDF_TARGET_ESP32C3
     default 14 if IDF_TARGET_ESP32S3
 

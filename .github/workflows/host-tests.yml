@@ -114,6 +114,9 @@ jobs:
           - target: esp32s3
             name: ESP32-S3
             defaults: sdkconfig.ci-openpocket-esp32s3.defaults
+          - target: esp32s3
+            name: Revision-A ESP32-S3-MINI-1U-N8
+            defaults: sdkconfig.openpocket-rev-a.defaults
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -128,3 +131,13 @@ jobs:
             idf.py
             -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;${{ matrix.defaults }}"
             build
+
+      - name: Verify Revision-A 8 MiB/no-PSRAM profile
+        if: matrix.defaults == 'sdkconfig.openpocket-rev-a.defaults'
+        run: |
+          grep -q '^#define CONFIG_ESPTOOLPY_FLASHSIZE_8MB 1$' build/config/sdkconfig.h
+          test -z "$(grep '^#define CONFIG_SPIRAM ' build/config/sdkconfig.h || true)"
+          firmware_size=$(stat -c %s build/rivettx.bin)
+          ota_slot_size=$((0x280000))
+          echo "Revision-A application: ${firmware_size} bytes; OTA slot: ${ota_slot_size} bytes"
+          test "${firmware_size}" -le "$((ota_slot_size * 90 / 100))"

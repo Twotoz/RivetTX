@@ -161,6 +161,9 @@ idf.py build
 idf.py flash monitor
 ```
 
+The integrated OpenPocket Revision-A target has a checked-in no-PSRAM, 8 MiB
+configuration and pin map. See [OpenPocket Revision A](docs/openpocket-rev-a.md).
+
 Every successful CI run provides separate `rivettx-esp32c3-<commit>` and
 `rivettx-esp32s3-<commit>` artifacts with a one-file factory image, separate
 OTA/application image, exact target, flash arguments, source commit, and

@@ -1,6 +1,7 @@
 #include "esp_platform.hpp"
 
 #include "rivettx/audio.hpp"
+#include "rivettx/board_power.hpp"
 #include "rivettx/core.hpp"
 #include "rivettx/crsf.hpp"
 #include "rivettx/elrs.hpp"
@@ -127,6 +128,26 @@ VrxControllerConfig vrx_controller_config()
   return config;
 }
 
+BoardPowerConfig board_power_config()
+{
+  BoardPowerConfig config{};
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  config.sample_interval_ms = CONFIG_RIVETTX_BOARD_POWER_SAMPLE_INTERVAL_MS;
+  config.default_backlight_percent =
+      CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT;
+#endif
+  return config;
+}
+
+Tw8836Config tw8836_config()
+{
+  Tw8836Config config{};
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  config.operation_timeout_ms = CONFIG_RIVETTX_TW8836_ISP_TIMEOUT_MS;
+#endif
+  return config;
+}
+
 class SpecialActionMailbox final : public ISpecialActionHandler {
  public:
   void execute(SpecialAction action, int16_t parameter,
@@ -197,6 +218,9 @@ class LuaCrsfMailbox final : public ILuaCrsfSink {
 
 struct Application {
   EspBoard board;
+  EspBoardPowerIo board_power_io;
+  BoardPowerController board_power{board_power_io, board_power_config()};
+  Tw8836Controller display_controller{board_power_io, tw8836_config()};
   EspRx5808Io vrx_io{board};
   Rtc6715Backend vrx_hardware{vrx_io, rtc6715_config()};
   VrxController vrx{vrx_hardware, vrx_controller_config()};
@@ -269,10 +293,10 @@ struct Application {
   SafetyState latest_safety_state = SafetyState::Booting;
   portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
   VrxStatus latest_vrx{};
+  BoardPowerStatus latest_board_power{};
+  Tw8836Status latest_display_controller{};
   portMUX_TYPE vrx_command_lock = portMUX_INITIALIZER_UNLOCKED;
-  uint8_t vrx_command = 0;
-  uint8_t vrx_command_band = 0;
-  uint8_t vrx_command_channel = 0;
+  VrxCommandQueue vrx_commands{};
   std::atomic<int16_t> vrx_scan_result{-1};
   bool vrx_initialized = false;
   CharacterOsdFrame pending_osd_frame{};
@@ -288,6 +312,13 @@ struct Application {
   std::atomic<bool> finder_enabled{false};
   std::atomic<bool> usb_simulator_enabled{false};
   std::atomic<bool> usb_rf_lock{true};
+  std::atomic<bool> display_power_requested{true};
+  std::atomic<uint8_t> backlight_requested{
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+      CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT};
+#else
+      0};
+#endif
   TimeUs safety_chord_started_us = 0;
   bool safety_chord_fired = false;
   SafetyState previous_safety_state = SafetyState::Booting;
@@ -320,35 +351,24 @@ struct Application {
 Application app;
 
 #if CONFIG_RIVETTX_RX5808_ENABLED
-enum class VrxCommand : uint8_t {
-  None,
-  Tune,
-  StartScan,
-  CancelScan,
-};
-
-void queue_vrx_command(VrxCommand command, uint8_t band = 0,
+bool queue_vrx_command(VrxCommandType type, uint8_t band = 0,
                        uint8_t channel = 0)
 {
+  bool queued = false;
   taskENTER_CRITICAL(&app.vrx_command_lock);
-  app.vrx_command = static_cast<uint8_t>(command);
-  app.vrx_command_band = band;
-  app.vrx_command_channel = channel;
+  queued = app.vrx_commands.push({type, band, channel});
   taskEXIT_CRITICAL(&app.vrx_command_lock);
+  if (!queued) {
+    ESP_LOGE(kTag, "RX5808 command queue full; command=%u rejected",
+             static_cast<unsigned>(type));
+  }
+  return queued;
 }
 
-bool take_vrx_command(VrxCommand& command, uint8_t& band,
-                      uint8_t& channel)
+bool take_vrx_command(VrxCommand& command)
 {
-  bool pending = false;
   taskENTER_CRITICAL(&app.vrx_command_lock);
-  if (app.vrx_command != static_cast<uint8_t>(VrxCommand::None)) {
-    command = static_cast<VrxCommand>(app.vrx_command);
-    band = app.vrx_command_band;
-    channel = app.vrx_command_channel;
-    app.vrx_command = static_cast<uint8_t>(VrxCommand::None);
-    pending = true;
-  }
+  const bool pending = app.vrx_commands.pop(command);
   taskEXIT_CRITICAL(&app.vrx_command_lock);
   return pending;
 }
@@ -381,11 +401,12 @@ void control_task(void*)
 
   while (true) {
     const TimeUs started = now_us();
-    const bool simulator_rf_locked =
-        app.usb_simulator_enabled.load(std::memory_order_acquire) &&
-        app.usb_rf_lock.load(std::memory_order_acquire);
-    app.rf_transport.set_transmit_enabled(!simulator_rf_locked);
-    if (simulator_rf_locked) {
+    const bool simulator_active =
+        app.usb_simulator_enabled.load(std::memory_order_acquire);
+    // Simulator mode is a hard RF safety boundary on Revision A: ELRS power
+    // is off and no CRSF frame, including an armed CH5, is transmitted.
+    app.rf_transport.set_transmit_enabled(!simulator_active);
+    if (simulator_active) {
       app.safety.request_lock();
     }
     if (app.model_activation_state.load(std::memory_order_acquire) == 1) {
@@ -411,7 +432,7 @@ void control_task(void*)
       app.special_functions.reset();
       app.module.set_model_id(app.model.model_id, started);
 #if CONFIG_RIVETTX_RX5808_ENABLED
-      queue_vrx_command(VrxCommand::Tune, app.model.vrx_band,
+      queue_vrx_command(VrxCommandType::Tune, app.model.vrx_band,
                         app.model.vrx_channel);
 #endif
       app.model_activation_state.store(2, std::memory_order_release);
@@ -997,17 +1018,35 @@ UiScreen current_screen(
     }
     case AppScreen::Power: {
       UiScreen screen{"power", "Power", {}};
+      BoardPowerStatus board_power{};
+      taskENTER_CRITICAL(&app.frame_lock);
+      board_power = app.latest_board_power;
+      taskEXIT_CRITICAL(&app.frame_lock);
+      const bool gauge_valid =
+          board_power.fuel_gauge.state == BoardSensorState::Valid;
+      const uint16_t effective_battery_mv =
+          gauge_valid ? board_power.fuel_gauge.cell_mv : battery_mv;
+      const bool effective_battery_valid = gauge_valid || battery_sensor_valid;
       const auto product_power = app.battery_estimator.estimate(
-          battery_mv, battery_sensor_valid, ChargeState::Unknown, false);
+          effective_battery_mv, effective_battery_valid,
+          board_power.charger.charge, board_power.vbus_present);
       screen.fields.push_back(
-          {"voltage", "BATTERY", std::to_string(battery_mv) + "MV",
-           UiFieldKind::Label, battery_mv, 0, 0, false, true});
+          {"voltage", "BATTERY",
+           effective_battery_valid
+               ? std::to_string(effective_battery_mv) + "MV"
+               : "UNAVAILABLE",
+           UiFieldKind::Label, effective_battery_mv, 0, 0, false, true});
       screen.fields.push_back(
           {"percentage", "CHARGE",
-           product_power.percentage_valid
-               ? std::to_string(product_power.percentage) + "%"
-               : "UNKNOWN",
-           UiFieldKind::Label, product_power.percentage, 0, 100,
+           gauge_valid
+               ? std::to_string(board_power.fuel_gauge.state_of_charge) + "%"
+               : (product_power.percentage_valid
+                      ? std::to_string(product_power.percentage) + "%"
+                      : "UNKNOWN"),
+           UiFieldKind::Label,
+           gauge_valid ? board_power.fuel_gauge.state_of_charge
+                       : product_power.percentage,
+           0, 100,
            false, true});
       screen.fields.push_back(
           {"state", "STATE",
@@ -1018,8 +1057,21 @@ UiScreen current_screen(
                       : (battery_state == BatteryState::Low ? "LOW" : "OK")),
            UiFieldKind::Label, 0, 0, 0, false, true});
       screen.fields.push_back(
-          {"hardware", "FUEL GAUGE", "NOT FITTED", UiFieldKind::Label,
-           0, 0, 0, false, true});
+          {"hardware", "FUEL GAUGE",
+           gauge_valid ? "MAX17048 OK" : "UNAVAILABLE",
+           UiFieldKind::Label, gauge_valid ? 1 : 0, 0, 1, false, true});
+      screen.fields.push_back(
+          {"usb", "USB VBUS", board_power.vbus_present ? "PRESENT" : "OFF",
+           UiFieldKind::Label, board_power.vbus_present ? 1 : 0,
+           0, 1, false, true});
+      screen.fields.push_back(
+          {"display", "DISPLAY POWER", "", UiFieldKind::Boolean,
+           app.display_power_requested.load(std::memory_order_acquire) ? 1 : 0,
+           0, 1, true, true});
+      screen.fields.push_back(
+          {"backlight", "BACKLIGHT", "", UiFieldKind::Progress,
+           app.backlight_requested.load(std::memory_order_acquire),
+           0, 100, true, true});
       return screen;
     }
     case AppScreen::System:
@@ -1589,6 +1641,17 @@ void ui_task(void*)
         }
         continue;
       }
+      if (change.screen_id == "power" && change.field_id == "display") {
+        app.display_power_requested.store(change.value != 0,
+                                          std::memory_order_release);
+        continue;
+      }
+      if (change.screen_id == "power" && change.field_id == "backlight") {
+        app.backlight_requested.store(
+            static_cast<uint8_t>(clamp<int32_t>(0, change.value, 100)),
+            std::memory_order_release);
+        continue;
+      }
       if (change.screen_id == "models") {
         if (activation_maintenance ||
             app.backup_portal.running() ||
@@ -1678,13 +1741,13 @@ void ui_task(void*)
           changed_channel = true;
         } else if (change.field_id == "scan") {
           queue_vrx_command(vrx_status.scanning
-                                ? VrxCommand::CancelScan
-                                : VrxCommand::StartScan);
+                                ? VrxCommandType::CancelScan
+                                : VrxCommandType::StartScan);
           force_screen_rebuild = true;
           continue;
         }
         if (changed_channel) {
-          queue_vrx_command(VrxCommand::Tune,
+          queue_vrx_command(VrxCommandType::Tune,
                             app.edit_model.vrx_band,
                             app.edit_model.vrx_channel);
           model_dirty = true;
@@ -2006,33 +2069,29 @@ void vrx_task(void*)
   bool previous_scanning = false;
   while (true) {
     const TimeUs current = now_us();
-    VrxCommand command = VrxCommand::None;
-    uint8_t band = 0;
-    uint8_t channel = 0;
-    if (take_vrx_command(command, band, channel)) {
-      switch (command) {
-        case VrxCommand::Tune:
-          if (!app.vrx.select(band, channel, current)) {
+    VrxCommand command{};
+    if (take_vrx_command(command)) {
+      switch (command.type) {
+        case VrxCommandType::Tune:
+          if (!app.vrx.select(command.band, command.channel, current)) {
             ESP_LOGE(kTag, "RX5808 tune rejected band=%u channel=%u",
-                     static_cast<unsigned>(band + 1),
-                     static_cast<unsigned>(channel + 1));
+                     static_cast<unsigned>(command.band + 1),
+                     static_cast<unsigned>(command.channel + 1));
           }
           break;
-        case VrxCommand::StartScan:
+        case VrxCommandType::StartScan:
           if (!app.vrx.begin_scan(current)) {
             ESP_LOGW(kTag, "RX5808 scan start rejected");
           } else {
             ESP_LOGI(kTag, "RX5808 scan started");
           }
           break;
-        case VrxCommand::CancelScan:
+        case VrxCommandType::CancelScan:
           if (app.vrx.cancel_scan(current)) {
             ESP_LOGI(kTag, "RX5808 scan cancelled; restoring channel");
           } else {
             ESP_LOGW(kTag, "RX5808 scan cancellation ignored");
           }
-          break;
-        case VrxCommand::None:
           break;
       }
     }
@@ -2152,6 +2211,81 @@ void usb_task(void*)
   }
 }
 
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+void board_io_task(void*)
+{
+  bool previous_simulator = false;
+  bool previous_display = true;
+  uint8_t previous_backlight = CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT;
+  Tw8836State previous_controller_state = Tw8836State::Unavailable;
+  TimeUs next_controller_recovery_us = 0;
+  while (true) {
+    const TimeUs current = now_us();
+    uint32_t controls = 0;
+    const bool controls_valid =
+        app.board_power_io.read_expanded_controls(controls);
+    app.board.publish_rev_a_controls(controls, current, controls_valid);
+
+    const bool simulator =
+        app.usb_simulator_enabled.load(std::memory_order_acquire);
+    const bool display =
+        app.display_power_requested.load(std::memory_order_acquire);
+    const uint8_t backlight =
+        app.backlight_requested.load(std::memory_order_acquire);
+    if (simulator != previous_simulator) {
+      if (!app.board_power.set_simulator_mode(simulator)) {
+        ESP_LOGE(kTag, "Revision-A simulator power policy failed");
+      } else if (!simulator) {
+        (void)app.board_power.request_video(true);
+        (void)app.board_power.request_elrs(true);
+      }
+      previous_simulator = simulator;
+    }
+    const bool display_changed = display != previous_display;
+    if (display_changed || backlight != previous_backlight) {
+      if (!app.board_power.request_display(display, backlight)) {
+        ESP_LOGE(kTag, "Revision-A display power request failed");
+      }
+      previous_display = display;
+      previous_backlight = backlight;
+    }
+    app.board_power.tick(current);
+    BoardPowerStatus power_status = app.board_power.status();
+    Tw8836Status controller_status = app.display_controller.status();
+    if (power_status.display_5v &&
+        !power_status.display_controller_reset_asserted) {
+      if (controller_status.state == Tw8836State::Unavailable) {
+        (void)app.display_controller.initialize(current);
+      } else if (controller_status.state == Tw8836State::Fault &&
+                 (display_changed || current >= next_controller_recovery_us)) {
+        if (app.display_controller.recover(current)) {
+          next_controller_recovery_us = current + 1000000U;
+        }
+      }
+      app.display_controller.tick(current);
+      controller_status = app.display_controller.status();
+    }
+    app.board_power.set_display_controller_ready(
+        controller_status.runtime.booted &&
+        controller_status.runtime.panel_timing_active);
+    power_status = app.board_power.status();
+    if (controller_status.state != previous_controller_state) {
+      ESP_LOGI(kTag, "TW8836 state=%u fault=%u video=%u standard=%u",
+               static_cast<unsigned>(controller_status.state),
+               static_cast<unsigned>(controller_status.fault),
+               controller_status.runtime.video_present ? 1U : 0U,
+               static_cast<unsigned>(controller_status.runtime.standard));
+      previous_controller_state = controller_status.state;
+    }
+    taskENTER_CRITICAL(&app.frame_lock);
+    app.latest_board_power = power_status;
+    app.latest_display_controller = controller_status;
+    taskEXIT_CRITICAL(&app.frame_lock);
+    vTaskDelay(pdMS_TO_TICKS(4));
+  }
+}
+#endif
+
 bool initialize_storage(bool explicit_format_requested)
 {
   if (explicit_format_requested) {
@@ -2245,6 +2379,24 @@ extern "C" void app_main()
   const uint32_t boot_attempt = app.boot_state.begin_attempt();
 
   const bool pins_ok = validate_pin_configuration();
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  const bool board_power_ok = pins_ok && app.board_power.initialize(false);
+  uint32_t startup_controls = 0;
+  const bool startup_controls_ok =
+      board_power_ok &&
+      app.board_power_io.read_expanded_controls(startup_controls);
+  app.board.publish_rev_a_controls(startup_controls, now_us(),
+                                   startup_controls_ok);
+  if (board_power_ok) {
+    (void)app.board_power.request_video(true);
+    (void)app.board_power.request_display(
+        true, CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT);
+    (void)app.board_power.request_elrs(true);
+    app.latest_board_power = app.board_power.status();
+  } else {
+    ESP_LOGE(kTag, "Revision-A board power initialization failed");
+  }
+#endif
   const bool inputs_ok = pins_ok && app.board.initialize();
   const RawInputs startup_inputs =
       inputs_ok ? app.board.sample_inputs(now_us()) : RawInputs{};
@@ -2262,11 +2414,6 @@ extern "C" void app_main()
   const bool vrx_config_ok = validate_rx5808_configuration();
   app.vrx_initialized = inputs_ok && vrx_config_ok &&
                         app.vrx_hardware.initialize();
-  if (app.vrx_initialized &&
-      !app.vrx.select(app.model.vrx_band, app.model.vrx_channel, now_us())) {
-    ESP_LOGE(kTag, "RX5808 startup tune request failed");
-    app.vrx_initialized = false;
-  }
   if (!app.vrx_initialized) {
     ESP_LOGW(kTag,
              "RX5808 unavailable; control and CRSF will continue without VRX");
@@ -2334,12 +2481,26 @@ extern "C" void app_main()
           : pdFAIL;
   const BaseType_t service_created = xTaskCreatePinnedToCore(
       service_task, "rivet-service", 5120, nullptr, 3, nullptr, kServiceCore);
+#if CONFIG_RIVETTX_OPENPOCKET_REV_A
+  const BaseType_t board_io_created =
+      board_power_ok
+          ? xTaskCreatePinnedToCore(board_io_task, "rivet-board-io", 3072,
+                                    nullptr, 6, nullptr, kServiceCore)
+          : pdFAIL;
+#else
+  const BaseType_t board_io_created = pdPASS;
+#endif
 #if CONFIG_RIVETTX_RX5808_ENABLED
   const BaseType_t vrx_created =
       app.vrx_initialized
           ? xTaskCreatePinnedToCore(vrx_task, "rivet-vrx", 3072, nullptr, 4,
                                     nullptr, kServiceCore)
           : pdPASS;
+  if (app.vrx_initialized && vrx_created == pdPASS &&
+      !queue_vrx_command(VrxCommandType::Tune, app.model.vrx_band,
+                         app.model.vrx_channel)) {
+    ESP_LOGE(kTag, "RX5808 startup tune could not be queued");
+  }
 #else
   const BaseType_t vrx_created = pdPASS;
 #endif
@@ -2369,6 +2530,7 @@ extern "C" void app_main()
   self_test.control_task = control_created == pdPASS &&
                            ui_created == pdPASS &&
                            service_created == pdPASS &&
+                           board_io_created == pdPASS &&
                            vrx_created == pdPASS &&
                            osd_created == pdPASS &&
                            usb_created == pdPASS;

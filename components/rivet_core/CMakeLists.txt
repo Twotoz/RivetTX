@@ -2,6 +2,7 @@ idf_component_register(
   SRCS
     "at7456e.cpp"
     "audio.cpp"
+    "board_power.cpp"
     "core.cpp"
     "crsf.cpp"
     "elrs.cpp"
@@ -9,6 +10,7 @@ idf_component_register(
     "rx5808.cpp"
     "services.cpp"
     "storage.cpp"
+    "tw8836.cpp"
     "ui.cpp"
   INCLUDE_DIRS "include"
 )

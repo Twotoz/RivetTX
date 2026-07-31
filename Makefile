@@ -6,6 +6,7 @@ SANITIZE_BUILD := $(BUILD)/sanitize
 CORE := \
 	components/rivet_core/at7456e.cpp \
 	components/rivet_core/audio.cpp \
+	components/rivet_core/board_power.cpp \
 	components/rivet_core/core.cpp \
 	components/rivet_core/crsf.cpp \
 	components/rivet_core/elrs.cpp \
@@ -13,6 +14,7 @@ CORE := \
 	components/rivet_core/rx5808.cpp \
 	components/rivet_core/services.cpp \
 	components/rivet_core/storage.cpp \
+	components/rivet_core/tw8836.cpp \
 	components/rivet_core/ui.cpp
 SIMULATION := simulator/virtual_hardware.cpp
 COMMON_SOURCES := $(CORE) $(SIMULATION)
