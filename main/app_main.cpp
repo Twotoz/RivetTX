@@ -2218,6 +2218,7 @@ void board_io_task(void*)
   bool previous_display = true;
   uint8_t previous_backlight = CONFIG_RIVETTX_BACKLIGHT_DEFAULT_PERCENT;
   Tw8836State previous_controller_state = Tw8836State::Unavailable;
+  TimeUs next_controller_recovery_us = 0;
   while (true) {
     const TimeUs current = now_us();
     uint32_t controls = 0;
@@ -2256,8 +2257,10 @@ void board_io_task(void*)
       if (controller_status.state == Tw8836State::Unavailable) {
         (void)app.display_controller.initialize(current);
       } else if (controller_status.state == Tw8836State::Fault &&
-                 display_changed) {
-        (void)app.display_controller.recover(current);
+                 (display_changed || current >= next_controller_recovery_us)) {
+        if (app.display_controller.recover(current)) {
+          next_controller_recovery_us = current + 1000000U;
+        }
       }
       app.display_controller.tick(current);
       controller_status = app.display_controller.status();

@@ -142,6 +142,7 @@ class Tw8836Controller {
   TimeUs deadline_us_ = 0;
   TimeUs next_status_us_ = 0;
   bool verify_started_ = false;
+  uint8_t runtime_read_failures_ = 0;
   Tw8836Sha256Context sha256_{};
 };
 

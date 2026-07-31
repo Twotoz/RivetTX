@@ -237,6 +237,7 @@ void Tw8836Controller::tick(TimeUs now_us)
       } else {
         status_.identity = identity;
         status_.state = Tw8836State::Ready;
+        runtime_read_failures_ = 0;
         next_status_us_ = now_us;
       }
       break;
@@ -247,8 +248,12 @@ void Tw8836Controller::tick(TimeUs now_us)
         Tw8836RuntimeStatus runtime{};
         if (hardware_.read_runtime_status(runtime)) {
           status_.runtime = runtime;
-        } else {
+          runtime_read_failures_ = 0;
+        } else if (++runtime_read_failures_ >= 3) {
           fail(Tw8836Fault::Communication);
+        } else {
+          next_status_us_ = now_us + 20000U;
+          break;
         }
         next_status_us_ = now_us +
             static_cast<TimeUs>(config_.status_interval_ms) * 1000U;
