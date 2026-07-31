@@ -8,6 +8,7 @@
 #include "rivettx/ui.hpp"
 #include "virtual_hardware.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdint>
@@ -1239,7 +1240,12 @@ void test_ui()
   CHECK(!make_timers_screen(model, {}).fields.empty());
   CHECK(!make_elrs_screen(ElrsManagerStatus{}, true).fields.empty());
   CHECK(!make_elrs_finder_screen(ElrsFinderStatus{}).fields.empty());
-  CHECK(!make_main_menu_screen().fields.empty());
+  const auto oled_menu = make_main_menu_screen();
+  CHECK(oled_menu.title == "RivetTX");
+  CHECK(!oled_menu.fields.empty());
+  CHECK(std::none_of(
+      oled_menu.fields.begin(), oled_menu.fields.end(),
+      [](const UiField& field) { return field.id == "video"; }));
 
   UiHomeStatus home{};
   home.axes = {-1024, 1024, -512, 512};
@@ -1249,7 +1255,7 @@ void test_ui()
   home.warning_count = 2;
   home.warnings[0] = UiWarningCode::ThrottleHigh;
   home.warnings[1] = UiWarningCode::BatteryLow;
-  ui.set_screen(make_openpocket_home_screen(model, home));
+  ui.set_screen(make_oled_home_screen(model, home));
   CHECK(ui.render());
   CHECK(canvas.pixel_at(0, 9));
   const auto warnings = make_warnings_screen(home);
@@ -1553,6 +1559,7 @@ void test_openpocket_product_services()
   CHECK(osd.frame().at(0, 0) == 'D');
   CHECK(osd.frame().at(0, 4) == 'T');
   CHECK(osd.frame().at(10, 6) == 'V');
+  CHECK(osd.frame().at(8, 15) == 'O');
 
   UsbSimulator usb;
   CHECK(!usb.enter(false, true));

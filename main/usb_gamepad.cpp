@@ -25,7 +25,7 @@ constexpr uint16_t kUsbConfigurationLength =
 
 // Eight signed 16-bit Generic Desktop axes followed by 32 buttons. The
 // standard TinyUSB gamepad report has only six axes, which would discard the
-// two OpenPocket scroll/pot controls.
+// two optional RivetTX scroll/pot controls.
 const uint8_t kHidReportDescriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
     0x09, 0x05,        // Usage (Game Pad)
@@ -66,9 +66,9 @@ const uint8_t kHidConfigurationDescriptor[] = {
 const char* kUsbStrings[] = {
     reinterpret_cast<const char*>(u"\x0409"),
     "RivetTX",
-    "OpenPocket FPV Controller",
+    "RivetTX FPV Controller",
     "RIVETTX",
-    "OpenPocket Gamepad",
+    "RivetTX Gamepad",
 };
 
 int16_t hid_axis(int16_t value)
@@ -79,13 +79,13 @@ int16_t hid_axis(int16_t value)
                      32767));
 }
 
-struct HidOpenPocketReport {
+struct HidGamepadReport {
   std::array<int16_t, 8> axes{};
   uint32_t buttons = 0;
 };
 
-static_assert(sizeof(HidOpenPocketReport) == 20);
-static_assert(sizeof(HidOpenPocketReport) <= CFG_TUD_HID_EP_BUFSIZE);
+static_assert(sizeof(HidGamepadReport) == 20);
+static_assert(sizeof(HidGamepadReport) <= CFG_TUD_HID_EP_BUFSIZE);
 
 #endif
 
@@ -142,7 +142,7 @@ bool EspUsbGamepad::send(const UsbGamepadReport& source)
   if (!initialized_ || !tud_mounted() || !tud_hid_ready()) {
     return false;
   }
-  HidOpenPocketReport report{};
+  HidGamepadReport report{};
   for (std::size_t axis = 0; axis < report.axes.size(); ++axis) {
     report.axes[axis] = hid_axis(source.axes[axis]);
   }

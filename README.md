@@ -188,6 +188,11 @@ The reference profiles are intentionally focused:
 | optional pressable rotary encoder | menu navigation and field editing |
 | suitable regulator | must tolerate the chosen TX module's peak current |
 
+The SSD1306 configuration is the standalone RivetTX profile and does not
+provide OpenPocket support. OpenPocket uses its analog character OSD as the
+menu/status display instead of an OLED; the two presentation paths are never
+active together.
+
 An ExpressLRS receiver running normal RX firmware is not a transmitter. A
 supported ESP8285/ESP32 receiver may be used after it has been flashed with
 ExpressLRS RX-as-TX firmware and its board-specific hardware configuration has

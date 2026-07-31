@@ -414,7 +414,7 @@ bool render_displays(const Options& options, const Model& model,
     home.outputs_enabled = true;
     home.module_online = true;
     home.video_signal = true;
-    ui.set_screen(make_openpocket_home_screen(model, home));
+    ui.set_screen(make_oled_home_screen(model, home));
     const bool rendered = ui.render();
     if (!rendered || display.flushes() != 1 ||
         display.last_lit_pixels() == 0) {

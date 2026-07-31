@@ -737,8 +737,8 @@ esp_err_t WifiBackupPortal::get_index(httpd_req_t* request)
   static constexpr char page[] =
       "<!doctype html><meta name=viewport "
       "content='width=device-width,initial-scale=1'>"
-      "<title>OpenPocket Config</title>"
-      "<h1>OpenPocket</h1>"
+      "<title>RivetTX Config</title>"
+      "<h1>RivetTX</h1>"
       "<p>Outputs are locked while this page is active.</p>"
       "<p><a href=/backup>Download active model</a></p>"
       "<form method=post action=/restore enctype=application/octet-stream>"
