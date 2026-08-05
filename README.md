@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="docs/assets/rivettx-hero.svg" alt="RivetTX — compact ESP32-C3 and ESP32-S3 transmitter firmware" width="100%">
-</p>
+
 
 <p align="center">
   <a href="https://github.com/Twotoz/RivetTX/actions/workflows/host-tests.yml"><img alt="Continuous integration" src="https://github.com/Twotoz/RivetTX/actions/workflows/host-tests.yml/badge.svg"></a>
